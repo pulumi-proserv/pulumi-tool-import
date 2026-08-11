@@ -1,12 +1,7 @@
 # Code owners for pulumi-tool-import.
 #
 # Owners are automatically requested for review on PRs that touch matching
-# paths. Replace the placeholder below with the real maintainer team or
-# individual handles before enabling "Require review from Code Owners" in
-# branch protection.
-#
-# NOTE: an unresolvable owner here is harmless (GitHub shows a warning) UNTIL
-# "Require review from Code Owners" is turned on — at which point every PR is
-# blocked. Set a valid owner first.
+# paths. With "Require review from Code Owners" enabled in branch protection,
+# a PR needs an approving review from one of these owners to merge.
 
-# * @pulumi-proserv/<maintainers-team>
+* @jdavredbeard @automagic
