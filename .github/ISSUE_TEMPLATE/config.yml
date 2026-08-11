@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Pulumi migration documentation
+    url: https://www.pulumi.com/docs/iac/guides/migration/migrating-to-pulumi/from-terraform/
+    about: Official guidance for migrating to Pulumi from Terraform.
+  - name: Security report
+    url: https://github.com/pulumi-proserv/pulumi-tool-import/security/advisories/new
+    about: Please report security vulnerabilities privately, not as public issues.

@@ -1,0 +1,13 @@
+{
+  "Resources": {
+    "ApiPermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName": { "Ref": "ApiHandler" },
+        "Id": "AllowApiGw"
+      }
+    },
+    "ApiHandler": { "Type": "AWS::Lambda::Function", "Properties": {} },
+    "MetaData": { "Type": "AWS::CDK::Metadata", "Properties": {} }
+  }
+}

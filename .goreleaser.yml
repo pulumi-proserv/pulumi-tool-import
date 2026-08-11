@@ -1,0 +1,25 @@
+dist: goreleaser
+project_name: pulumi-tool-import
+version: 2
+snapshot:
+  version_template: "{{ .Version }}-SNAPSHOT"
+checksum:
+  name_template: "{{ .ProjectName }}-{{ .Version }}-checksums.txt"
+archives:
+- id: archive
+  name_template: '{{ .Binary }}-{{ .Tag }}-{{ .Os }}-{{ .Arch }}'
+builds:
+- id: pulumi-tool-import
+  binary: pulumi-tool-import
+  goarch:
+  - amd64
+  - arm64
+  goos:
+  - darwin
+  - windows
+  - linux
+  ldflags:
+  - -s
+  - -w
+  - -X github.com/pulumi-proserv/pulumi-tool-import/pkg/version.Version={{.Tag}}
+  main: .

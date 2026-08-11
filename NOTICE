@@ -1,0 +1,12 @@
+pulumi-tool-import
+Copyright 2025 Pulumi Corporation
+
+This product includes software originally developed as
+pulumi/pulumi-tool-terraform-migrate
+(https://github.com/pulumi/pulumi-tool-terraform-migrate),
+licensed under the Apache License, Version 2.0.
+
+The code has since diverged substantially: the import-assistance command set
+(digest, resolve, patch-state, set-secrets, import) and the CloudFormation/CDK
+front-end are additions, and the upstream `stack` state-translation command has
+been removed.

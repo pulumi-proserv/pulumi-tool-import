@@ -1,0 +1,219 @@
+// Copyright 2016-2025, Pulumi Corporation.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package providermap
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/blang/semver"
+	"github.com/stretchr/testify/assert"
+)
+
+func TestRecommendPulumiProvider(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name                         string
+		input                        TerraformProvider
+		expectedBridgedProvider      string
+		expectedVersion              string
+		expectedMinVersion           string // use >= instead of == (for "latest" fallback cases)
+		expectedUseTerraformProvider bool
+	}{
+		{
+			name: "AWS Terraform registry - precise match from versions.yaml",
+			input: TerraformProvider{
+				Identifier: "registry.terraform.io/hashicorp/aws",
+				Version:    "v6.28.0",
+			},
+			expectedBridgedProvider:      "aws",
+			expectedVersion:              "v7.16.0", // Precise match from versions.yaml
+			expectedUseTerraformProvider: false,
+		},
+		{
+			name: "AWS Terraform registry - approximate match",
+			input: TerraformProvider{
+				Identifier: "registry.terraform.io/hashicorp/aws",
+				Version:    "v6.20.0",
+			},
+			expectedBridgedProvider:      "aws",
+			expectedVersion:              "v7.11.1",
+			expectedUseTerraformProvider: false,
+		},
+		{
+			name: "AWS - no version specified (should use latest)",
+			input: TerraformProvider{
+				Identifier: "registry.terraform.io/hashicorp/aws",
+				Version:    "",
+			},
+			expectedBridgedProvider:      "aws",
+			expectedMinVersion:           "v7.23.0",
+			expectedUseTerraformProvider: false,
+		},
+		{
+			name: "AWS - invalid version (should use latest)",
+			input: TerraformProvider{
+				Identifier: "registry.terraform.io/hashicorp/aws",
+				Version:    "invalid-version",
+			},
+			expectedBridgedProvider:      "aws",
+			expectedMinVersion:           "v7.23.0",
+			expectedUseTerraformProvider: false,
+		},
+		{
+			name: "Azure Terraform registry - major version 4",
+			input: TerraformProvider{
+				Identifier: "registry.terraform.io/hashicorp/azurerm",
+				Version:    "v4.15.0",
+			},
+			expectedBridgedProvider:      "azure",
+			expectedVersion:              "v6.15.0", // Exact match with upstream v4.15.0
+			expectedUseTerraformProvider: false,
+		},
+		{
+			name: "GCP OpenTofu registry - major version 6",
+			input: TerraformProvider{
+				Identifier: "registry.opentofu.org/hashicorp/google",
+				Version:    "v6.5.0",
+			},
+			expectedBridgedProvider:      "gcp",
+			expectedVersion:              "v8.4.1", // Exact match with upstream v6.5.0
+			expectedUseTerraformProvider: false,
+		},
+		{
+			name: "GCP OpenTofu registry - major version 7",
+			input: TerraformProvider{
+				Identifier: "registry.opentofu.org/hashicorp/google",
+				Version:    "7.0.0",
+			},
+			expectedBridgedProvider:      "gcp",
+			expectedMinVersion:           "v9.15.0",
+			expectedUseTerraformProvider: false,
+		},
+		{
+			name: "Unknown provider",
+			input: TerraformProvider{
+				Identifier: "registry.terraform.io/somevendor/customprovider",
+				Version:    "v1.0.0",
+			},
+			expectedBridgedProvider:      "",
+			expectedVersion:              "",
+			expectedUseTerraformProvider: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.expectedVersion != "" && tt.expectedMinVersion != "" {
+				t.Fatal("test case must not set both expectedVersion and expectedMinVersion")
+			}
+
+			result := RecommendPulumiProvider(tt.input)
+
+			if tt.expectedUseTerraformProvider {
+				if !result.UseDynamicBridging {
+					t.Errorf("Expected UseDynamicBridging to be true, got false")
+				}
+				if result.StaticallyBridgedProvider != nil {
+					t.Errorf("Expected StaticallyBridgedProvider to be nil, got %v", result.StaticallyBridgedProvider)
+				}
+			} else {
+				if result.UseDynamicBridging {
+					t.Errorf("Expected UseDynamicBridging to be false, got true")
+				}
+				if result.StaticallyBridgedProvider == nil {
+					t.Errorf("Expected StaticallyBridgedProvider to be non-nil, got nil")
+				} else {
+					if result.StaticallyBridgedProvider.Identifier != tt.expectedBridgedProvider {
+						t.Errorf("Expected StaticallyBridgedProvider.Identifier to be %q, got %q",
+							tt.expectedBridgedProvider, result.StaticallyBridgedProvider.Identifier)
+					}
+					if tt.expectedVersion != "" {
+						if result.StaticallyBridgedProvider.Version != tt.expectedVersion {
+							t.Errorf("Expected StaticallyBridgedProvider.Version to be %q, got %q",
+								tt.expectedVersion, result.StaticallyBridgedProvider.Version)
+						}
+					}
+					if tt.expectedMinVersion != "" {
+						got, err := semver.Parse(strings.TrimPrefix(result.StaticallyBridgedProvider.Version, "v"))
+						if err != nil {
+							t.Fatalf("Failed to parse version %q: %v", result.StaticallyBridgedProvider.Version, err)
+						}
+						min, err := semver.Parse(strings.TrimPrefix(tt.expectedMinVersion, "v"))
+						if err != nil {
+							t.Fatalf("Failed to parse min version %q: %v", tt.expectedMinVersion, err)
+						}
+						if got.LT(min) {
+							t.Errorf("Expected StaticallyBridgedProvider.Version >= %q, got %q",
+								tt.expectedMinVersion, result.StaticallyBridgedProvider.Version)
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestProviderMappingUsesProvidersThatExist(t *testing.T) {
+	t.Parallel()
+	for k := range providerMapping {
+		parts := strings.Split(string(k), "/")
+		ok, err := checkProviderExists(context.Background(), parts[0], parts[1], parts[2])
+		assert.NoError(t, err)
+		assert.Truef(t, ok, string(k))
+	}
+}
+
+// CheckProviderExists checks if a provider exists in the given registry
+// Example: CheckProviderExists(ctx, "registry.opentofu.org", "hashicorp", "consul")
+func checkProviderExists(ctx context.Context, registryHost, namespace, providerType string) (bool, error) {
+	// Registry API endpoint format varies by registry:
+	// - Terraform: https://{host}/v1/providers/{namespace}/{type}
+	// - OpenTofu: https://{host}/v1/providers/{namespace}/{type}/versions
+	var url string
+	if registryHost == "registry.opentofu.org" {
+		url = fmt.Sprintf("https://%s/v1/providers/%s/%s/versions", registryHost, namespace, providerType)
+	} else {
+		url = fmt.Sprintf("https://%s/v1/providers/%s/%s", registryHost, namespace, providerType)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return false, fmt.Errorf("creating request: %w", err)
+	}
+
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("making request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return true, nil
+	case http.StatusNotFound:
+		return false, nil
+	default:
+		return false, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+}

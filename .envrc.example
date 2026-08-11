@@ -1,0 +1,8 @@
+# Example direnv configuration. Copy to `.envrc` (gitignored) and adjust.
+#
+#   cp .envrc.example .envrc && direnv allow
+#
+# Set the AWS profile/region the tool should use for read-only cloud lookups
+# (patch-state, digest cfn, etc.). Use your own profile, not a shared default.
+export AWS_PROFILE=your-profile-here
+export AWS_REGION=us-east-1
