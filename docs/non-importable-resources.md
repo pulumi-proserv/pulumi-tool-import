@@ -75,17 +75,63 @@ entry for them is guaranteed to fail — and writes them to a sidecar next to
 ## What to do with them
 
 Write them into the stack's state directly. These types have working `Read`
-implementations even without an importer, so a refresh will validate what you
-inject. Append a state object per resource to a `pulumi stack export`, using the
-ID and attributes from the sidecar, then `pulumi stack import` and confirm with
-`pulumi refresh --preview-only` (expect "unchanged") and `pulumi preview`
-(expect zero creates).
+implementations even without an importer, so the provider can read them back.
+Append a state object per resource to a `pulumi stack export`, using the ID and
+attributes from the sidecar, then `pulumi stack import`.
 
-> `VpnGatewayRoutePropagation`'s `Read` sets **no** attributes — it only
-> validates existence — so injected inputs and outputs are authoritative and are
-> never corrected by a refresh. Getting them right matters.
-> `VpnConnectionRoute`'s `Read` does set `destination_cidr_block` and
-> `vpn_connection_id`.
+### Verify with preview, not refresh
+
+Refresh normally corrects state from what is deployed — it calls the provider's
+`Read` and writes back whatever comes out. Its reach is bounded by what `Read`
+returns, and for these two types `Read` does not fetch attributes from AWS:
+
+| Type | What `Read` does |
+|---|---|
+| `aws_vpn_gateway_route_propagation` | Calls no `d.Set()` at all. It confirms the propagation exists and returns (clearing the ID if it is gone). Terraform's read starts from the prior state and changes only what it sets, so refresh writes back exactly the values it was given. |
+| `aws_vpn_connection_route` | Sets `destination_cidr_block` and `vpn_connection_id` — but parses both out of the resource **ID**, not out of an API response. |
+
+So the value actually checked against AWS is the **ID**: it drives the existence
+lookup. The attributes are either left untouched or re-derived from the ID.
+Refresh can make attributes self-consistent with the ID; it cannot tell you the
+ID names the object you meant.
+
+Two consequences:
+
+- **`pulumi refresh --preview-only` reporting "unchanged" is weak evidence.** It
+  confirms the IDs resolve to something that exists. It would report the same
+  for a resource whose attributes are wrong.
+- **`pulumi preview` showing zero operations is the real check.** The program is
+  the source of truth for inputs, so preview diffs the program against the
+  injected state. If the injected values disagree, preview says so.
+
+Get the ID right and `VpnConnectionRoute`'s attributes reconcile themselves on
+the first refresh. `VpnGatewayRoutePropagation`'s attributes have to be right at
+injection time, because nothing will ever reconcile them with AWS. The program
+still polices them — the next `up` diffs against them — but `routeTableId` and
+`vpnGatewayId` are force-new, so a mismatch surfaces as a **replace**, not a
+repair: a disable-then-re-enable against live infrastructure, when the point of
+injecting was a zero-op migration. If the ID is wrong in the same way, that
+replace deletes whatever route table the ID names.
+
+### Why `Read` semantics are not detected automatically
+
+Importability can be probed because the SDKs answer it *before* doing any work:
+the missing-importer check is the first thing `ImportResourceState` does, so an
+unconfigured provider settles it for free. There is no equivalent for "does
+`Read` populate its attributes".
+
+Nothing in the schema records it — `ReadWithoutTimeout` is a Go func field, the
+same blind spot as `Importer`. And the only way to observe it is to run a read
+that succeeds, which needs a configured provider, live credentials, and a real
+object to read; against a resource that does not exist, every provider returns
+"gone" regardless of what its `Read` would have set. There is no cheap, safe
+probe to add here.
+
+This repo already treats that class of knowledge as curated data:
+[`data/aws-import-diff-fields.json`](aws-import-diff-fields.md) records, per
+type, the fields the provider does not return on import (`not_read`), so
+`patch-state` can fill them from the digest. Read gaps for injected resources
+belong in the same place — established by observation, not derivation.
 
 ## When the provider cannot be probed
 
