@@ -42,6 +42,29 @@ type FillResult struct {
 	Skipped   int
 	Unmatched int
 	Warnings  []string
+	// NonImportable lists resources left out of the import file because their
+	// Terraform type declares no importer.
+	NonImportable []NonImportableResource
+}
+
+// NonImportableResource is a resource that exists in the digest but cannot be
+// imported, recorded so it can be written into state directly instead.
+type NonImportableResource struct {
+	// Type is the Pulumi type token.
+	Type string `json:"type"`
+	// Name is the Pulumi resource name from the import file.
+	Name string `json:"name"`
+	// Parent is the import-file parent component name, if any.
+	Parent string `json:"parent,omitempty"`
+	// TerraformAddress is the resource's address in Terraform state.
+	TerraformAddress string `json:"terraformAddress"`
+	// ID is the import ID the resource would have used, composed the same way
+	// as for an importable resource. It is the provider's own ID format, so it
+	// is what a state entry for this resource should carry.
+	ID string `json:"id"`
+	// Attributes are the Terraform state attributes, carried through for
+	// state injection.
+	Attributes map[string]interface{} `json:"attributes,omitempty"`
 }
 
 // FillImportFile matches TF resources from a digest to Pulumi import file entries
@@ -51,6 +74,7 @@ type FillResult struct {
 // resourceMappings maps TF resource addresses to Pulumi resource names (e.g., "aws_s3_bucket.my_bucket" → "my_bucket").
 func FillImportFile(digest *ModuleMap, importFile *ImportFile, moduleMappings, resourceMappings map[string]string) *FillResult {
 	result := &FillResult{}
+	state := &fillState{result: result, dropped: map[*ImportEntry]bool{}}
 
 	// Build a lookup of all TF resources by address for resource-level mappings.
 	tfByAddress := map[string]*ModuleResource{}
@@ -88,8 +112,7 @@ func FillImportFile(digest *ModuleMap, importFile *ImportFile, moduleMappings, r
 		if entry.ID != "<PLACEHOLDER>" {
 			continue // already filled
 		}
-		entry.ID = tfRes.ImportID
-		result.Filled++
+		state.assign(entry, tfRes)
 	}
 
 	// Phase 2: Group remaining import entries by parent for module-level matching.
@@ -106,6 +129,9 @@ func FillImportFile(digest *ModuleMap, importFile *ImportFile, moduleMappings, r
 		}
 		if entry.ID != "<PLACEHOLDER>" {
 			continue // already filled by resource mapping
+		}
+		if state.dropped[entry] {
+			continue // already handled as non-importable by resource mapping
 		}
 		if entry.Parent != "" {
 			byParent[entry.Parent] = append(byParent[entry.Parent], entry)
@@ -139,8 +165,7 @@ func FillImportFile(digest *ModuleMap, importFile *ImportFile, moduleMappings, r
 			continue
 		}
 
-		matched, warnings := matchChildren(tfResources, importEntries)
-		result.Filled += matched
+		warnings := matchChildren(tfResources, importEntries, state)
 		result.Warnings = append(result.Warnings, warnings...)
 
 		// Remove matched parent from byParent so it's not double-counted as unmatched.
@@ -149,9 +174,21 @@ func FillImportFile(digest *ModuleMap, importFile *ImportFile, moduleMappings, r
 
 	// Handle root resources: match orphaned import entries against digest rootResources.
 	if len(orphans) > 0 && len(digest.RootResources) > 0 {
-		matched, warnings := matchChildren(digest.RootResources, orphans)
-		result.Filled += matched
+		warnings := matchChildren(digest.RootResources, orphans, state)
 		result.Warnings = append(result.Warnings, warnings...)
+	}
+
+	// Drop entries that cannot be imported. Leaving them in would fail the
+	// import mid-run; counting them as unmatched would suggest a missing ID.
+	if len(state.dropped) > 0 {
+		kept := make([]ImportEntry, 0, len(importFile.Resources))
+		for i := range importFile.Resources {
+			if state.dropped[&importFile.Resources[i]] {
+				continue
+			}
+			kept = append(kept, importFile.Resources[i])
+		}
+		importFile.Resources = kept
 	}
 
 	// Count unmatched: entries still with <PLACEHOLDER> that aren't components.
@@ -163,6 +200,34 @@ func FillImportFile(digest *ModuleMap, importFile *ImportFile, moduleMappings, r
 	}
 
 	return result
+}
+
+// fillState carries the running result across the filler's phases.
+type fillState struct {
+	result *FillResult
+	// dropped holds entries to remove from the import file, keyed by pointer
+	// into importFile.Resources.
+	dropped map[*ImportEntry]bool
+}
+
+// assign gives an import entry the ID of the Terraform resource it matched,
+// unless that resource cannot be imported — in which case the entry is dropped
+// and recorded for state injection instead.
+func (s *fillState) assign(entry *ImportEntry, tfRes *ModuleResource) {
+	if tfRes.NonImportable {
+		s.result.NonImportable = append(s.result.NonImportable, NonImportableResource{
+			Type:             entry.Type,
+			Name:             entry.Name,
+			Parent:           entry.Parent,
+			TerraformAddress: tfRes.TerraformAddress,
+			ID:               tfRes.ImportID,
+			Attributes:       tfRes.Attributes,
+		})
+		s.dropped[entry] = true
+		return
+	}
+	entry.ID = tfRes.ImportID
+	s.result.Filled++
 }
 
 // collectAllResources walks the nested module map and indexes all managed resources by TF address.
@@ -207,7 +272,7 @@ func collectModuleResources(modules map[string]*ModuleMapEntry, out map[string][
 //
 // Falls back to type-only matching when there's exactly one candidate of a
 // given type (for components that predate the naming convention).
-func matchChildren(tfResources []ModuleResource, importEntries []*ImportEntry) (matched int, warnings []string) {
+func matchChildren(tfResources []ModuleResource, importEntries []*ImportEntry, state *fillState) (warnings []string) {
 	// Index TF resources by type::name key for exact matching.
 	type typeNameKey struct{ pulumiType, tfName string }
 	byTypeName := map[typeNameKey]*ModuleResource{}
@@ -238,9 +303,8 @@ func matchChildren(tfResources []ModuleResource, importEntries []*ImportEntry) (
 		if suffix != "" {
 			key := typeNameKey{entry.Type, suffix}
 			if r, ok := byTypeName[key]; ok && !used[r.TerraformAddress] {
-				entry.ID = r.ImportID
+				state.assign(entry, r)
 				used[r.TerraformAddress] = true
-				matched++
 				continue
 			}
 		}
@@ -248,16 +312,15 @@ func matchChildren(tfResources []ModuleResource, importEntries []*ImportEntry) (
 		// Fallback: if exactly one unused candidate of this type, use it.
 		candidates := unusedOfType(byType, entry.Type, used)
 		if len(candidates) == 1 {
-			entry.ID = candidates[0].ImportID
+			state.assign(entry, &candidates[0])
 			used[candidates[0].TerraformAddress] = true
-			matched++
 		} else if len(candidates) > 1 {
 			warnings = append(warnings,
 				fmt.Sprintf("no name match and %d type candidates for %s %q (suffix %q)",
 					len(candidates), entry.Type, entry.Name, suffix))
 		}
 	}
-	return matched, warnings
+	return warnings
 }
 
 // extractTypeFromURN extracts the Pulumi type token from a URN string.

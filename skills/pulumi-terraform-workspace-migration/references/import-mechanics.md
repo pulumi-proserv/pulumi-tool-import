@@ -80,13 +80,20 @@ high. Common causes of a low rate:
 - **Missing resources.** If TF manages resources the program doesn't create, add
   them.
 - **Unsupported import-ID format.** When an import fails with "resource does not
-  exist", treat it as a *wrong ID format*, not a missing resource: check the
-  type's documented format (`pulumi package get-schema aws`, the `## Import`
+  exist", first treat it as a *wrong ID format*, not a missing resource: check
+  the type's documented format (`pulumi package get-schema aws`, the `## Import`
   section). If the built-in translation doesn't cover the type, add it to
-  `TranslateImportIDs` in the tool, or set the ID via a resource mapping.
-- **Non-importable types.** Some TF types map to Pulumi types that cannot be
-  imported — e.g. `aws:iam/policyAttachment:PolicyAttachment`. Use
-  `aws:iam/rolePolicyAttachment:RolePolicyAttachment` instead.
+  `TranslateImportIDs` in the tool, or set the ID via a resource mapping. The
+  same message also appears when the type has no importer at all — see below.
+- **Non-importable types.** Some Terraform resource types declare no importer,
+  so no ID can ever import them; the attempt fails with the same misleading
+  "resource '<id>' does not exist". `digest tf` detects these by asking the
+  provider directly and flags them `nonImportable`, and `resolve tf` leaves them
+  out of the import file and records them in a `*.non-importable.json` sidecar.
+  See [docs/non-importable-resources.md](../../../docs/non-importable-resources.md).
+  Where an importable equivalent exists, prefer it — e.g. use
+  `aws:iam/rolePolicyAttachment:RolePolicyAttachment` rather than
+  `aws:iam/policyAttachment:PolicyAttachment`.
 
 ## Import-file hygiene
 
@@ -99,6 +106,16 @@ high. Common causes of a low rate:
 - **Remove resources absent from the digest.** A resource that appears in the
   preview but has no digest entry (e.g. something TF declared but never applied)
   will be *created* on the first `pulumi up` rather than imported.
+
+  > **Only remove an entry when the resource really doesn't exist yet.** Dropping
+  > an entry for infrastructure that *does* exist converts an import into a
+  > create, and that is safe only if the resource's Create tolerates a
+  > pre-existing object. Association and toggle resources often don't:
+  > `aws_vpn_gateway_route_propagation` retries only on `GatewayNotAttached` with
+  > no "already enabled" path, and `aws_vpn_connection_route` surfaces the error
+  > directly — so the first `pulumi up` dies partway through the stack. For
+  > resources that exist but cannot be imported, write them into state instead of
+  > letting them be created.
 - **Don't let components create resources TF doesn't manage.** If a component
   creates extra resources, put them behind a flag and disable it in the migration
   program.

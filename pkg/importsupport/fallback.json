@@ -1,0 +1,13 @@
+{
+  "_comment": "Terraform resource types known to declare no Importer, used only when the Terraform provider binary cannot be loaded to probe directly. Every entry was confirmed by calling ImportResourceState against the real provider and observing a no-importer error; see docs/non-importable-resources.md. This list is a floor, not an inventory: a type absent from it is reported Unknown, not importable.",
+  "terraformTypes": [
+    "aws_apprunner_deployment",
+    "aws_ec2_image_block_public_access",
+    "aws_ec2_instance_metadata_defaults",
+    "aws_guardduty_detector_feature",
+    "aws_iam_group_membership",
+    "aws_iam_policy_attachment",
+    "aws_vpn_connection_route",
+    "aws_vpn_gateway_route_propagation"
+  ]
+}

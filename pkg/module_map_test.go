@@ -43,7 +43,7 @@ func TestBuildModuleMap_WithoutEval(t *testing.T) {
 
 	// Build without eval (nil tofuCtx) — no pulumiProviders needed for URN
 	// generation in this test since we just check structure.
-	mm, err := BuildModuleMap(config, nil, rawState, nil, "test-stack", "test-project")
+	mm, err := BuildModuleMap(context.Background(), config, nil, rawState, nil, "test-stack", "test-project", nil)
 	require.NoError(t, err)
 	require.NotNil(t, mm)
 
@@ -108,7 +108,7 @@ func TestBuildModuleMap_WithEval(t *testing.T) {
 	rootVars := BuildRootVariables(config, tfDir, nil)
 	evalScopes, _ := BuildEvalScopes(context.Background(), tofuCtx, config, rawState, rootVars)
 
-	mm, err := BuildModuleMap(config, evalScopes, rawState, nil, "test-stack", "test-project")
+	mm, err := BuildModuleMap(context.Background(), config, evalScopes, rawState, nil, "test-stack", "test-project", nil)
 	require.NoError(t, err)
 	require.NotNil(t, mm)
 
@@ -137,7 +137,7 @@ func TestBuildModuleMap_Expression(t *testing.T) {
 	rawState, err := LoadRawState(filepath.Join(tfDir, "terraform.tfstate"))
 	require.NoError(t, err)
 
-	mm, err := BuildModuleMap(config, nil, rawState, nil, "test-stack", "test-project")
+	mm, err := BuildModuleMap(context.Background(), config, nil, rawState, nil, "test-stack", "test-project", nil)
 	require.NoError(t, err)
 
 	pet0 := mm.Modules["pet[0]"]
@@ -274,7 +274,7 @@ func TestBuildModuleMap_RootResources(t *testing.T) {
 		nil,
 	)
 
-	mm, err := BuildModuleMap(config, nil, rawState, nil, "test-stack", "test-project")
+	mm, err := BuildModuleMap(context.Background(), config, nil, rawState, nil, "test-stack", "test-project", nil)
 	require.NoError(t, err)
 	require.NotNil(t, mm)
 
@@ -338,7 +338,7 @@ func TestBuildModuleMap_DataSources(t *testing.T) {
 		nil,
 	)
 
-	mm, err := BuildModuleMap(config, nil, rawState, nil, "test-stack", "test-project")
+	mm, err := BuildModuleMap(context.Background(), config, nil, rawState, nil, "test-stack", "test-project", nil)
 	require.NoError(t, err)
 
 	pet0 := mm.Modules["pet[0]"]

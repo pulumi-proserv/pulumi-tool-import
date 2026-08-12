@@ -160,6 +160,14 @@ Examples:
 			}
 			fmt.Fprintf(os.Stderr, "Output written to %s\n", outPath)
 
+			if len(result.NonImportable) > 0 {
+				sidecarPath := nonImportablePath(outPath)
+				if err := writeNonImportable(sidecarPath, result.NonImportable); err != nil {
+					return fmt.Errorf("writing non-importable resources: %w", err)
+				}
+				printNonImportableWarning(result.NonImportable, sidecarPath)
+			}
+
 			return nil
 		},
 	}
