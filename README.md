@@ -13,7 +13,7 @@ It works from two sources, onto the same bridged Pulumi providers (AWS first):
 The commands form a pipeline:
 
 ```
-digest (tf|cfn)  →  resolve (tf|cfn)  →  pulumi import  →  patch-state  →  zero-diff preview
+digest (tf|cfn)  →  resolve (tf|cfn)  →  import  →  patch-state  →  zero-diff preview
 ```
 
 - **`digest`** — analyze the source (Terraform state/HCL, or a deployed
@@ -311,5 +311,5 @@ artifacts (`tf-digest.json`, `cfn-digest.json`, exported state) as sensitive and
 
 ## Contributing
 
-See [`CONTRIBUTING.md`](./CONTRIBUTING.md). Run `make check` (fmt + vet + lint)
+See [`CONTRIBUTING.md`](./CONTRIBUTING.md). Run `make check` (fmt-check + vet + lint)
 before opening a PR.
