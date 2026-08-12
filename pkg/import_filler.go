@@ -476,6 +476,23 @@ func TranslateImportIDs(importFile *ImportFile, digest *ModuleMap) int {
 				newID = entry.ID + "/" + name + "/" + scope
 			}
 
+		case "aws:ec2/route:Route":
+			// TF state carries an opaque "r-<rtb>…<hash>" id; Pulumi expects
+			// ROUTETABLEID_DESTINATION. Exactly one destination attribute is
+			// set, and it may be an IPv4 CIDR, an IPv6 CIDR, or a prefix list.
+			if rtb, _ := attrs["route_table_id"].(string); rtb != "" {
+				for _, key := range []string{
+					"destination_cidr_block",
+					"destination_ipv6_cidr_block",
+					"destination_prefix_list_id",
+				} {
+					if dest, _ := attrs[key].(string); dest != "" {
+						newID = rtb + "_" + dest
+						break
+					}
+				}
+			}
+
 		case "aws:ec2/routeTableAssociation:RouteTableAssociation":
 			// rtbassoc -> subnet/rtb
 			if sid, _ := attrs["subnet_id"].(string); sid != "" {

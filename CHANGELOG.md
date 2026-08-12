@@ -39,6 +39,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   failed runs with nothing wrong in them.
 
 ### Fixed
+- `aws_route` import IDs are now translated. Terraform state carries an opaque
+  `r-rtb-…` hash, which `pulumi import` rejects; the ID is now composed as
+  `ROUTETABLEID_DESTINATION` from `route_table_id` plus whichever of
+  `destination_cidr_block`, `destination_ipv6_cidr_block`, or
+  `destination_prefix_list_id` is set.
 - Release workflow now derives the Go toolchain from `go.mod` instead of a pinned
   (and stale) version, and uses `actions/checkout@v4`.
 
