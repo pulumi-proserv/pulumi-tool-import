@@ -64,3 +64,21 @@ func TestWriteNonImportableRoundTrips(t *testing.T) {
 	assert.Equal(t, resources[0].ID, readBack.Resources[0].ID)
 	assert.Equal(t, "rtb-0a1b2c3d4e5f60001", readBack.Resources[0].Attributes["route_table_id"])
 }
+
+// A sidecar from an earlier run must not survive a clean one — the operator is
+// directed to use it for state injection, and a stale file describes resources
+// that are now in the import file.
+func TestWriteNonImportableRemovesStaleSidecar(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "imports.non-importable.json")
+
+	require.NoError(t, writeNonImportable(path, []pkg.NonImportableResource{{
+		Type: "aws:ec2/vpnConnectionRoute:VpnConnectionRoute", Name: "route", ID: "id",
+	}}))
+	require.FileExists(t, path)
+
+	require.NoError(t, writeNonImportable(path, nil))
+
+	_, err := os.Stat(path)
+	assert.True(t, os.IsNotExist(err), "an empty result must remove the sidecar, not leave the old one")
+}

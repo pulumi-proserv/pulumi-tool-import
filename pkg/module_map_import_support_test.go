@@ -103,3 +103,34 @@ func TestBuildModuleMapWithoutCheckerFlagsNothing(t *testing.T) {
 
 	assert.False(t, mm.Modules["pet[0]"].Resources[0].NonImportable)
 }
+
+// A digest built without the check must be distinguishable from one where the
+// check ran and found nothing — otherwise "no non-importable resources" and
+// "we never looked" are the same document.
+func TestBuildModuleMapRecordsThatTheCheckRan(t *testing.T) {
+	t.Parallel()
+	mm := buildIndexedModulesMap(t, &stubChecker{verdicts: map[string]importsupport.Support{
+		"random_pet": importsupport.Supported,
+	}})
+	assert.True(t, mm.ImportSupportChecked)
+}
+
+func TestBuildModuleMapRecordsThatTheCheckWasSkipped(t *testing.T) {
+	t.Parallel()
+	mm := buildIndexedModulesMap(t, nil)
+	assert.False(t, mm.ImportSupportChecked)
+}
+
+func buildIndexedModulesMap(t *testing.T, checker ImportSupportChecker) *ModuleMap {
+	t.Helper()
+	tfDir, err := filepath.Abs(filepath.Join("testdata", "tf_indexed_modules"))
+	require.NoError(t, err)
+	config, err := LoadConfig(tfDir)
+	require.NoError(t, err)
+	rawState, err := LoadRawState(filepath.Join(tfDir, "terraform.tfstate"))
+	require.NoError(t, err)
+
+	mm, err := BuildModuleMap(context.Background(), config, nil, rawState, nil, "test-stack", "test-project", checker)
+	require.NoError(t, err)
+	return mm
+}

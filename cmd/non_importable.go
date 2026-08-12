@@ -36,6 +36,15 @@ func nonImportablePath(importFilePath string) string {
 // file, with the import IDs and Terraform attributes needed to put them into
 // state directly.
 func writeNonImportable(path string, resources []pkg.NonImportableResource) error {
+	if len(resources) == 0 {
+		// Nothing to record. Remove any sidecar left by an earlier run rather
+		// than leaving a stale one describing resources that now import fine.
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("removing stale %s: %w", path, err)
+		}
+		return nil
+	}
+
 	doc := struct {
 		Comment   string                      `json:"_comment"`
 		Resources []pkg.NonImportableResource `json:"resources"`

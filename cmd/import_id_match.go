@@ -160,12 +160,21 @@ Examples:
 			}
 			fmt.Fprintf(os.Stderr, "Output written to %s\n", outPath)
 
+			// Always call this: with nothing to record it clears a sidecar
+			// left by an earlier run.
+			sidecarPath := nonImportablePath(outPath)
+			if err := writeNonImportable(sidecarPath, result.NonImportable); err != nil {
+				return fmt.Errorf("writing non-importable resources: %w", err)
+			}
 			if len(result.NonImportable) > 0 {
-				sidecarPath := nonImportablePath(outPath)
-				if err := writeNonImportable(sidecarPath, result.NonImportable); err != nil {
-					return fmt.Errorf("writing non-importable resources: %w", err)
-				}
 				printNonImportableWarning(result.NonImportable, sidecarPath)
+			} else if !digest.ImportSupportChecked {
+				// No resource was flagged, but nothing was checked either —
+				// say so rather than letting silence read as a clean bill.
+				fmt.Fprintf(os.Stderr, "\nNote: this digest was built without checking which resource "+
+					"types support import,\nso resources that cannot be imported were not detected. "+
+					"Re-run \"digest tf\" without\n--skip-import-check to have them found and left out "+
+					"of the import file.\n")
 			}
 
 			return nil

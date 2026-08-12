@@ -39,6 +39,11 @@ type ModuleMap struct {
 	Modules       map[string]*ModuleMapEntry `json:"modules"`
 	RootResources []ModuleResource           `json:"rootResources,omitempty"`
 	Providers     map[string]string          `json:"providers,omitempty"`
+	// ImportSupportChecked records whether resource types were checked for
+	// import support. Without it, a digest built with the check skipped is
+	// indistinguishable from one where the check ran and flagged nothing, and
+	// consumers cannot tell "nothing is non-importable" from "nobody looked".
+	ImportSupportChecked bool `json:"importSupportChecked,omitempty"`
 }
 
 // ModuleResource represents a single resource within a module instance.
@@ -106,7 +111,8 @@ func BuildModuleMap(
 	importChecker ImportSupportChecker,
 ) (*ModuleMap, error) {
 	mm := &ModuleMap{
-		Modules: make(map[string]*ModuleMapEntry),
+		Modules:              make(map[string]*ModuleMapEntry),
+		ImportSupportChecked: importChecker != nil,
 	}
 
 	// Store provider registry addresses for downstream consumers (e.g., patch-state).
