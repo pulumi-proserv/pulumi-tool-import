@@ -17,9 +17,12 @@ digest (tf|cfn)  →  resolve (tf|cfn)  →  import  →  patch-state  →  zero
 ```
 
 - **`digest`** — analyze the source (Terraform state/HCL, or a deployed
-  CloudFormation stack) into an agent-safe JSON sidecar; auto-discovers secrets.
+  CloudFormation stack) into an agent-safe JSON sidecar; auto-discovers secrets,
+  and flags resource types that cannot be imported at all.
 - **`resolve`** — fill a `pulumi preview --import-file` skeleton with the real
-  import IDs, matching source resources to the Pulumi program.
+  import IDs, matching source resources to the Pulumi program; resources that
+  cannot be imported are held back for state injection rather than emitted as
+  entries that are guaranteed to fail.
 - **`import`** — run the import in batches, isolating per-resource failures so one
   run reports every bad import ID.
 - **`patch-state`** — patch imported state with field values the cloud API doesn't
@@ -118,7 +121,17 @@ pulumi plugin run import -- digest tf \
 
 Key flags: `--from` (Terraform root), `--state-file` or the `--hostname/--organization/--workspace/--token-env`
 remote set, `--out`, `--pulumi-project`/`--pulumi-stack` (for URN generation),
-`--project-dir` and `--skip-secrets` (secret handling, below).
+`--project-dir` and `--skip-secrets` (secret handling, below),
+`--skip-import-check` (import support, below).
+
+**Import support.** Some Terraform resource types declare no importer, so no ID
+can ever import them — `pulumi import` fails on them with a misleading
+`resource '<id>' does not exist`. The digest detects these by asking the
+provider directly and marks them `"nonImportable": true`, so `resolve tf` can
+leave them out of the import file. This loads the Terraform provider named in
+`.terraform.lock.hcl`; pass `--skip-import-check` to skip it (no provider
+download, and non-importable types go undetected). See
+[docs/non-importable-resources.md](docs/non-importable-resources.md).
 
 **Secrets.** Sensitive attributes are discovered and set as encrypted Pulumi
 stack-config secrets in `--project-dir`; pass `--skip-secrets` to leave them out.
@@ -182,6 +195,15 @@ modules:
 resources:
   "aws_s3_bucket.my_bucket": "my_bucket"
 ```
+
+**Non-importable resources.** Resources the digest marked `nonImportable` are
+left out of the import file — an entry for them is guaranteed to fail — and
+written instead to a sidecar beside `--out` (`imports-ready.non-importable.json`)
+with the import ID and Terraform attributes needed to put them into state
+directly. Do **not** simply let them be created: they already exist, and for
+association and toggle resources a create against a pre-existing object fails
+partway through the stack. See
+[docs/non-importable-resources.md](docs/non-importable-resources.md).
 
 ## `resolve cfn`
 
