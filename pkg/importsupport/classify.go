@@ -64,10 +64,33 @@ var noImporterMarkers = []string{
 	"Resource Import Not Implemented",
 }
 
-// Classify interprets the outcome of an ImportResourceState probe. A nil error
-// means the probe imported something, so the type is importable. Any other
-// error — a bad probe ID, a missing remote object — also means the type is
-// importable: only the no-importer markers say otherwise.
+// transportFailureMarkers indicate the provider never answered: the plugin
+// died, the connection dropped, the RPC failed. These must not be read as
+// answers. The probe runs an *unconfigured* provider, and a resource whose
+// importer dereferences provider state can take the plugin process down, so a
+// crash is a real possibility rather than a theoretical one — and every probe
+// after it would fail the same way.
+var transportFailureMarkers = []string{
+	"rpc error",
+	"plugin process exited",
+	"transport is closing",
+	"connection refused",
+	"connection reset",
+	"EOF",
+}
+
+// Classify interprets the outcome of an ImportResourceState probe:
+//
+//   - nil error: the probe imported something, so the type is importable.
+//   - a no-importer marker: the type declares no importer.
+//   - a transport failure: the provider never answered, so nothing is known.
+//   - anything else — a bad probe ID, a missing remote object: the provider
+//     engaged with the request, which means the type is importable.
+//
+// Unknown rather than Supported is the safe default for a failed probe:
+// claiming "importable" would let a resource that cannot be imported into the
+// import file and fail the run, which is the failure this package exists to
+// prevent.
 func Classify(err error) Support {
 	if err == nil {
 		return Supported
@@ -76,6 +99,11 @@ func Classify(err error) Support {
 	for _, marker := range noImporterMarkers {
 		if strings.Contains(msg, marker) {
 			return Unsupported
+		}
+	}
+	for _, marker := range transportFailureMarkers {
+		if strings.Contains(msg, marker) {
+			return Unknown
 		}
 	}
 	return Supported

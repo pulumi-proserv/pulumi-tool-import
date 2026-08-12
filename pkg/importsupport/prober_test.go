@@ -16,15 +16,22 @@ package importsupport
 
 import (
 	"context"
+	"errors"
 	"testing"
 
+	"github.com/pulumi-proserv/pulumi-tool-import/pkg/tfprovider"
+	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/vendored/opentofu/providers"
+	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/vendored/opentofu/tfdiags"
 	"github.com/stretchr/testify/assert"
 )
 
-const randomProvider = "registry.terraform.io/hashicorp/random"
+const (
+	randomProvider        = "registry.terraform.io/hashicorp/random"
+	randomProviderVersion = "3.7.2"
+)
 
 func randomProberVersions() map[string]string {
-	return map[string]string{randomProvider: "3.7.2"}
+	return map[string]string{randomProvider: randomProviderVersion}
 }
 
 // random_shuffle declares no importer; random_id does. Both are answered by an
@@ -84,4 +91,67 @@ func TestProberReportsUnknownForUncoveredTypeWhenProviderCannotLoad(t *testing.T
 
 	assert.Equal(t, Unknown,
 		p.Check(ctx, "registry.terraform.io/hashicorp/aws", "aws_s3_bucket"))
+}
+
+// deadProvider stands in for a plugin whose process has died: every call fails
+// at the transport rather than returning a provider diagnostic.
+type deadProvider struct {
+	providers.Interface
+	closed bool
+}
+
+func (d *deadProvider) Name() string    { return "dead" }
+func (d *deadProvider) Version() string { return "0.0.0" }
+
+func (d *deadProvider) Close(context.Context) error {
+	d.closed = true
+	return nil
+}
+
+func (d *deadProvider) ImportResourceState(
+	context.Context, providers.ImportResourceStateRequest,
+) providers.ImportResourceStateResponse {
+	var diags tfdiags.Diagnostics
+	return providers.ImportResourceStateResponse{
+		Diagnostics: diags.Append(errors.New("rpc error: code = Unavailable desc = transport is closing")),
+	}
+}
+
+const awsProvider = "registry.terraform.io/hashicorp/aws"
+
+func proberWithDeadProvider() (*Prober, *deadProvider, *[]string) {
+	dead := &deadProvider{}
+	warnings := &[]string{}
+	p := NewProber(map[string]string{awsProvider: "5.100.0"})
+	p.loadProvider = func(context.Context, string, string) (tfprovider.Provider, error) {
+		return dead, nil
+	}
+	p.Warn = func(msg string) { *warnings = append(*warnings, msg) }
+	return p, dead, warnings
+}
+
+// A dead plugin must not turn every type into "importable" — that would put
+// genuinely non-importable resources back into the import file.
+func TestProberFallsBackWhenTheProviderDies(t *testing.T) {
+	t.Parallel()
+	p, _, warnings := proberWithDeadProvider()
+	defer p.Close(context.Background())
+
+	assert.Equal(t, Unsupported,
+		p.Check(context.Background(), awsProvider, "aws_vpn_gateway_route_propagation"))
+	assert.Equal(t, Unknown,
+		p.Check(context.Background(), awsProvider, "aws_s3_bucket"))
+	assert.NotEmpty(t, *warnings, "a provider that stops responding must be reported")
+}
+
+// The dead handle is dropped rather than reused for every subsequent type.
+func TestProberDiscardsTheDeadProvider(t *testing.T) {
+	t.Parallel()
+	p, dead, _ := proberWithDeadProvider()
+	defer p.Close(context.Background())
+
+	p.Check(context.Background(), awsProvider, "aws_s3_bucket")
+
+	assert.True(t, dead.closed, "the dead provider should be shut down")
+	assert.Empty(t, p.providers, "the dead provider should not stay cached")
 }

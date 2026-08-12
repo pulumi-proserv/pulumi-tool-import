@@ -65,6 +65,34 @@ type NonImportableResource struct {
 	// Attributes are the Terraform state attributes, carried through for
 	// state injection.
 	Attributes map[string]interface{} `json:"attributes,omitempty"`
+	// RedactedAttributes maps each attribute whose value the digest replaced
+	// with a redaction placeholder to the Pulumi stack config key holding the
+	// real value. "digest tf" writes sensitive Terraform state values into
+	// stack config as secrets (unless --skip-secrets), so the value is not
+	// lost — but the copy in Attributes is a placeholder and must be resolved
+	// from config before the resource is written to state, the same way
+	// patch-state resolves sensitive fields.
+	RedactedAttributes map[string]string `json:"redactedAttributes,omitempty"`
+}
+
+// redactedPlaceholder is the value the digest substitutes for attributes
+// Terraform marked sensitive; see redactSensitivePaths.
+const redactedPlaceholder = "(sensitive)"
+
+// redactedAttributeKeys maps every attribute carrying the redaction
+// placeholder to the stack config key where "digest tf" stored its real
+// value. Returns nil when nothing was redacted.
+func redactedAttributeKeys(tfAddress string, attrs map[string]interface{}) map[string]string {
+	var keys map[string]string
+	for name, value := range attrs {
+		if s, ok := value.(string); ok && s == redactedPlaceholder {
+			if keys == nil {
+				keys = map[string]string{}
+			}
+			keys[name] = flattenAddress(tfAddress, name)
+		}
+	}
+	return keys
 }
 
 // FillImportFile matches TF resources from a digest to Pulumi import file entries
@@ -214,14 +242,24 @@ type fillState struct {
 // unless that resource cannot be imported — in which case the entry is dropped
 // and recorded for state injection instead.
 func (s *fillState) assign(entry *ImportEntry, tfRes *ModuleResource) {
+	if s.dropped[entry] {
+		// Already dropped as non-importable. A dropped entry keeps its
+		// <PLACEHOLDER> ID, so the "already filled" guards elsewhere do not
+		// catch it; without this, a second mapping onto the same Pulumi name
+		// would refill the entry and count it as filled while it stays
+		// scheduled for removal — silently turning an importable resource
+		// into a create. First mapping wins, as it does for filled entries.
+		return
+	}
 	if tfRes.NonImportable {
 		s.result.NonImportable = append(s.result.NonImportable, NonImportableResource{
-			Type:             entry.Type,
-			Name:             entry.Name,
-			Parent:           entry.Parent,
-			TerraformAddress: tfRes.TerraformAddress,
-			ID:               tfRes.ImportID,
-			Attributes:       tfRes.Attributes,
+			Type:               entry.Type,
+			Name:               entry.Name,
+			Parent:             entry.Parent,
+			TerraformAddress:   tfRes.TerraformAddress,
+			ID:                 tfRes.ImportID,
+			Attributes:         tfRes.Attributes,
+			RedactedAttributes: redactedAttributeKeys(tfRes.TerraformAddress, tfRes.Attributes),
 		})
 		s.dropped[entry] = true
 		return

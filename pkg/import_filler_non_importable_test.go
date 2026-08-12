@@ -132,3 +132,100 @@ func TestFillImportFileDropsNonImportableMatchedByResourceMapping(t *testing.T) 
 	assert.Equal(t, 0, result.Filled)
 	assert.Equal(t, 0, result.Unmatched)
 }
+
+// Two resource mappings pointing at the same Pulumi name is an authoring
+// mistake, but it must not lose a resource. A dropped entry keeps its
+// <PLACEHOLDER> ID, so without a guard the second mapping refills it: the
+// entry is counted as filled *and* removed from the import file, which is the
+// exact silent-create hazard this feature exists to prevent.
+//
+// Map iteration order decides which mapping is seen first, so both orders are
+// exercised by repetition. Either outcome is acceptable; the invariant is that
+// the entry is filled or dropped, never both.
+func TestFillImportFileNeverFillsAndDropsTheSameEntry(t *testing.T) {
+	t.Parallel()
+
+	for i := 0; i < 50; i++ {
+		digest := &ModuleMap{
+			RootResources: []ModuleResource{
+				{
+					Mode:             "managed",
+					TranslatedURN:    "urn:pulumi:prod::proj::aws:ec2/vpnConnectionRoute:VpnConnectionRoute::shared",
+					TerraformAddress: "aws_vpn_connection_route.blocked",
+					ImportID:         "10.0.0.10/32:vpn-0a1b2c3d4e5f60718",
+					NonImportable:    true,
+				},
+				{
+					Mode:             "managed",
+					TranslatedURN:    "urn:pulumi:prod::proj::aws:ec2/routeTable:RouteTable::shared",
+					TerraformAddress: "aws_route_table.fine",
+					ImportID:         "rtb-0a1b2c3d4e5f60001",
+				},
+			},
+		}
+		importFile := &ImportFile{
+			Resources: []ImportEntry{
+				{Type: "aws:ec2/routeTable:RouteTable", Name: "shared", ID: "<PLACEHOLDER>"},
+			},
+		}
+
+		result := FillImportFile(digest, importFile, nil, map[string]string{
+			"aws_vpn_connection_route.blocked": "shared",
+			"aws_route_table.fine":             "shared",
+		})
+
+		require.Equal(t, 1, result.Filled+len(result.NonImportable),
+			"entry was both filled and dropped (iteration %d)", i)
+		if result.Filled == 1 {
+			assert.Len(t, importFile.Resources, 1, "a filled entry must stay in the import file")
+		} else {
+			assert.Empty(t, importFile.Resources, "a dropped entry must leave the import file")
+		}
+	}
+}
+
+// The digest redacts sensitive top-level attributes to the literal
+// "(sensitive)". Those values must not be presented as injectable: writing
+// "(sensitive)" into stack state gives the resource a wrong value that, for
+// these types, no refresh will ever correct.
+func TestFillImportFileFlagsRedactedAttributes(t *testing.T) {
+	t.Parallel()
+
+	digest := &ModuleMap{
+		RootResources: []ModuleResource{{
+			Mode:             "managed",
+			TranslatedURN:    "urn:pulumi:prod::proj::aws:ec2/vpnConnectionRoute:VpnConnectionRoute::route",
+			TerraformAddress: "aws_vpn_connection_route.route",
+			ImportID:         "10.0.0.10/32:vpn-0a1b2c3d4e5f60718",
+			NonImportable:    true,
+			Attributes: map[string]interface{}{
+				"destination_cidr_block": "10.0.0.10/32",
+				"shared_key":             "(sensitive)",
+			},
+		}},
+	}
+	importFile := &ImportFile{
+		Resources: []ImportEntry{
+			{Type: "aws:ec2/vpnConnectionRoute:VpnConnectionRoute", Name: "route", ID: "<PLACEHOLDER>"},
+		},
+	}
+
+	result := FillImportFile(digest, importFile, nil,
+		map[string]string{"aws_vpn_connection_route.route": "route"})
+
+	require.Len(t, result.NonImportable, 1)
+	// The real value is not lost: "digest tf" already wrote it into Pulumi
+	// stack config as a secret, so the sidecar records where to find it.
+	assert.Equal(t,
+		map[string]string{"shared_key": flattenAddress("aws_vpn_connection_route.route", "shared_key")},
+		result.NonImportable[0].RedactedAttributes)
+}
+
+func TestFillImportFileReportsNoRedactionWhenNoneIsPresent(t *testing.T) {
+	t.Parallel()
+
+	result := FillImportFile(vpnDigest(), vpnImportFile(), map[string]string{"module.net": "net"}, nil)
+
+	require.Len(t, result.NonImportable, 1)
+	assert.Empty(t, result.NonImportable[0].RedactedAttributes)
+}

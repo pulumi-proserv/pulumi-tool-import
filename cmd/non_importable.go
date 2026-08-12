@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg"
@@ -60,9 +61,19 @@ func writeNonImportable(path string, resources []pkg.NonImportableResource) erro
 // becomes a create against live infrastructure.
 func printNonImportableWarning(resources []pkg.NonImportableResource, sidecarPath string) {
 	fmt.Fprintf(os.Stderr, "\n=== %d resource(s) cannot be imported ===\n", len(resources))
+	redacted := 0
 	for _, r := range resources {
 		fmt.Fprintf(os.Stderr, "  %s (%s)\n", r.TerraformAddress, r.Type)
 		fmt.Fprintf(os.Stderr, "      id: %s\n", r.ID)
+		if len(r.RedactedAttributes) > 0 {
+			redacted++
+			names := make([]string, 0, len(r.RedactedAttributes))
+			for name, configKey := range r.RedactedAttributes {
+				names = append(names, fmt.Sprintf("%s (stack config: %s)", name, configKey))
+			}
+			sort.Strings(names)
+			fmt.Fprintf(os.Stderr, "      sensitive, redacted in the digest: %s\n", strings.Join(names, ", "))
+		}
 	}
 	fmt.Fprintf(os.Stderr, "\nTheir Terraform resource types declare no importer, so \"pulumi import\" "+
 		"cannot bring them\ninto state — it fails with a misleading \"resource '<id>' does not exist\" "+
@@ -72,5 +83,13 @@ func printNonImportableWarning(resources []pkg.NonImportableResource, sidecarPat
 		"\"pulumi up\"\nwill try to CREATE them against infrastructure that already exists. That is only "+
 		"safe\nwhen the resource's Create tolerates a pre-existing object, which for association and\n"+
 		"toggle resources it often does not. Write them into the stack's state instead, using the\n"+
-		"IDs and attributes recorded in %s.\n\n", sidecarPath)
+		"IDs and attributes recorded in %s.\n", sidecarPath)
+
+	if redacted > 0 {
+		fmt.Fprintf(os.Stderr, "\n%d of them have sensitive attributes, which the digest redacted to "+
+			"a placeholder.\nResolve each from the stack config key shown above — \"digest tf\" stored the "+
+			"real value\nthere as a secret — before writing it to state. Injecting the placeholder would "+
+			"give the\nresource a wrong value.\n", redacted)
+	}
+	fmt.Fprintln(os.Stderr)
 }

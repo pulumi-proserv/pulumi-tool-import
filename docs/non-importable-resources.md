@@ -72,6 +72,23 @@ entry for them is guaranteed to fail — and writes them to a sidecar next to
 }
 ```
 
+### Sensitive attributes
+
+The digest replaces attributes Terraform marked sensitive with the placeholder
+`(sensitive)`, so the sidecar's `attributes` for those fields are **not real
+values** — injecting them would write `(sensitive)` into state. The real value
+is not lost: `digest tf` stores it in Pulumi stack config as a secret (unless
+`--skip-secrets`). The sidecar records where:
+
+```json
+"redactedAttributes": { "shared_key": "route_shared_key" }
+```
+
+Resolve each from that config key before writing the resource to state, and
+write it with Pulumi's secret envelope rather than in plaintext — the same
+resolution `patch-state` already performs for sensitive fields
+(`configSecrets` in `pkg/state_patcher.go`).
+
 ## What to do with them
 
 Write them into the stack's state directly. These types have working `Read`

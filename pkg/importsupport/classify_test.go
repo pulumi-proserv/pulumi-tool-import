@@ -51,3 +51,26 @@ func TestClassifyNotFoundErrorMeansImportable(t *testing.T) {
 	err := errors.New("Cannot import non-existent remote object")
 	assert.Equal(t, Supported, Classify(err))
 }
+
+// A dead plugin must never read as "importable". The probe runs an
+// unconfigured provider, so a resource whose importer dereferences provider
+// state can crash the plugin; every later probe then fails at the transport
+// and would otherwise be classified Supported, silently letting genuinely
+// non-importable resources into the import file.
+func TestClassifyPluginCrashIsUnknown(t *testing.T) {
+	t.Parallel()
+	err := errors.New("rpc error: code = Unavailable desc = transport is closing")
+	assert.Equal(t, Unknown, Classify(err))
+}
+
+func TestClassifyPluginExitIsUnknown(t *testing.T) {
+	t.Parallel()
+	err := errors.New("plugin process exited: path=/tmp/terraform-provider-aws pid=123")
+	assert.Equal(t, Unknown, Classify(err))
+}
+
+func TestClassifyConnectionFailureIsUnknown(t *testing.T) {
+	t.Parallel()
+	err := errors.New("connection refused")
+	assert.Equal(t, Unknown, Classify(err))
+}

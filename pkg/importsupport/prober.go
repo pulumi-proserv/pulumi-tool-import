@@ -72,6 +72,9 @@ type Prober struct {
 	verdicts  map[string]Support // "provider|type" -> verdict
 	providers map[string]tfprovider.Provider
 	failed    map[string]bool // providers already known not to load
+
+	// loadProvider is tfprovider.LoadProvider, replaced in tests.
+	loadProvider func(ctx context.Context, providerAddr, version string) (tfprovider.Provider, error)
 }
 
 // NewProber returns a Prober that loads each provider at its locked version.
@@ -79,10 +82,11 @@ type Prober struct {
 // from the map is not probed.
 func NewProber(versions map[string]string) *Prober {
 	return &Prober{
-		versions:  versions,
-		verdicts:  map[string]Support{},
-		providers: map[string]tfprovider.Provider{},
-		failed:    map[string]bool{},
+		versions:     versions,
+		verdicts:     map[string]Support{},
+		providers:    map[string]tfprovider.Provider{},
+		failed:       map[string]bool{},
+		loadProvider: tfprovider.LoadProvider,
 		Warn: func(msg string) {
 			fmt.Fprintf(os.Stderr, "Warning: %s\n", msg)
 		},
@@ -117,7 +121,28 @@ func (p *Prober) check(ctx context.Context, providerAddr, tfType string) Support
 		TypeName: tfType,
 		ID:       probeID,
 	})
-	return Classify(resp.Diagnostics.Err())
+
+	err := resp.Diagnostics.Err()
+	verdict := Classify(err)
+	if verdict == Unknown {
+		// The provider never answered — most likely the plugin died. Every
+		// later probe would fail the same way, so stop using this provider
+		// and answer from the curated list instead of reporting nothing.
+		p.Warn(fmt.Sprintf("Terraform provider %s stopped responding while checking import support "+
+			"for %s (%v); falling back to the curated list of non-importable types", providerAddr, tfType, err))
+		p.discard(ctx, providerAddr)
+		return p.fallback(tfType)
+	}
+	return verdict
+}
+
+// discard shuts down a provider and marks it unusable. The caller holds p.mu.
+func (p *Prober) discard(ctx context.Context, providerAddr string) {
+	if provider, ok := p.providers[providerAddr]; ok {
+		_ = provider.Close(ctx)
+		delete(p.providers, providerAddr)
+	}
+	p.failed[providerAddr] = true
 }
 
 // provider returns a running provider, loading it on first use. The caller
@@ -138,7 +163,7 @@ func (p *Prober) provider(ctx context.Context, providerAddr string) (tfprovider.
 		return nil, false
 	}
 
-	provider, err := tfprovider.LoadProvider(ctx, providerAddr, version)
+	provider, err := p.loadProvider(ctx, providerAddr, version)
 	if err != nil {
 		p.failed[providerAddr] = true
 		p.Warn(fmt.Sprintf("could not load Terraform provider %s %s to check import support: %v",
