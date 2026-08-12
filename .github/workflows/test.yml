@@ -1,0 +1,48 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  AWS_REGION: us-west-2
+  PULUMI_CONFIG_PASSPHRASE: 123456
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Run Go Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Pulumi
+        uses: pulumi/actions@8582a9e8cc630786854029b4e09281acd6794b58 # v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Set up OpenTofu
+        uses: opentofu/setup-opentofu@9d84900f3238fab8cd84ce47d658d25dd008be2f # v1
+
+      - name: Setup local Pulumi backend
+        run: |
+          pulumi login --local
+
+      - name: Warmup pulumi new
+        # TODO[pulumi/pulumi#21285]
+        run: |
+          mkdir /tmp/project
+          pulumi new typescript --dir /tmp/project --yes
+
+      - name: Run tests
+        run: go test -v ./...

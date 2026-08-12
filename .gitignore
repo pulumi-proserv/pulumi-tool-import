@@ -1,0 +1,17 @@
+bin
+dist
+.terraform
+**/terraform.tfstate.backup
+pulumi-tool-import
+**/.terraform.lock.hcl
+# ...but keep committed lockfile fixtures that tests depend on
+!**/testdata/**/.terraform.lock.hcl
+
+# Local direnv config (copy from .envrc.example)
+.envrc
+
+go.work
+go.work.sum
+test-results/
+.clj-kondo/
+.lsp/

@@ -1,0 +1,34 @@
+&cfn.StackDigest{
+	StackName: "ffs-dev", Region: "us-east-1",
+	Resources: []cfn.CfnResource{
+		{
+			LogicalID:  "ApiPermission",
+			CfnType:    "AWS::Lambda::Permission",
+			PulumiType: "aws:lambda/permission:Permission",
+			PhysicalID: "ffs-dev-api-AllowApiGw",
+			Region:     "us-east-1",
+			Attributes: map[string]interface{}{
+				"FunctionName": "ffs-dev-api",
+				"Id":           "AllowApiGw",
+			},
+			DerivedName: "ffs-dev-api-AllowApiGw",
+		},
+		{
+			LogicalID:   "ApiHandler",
+			CfnType:     "AWS::Lambda::Function",
+			PulumiType:  "aws:lambda/function:Function",
+			PhysicalID:  "ffs-dev-api",
+			Region:      "us-east-1",
+			Attributes:  map[string]interface{}{"Id": "ffs-dev-api"},
+			DerivedName: "ffs-dev-api",
+		},
+		{
+			LogicalID:  "MetaData",
+			CfnType:    "AWS::CDK::Metadata",
+			PhysicalID: "n/a",
+			Region:     "us-east-1",
+			Skipped:    true,
+			SkipReason: "CFN-only/CDK resource",
+		},
+	},
+}

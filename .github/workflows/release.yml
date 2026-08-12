@@ -1,0 +1,35 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write # keyless cosign signing via Sigstore OIDC
+
+jobs:
+  publish:
+    name: Publish
+    runs-on: macos-latest
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+      - name: Unshallow clone for tags
+        run: git fetch --prune --unshallow --tags || true
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean -p 10 -f .goreleaser.yml --skip=validate --timeout 60m0s
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

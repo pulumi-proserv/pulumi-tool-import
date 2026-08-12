@@ -1,0 +1,14 @@
+# gitleaks configuration for pulumi-tool-import.
+# Extends the default ruleset and allowlists known-benign matches.
+title = "pulumi-tool-import"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Pulumi public state sentinel constants (secret/asset/archive markers written into every Pulumi state file; not credentials)"
+regexes = [
+  '''4dabf18193072939515e22adb298388d''',
+  '''c44067f5952c0a294b673a41bacd8c17''',
+  '''0def7320c3a5731c473e5ecbe6d01bc7''',
+]
