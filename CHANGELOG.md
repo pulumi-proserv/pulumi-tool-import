@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Detection of resource types that cannot be imported.** Terraform types that
+  declare no importer fail `pulumi import` with a misleading "resource '<id>'
+  does not exist", and dropping them from the import file silently turns them
+  into creates against existing infrastructure. `digest tf` now asks the
+  provider itself (via `ImportResourceState`, unconfigured and credential-free)
+  and flags them `nonImportable`; `resolve tf` leaves them out of the import
+  file, records them in a `*.non-importable.json` sidecar for state injection,
+  and warns. Opt out with `digest tf --skip-import-check`. See
+  [docs/non-importable-resources.md](docs/non-importable-resources.md).
 - Production-readiness scaffolding: `golangci-lint` config, `Makefile`, Dependabot
   config, CI lint / `go vet` / gofmt / `govulncheck` jobs, and community/governance
   files (`CONTRIBUTING`, `SECURITY`, `CODE_OF_CONDUCT`, issue/PR templates,
