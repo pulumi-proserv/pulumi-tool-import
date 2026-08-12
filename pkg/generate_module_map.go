@@ -21,6 +21,7 @@ import (
 	"os"
 
 	tfjson "github.com/hashicorp/terraform-json"
+	"github.com/pulumi-proserv/pulumi-tool-import/pkg/importsupport"
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/providermap"
 	tfcpkg "github.com/pulumi-proserv/pulumi-tool-import/pkg/tfc"
 	tofuutil "github.com/pulumi-proserv/pulumi-tool-import/pkg/tofu"
@@ -48,7 +49,7 @@ type SecretsOptions struct {
 	Skip        bool
 }
 
-func GenerateModuleMap(ctx context.Context, tfDir, stateFilePath, outputPath, stackName, projectName string, remote *RemoteStateOptions, secrets *SecretsOptions) error {
+func GenerateModuleMap(ctx context.Context, tfDir, stateFilePath, outputPath, stackName, projectName string, remote *RemoteStateOptions, secrets *SecretsOptions, checkImportSupport bool) error {
 	if stateFilePath != "" && remote != nil {
 		return fmt.Errorf("stateFilePath and remote are mutually exclusive")
 	}
@@ -161,9 +162,27 @@ func GenerateModuleMap(ctx context.Context, tfDir, stateFilePath, outputPath, st
 		evalScopes, _ = BuildEvalScopes(ctx, tofuCtx, config, rawState, rootVars)
 	}
 
+	// Step 5c: Prepare the import-support check. Terraform resource types that
+	// declare no importer cannot be imported at all, and an import file that
+	// includes them fails mid-run; flagging them here lets resolve leave them
+	// out. The provider itself is the only source for this — see
+	// pkg/importsupport.
+	var importChecker ImportSupportChecker
+	if checkImportSupport {
+		fmt.Fprintf(os.Stderr, "[5c/7] Checking which resource types support import...\n")
+		lockedVersions, lockErr := tofuutil.LockedProviderVersions(tfDir)
+		if lockErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not read provider lock file: %v\n", lockErr)
+			lockedVersions = nil
+		}
+		prober := importsupport.NewProber(lockedVersions)
+		defer prober.Close(ctx)
+		importChecker = prober
+	}
+
 	// Step 6: Build the module map.
 	fmt.Fprintf(os.Stderr, "[6/7] Building module map...\n")
-	mm, err := BuildModuleMap(config, evalScopes, rawState, pulumiProviders, stackName, projectName)
+	mm, err := BuildModuleMap(ctx, config, evalScopes, rawState, pulumiProviders, stackName, projectName, importChecker)
 	if err != nil {
 		return fmt.Errorf("building module map: %w", err)
 	}

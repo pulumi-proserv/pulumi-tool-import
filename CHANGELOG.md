@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Detection of resource types that cannot be imported.** Terraform types that
+  declare no importer fail `pulumi import` with a misleading "resource '<id>'
+  does not exist", and dropping them from the import file silently turns them
+  into creates against existing infrastructure. `digest tf` now asks the
+  provider itself (via `ImportResourceState`, unconfigured and credential-free)
+  and flags them `nonImportable`; `resolve tf` leaves them out of the import
+  file, records them in a `*.non-importable.json` sidecar for state injection,
+  and warns. Opt out with `digest tf --skip-import-check`. See
+  [docs/non-importable-resources.md](docs/non-importable-resources.md).
 - Production-readiness scaffolding: `golangci-lint` config, `Makefile`, Dependabot
   config, CI lint / `go vet` / gofmt / `govulncheck` jobs, and community/governance
   files (`CONTRIBUTING`, `SECURITY`, `CODE_OF_CONDUCT`, issue/PR templates,
@@ -22,6 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   need neither Pulumi Cloud nor AWS credentials).
 - `aws-import-diff-fields.json` moved to `data/`.
 - CI now runs on pushes to the default branch (previously `pull_request` only).
+- The test workflow caches provider downloads (`~/.pulumi/plugins`,
+  `~/.pulumi/dynamic_tf_plugins`, `~/.pulumi/mapping-cache`) and enables the
+  Terraform plugin cache, so runs no longer re-download every Pulumi plugin,
+  bridge mapping, and Terraform provider. These downloads are the job's least
+  reliable step — transient registry 503s and GitHub release timeouts have
+  failed runs with nothing wrong in them.
 
 ### Fixed
 - Release workflow now derives the Go toolchain from `go.mod` instead of a pinned

@@ -37,6 +37,7 @@ func buildTfDigestCommand(use string, hidden bool) *cobra.Command {
 	var tokenEnv string
 	var projectDir string
 	var skipSecrets bool
+	var skipImportCheck bool
 	var runtime string
 
 	cmd := &cobra.Command{
@@ -131,7 +132,7 @@ Examples:
 				Skip:        skipSecrets,
 			}
 
-			err := pkg.GenerateModuleMap(cmd.Context(), from, stateFile, out, pulumiStack, pulumiProject, remote, secretsOpts)
+			err := pkg.GenerateModuleMap(cmd.Context(), from, stateFile, out, pulumiStack, pulumiProject, remote, secretsOpts, !skipImportCheck)
 			if err != nil {
 				// Enrich authentication errors with the env var name for user guidance.
 				if remote != nil && strings.Contains(err.Error(), "authentication failed") {
@@ -155,6 +156,7 @@ Examples:
 	cmd.Flags().StringVar(&projectDir, "project-dir", ".", "Path to the Pulumi project directory (for setting secrets)")
 	cmd.Flags().BoolVar(&skipSecrets, "skip-secrets", false, "Skip setting sensitive attributes as Pulumi config secrets")
 	cmd.Flags().StringVar(&runtime, "runtime", "", "Pulumi runtime to use when creating Pulumi.yaml (e.g. nodejs, python, go, yaml)")
+	cmd.Flags().BoolVar(&skipImportCheck, "skip-import-check", false, "Skip checking which Terraform resource types support import (avoids downloading Terraform providers)")
 
 	cmd.MarkFlagRequired("from")
 	cmd.MarkFlagRequired("out")

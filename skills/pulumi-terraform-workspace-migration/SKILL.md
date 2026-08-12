@@ -1,6 +1,6 @@
 ---
 name: pulumi-terraform-workspace-migration
-description: Orchestrate a full Terraform workspace migration (state + HCL config) to a hand-authored Pulumi TypeScript program, driven node-by-node to a zero-diff preview. Covers digesting TF state safely with `tf-digest`, mapping modules to Pulumi components, generating and filling the import file with `import-id-match`, importing (including batched imports), eliminating post-import diffs with `patch-state`, classifying the diffs that remain, migrating secrets to encrypted stack config and ESC, and staging the first `pulumi up`. Use when migrating a Terraform workspace to Pulumi, importing Terraform-managed resources into Pulumi state, investigating a post-import diff, or replacing `terraform_remote_state` cross-stack references. Companion skills - pulumi-terraform-module-to-component and pulumi-component-authoring.
+description: Orchestrate a full Terraform workspace migration (state + HCL config) to a hand-authored Pulumi TypeScript program, driven node-by-node to a zero-diff preview. Covers digesting TF state safely with `tf-digest`, mapping modules to Pulumi components, generating and filling the import file with `import-id-match`, handling resource types that cannot be imported at all, importing (including batched imports), eliminating post-import diffs with `patch-state`, classifying the diffs that remain, migrating secrets to encrypted stack config and ESC, and staging the first `pulumi up`. Use when migrating a Terraform workspace to Pulumi, importing Terraform-managed resources into Pulumi state, investigating a post-import diff, or replacing `terraform_remote_state` cross-stack references. Companion skills - pulumi-terraform-module-to-component and pulumi-component-authoring.
 ---
 
 # Terraform workspace → Pulumi migration
@@ -113,6 +113,15 @@ TF state and sets it as an encrypted Pulumi config secret via
 `pulumi config set --secret`; `--project-dir` tells it where the Pulumi project
 lives. The agent never sees the values. Pass `--skip-secrets` to disable this
 (e.g. re-running the digest without overwriting existing secrets).
+
+**Import support is checked here too.** Some Terraform resource types declare no
+importer — `aws_vpn_gateway_route_propagation`, `aws_vpn_connection_route`,
+`aws_iam_policy_attachment` and other association/toggle resources — and no ID
+can import them. The digest asks the provider directly and marks them
+`"nonImportable": true`, so Phase 4 can keep them out of the import file instead
+of failing the run. This loads the Terraform provider pinned in
+`.terraform.lock.hcl`, so run `terraform init` (or `tofu init`) first;
+`--skip-import-check` skips it, at the cost of not detecting them.
 
 ### 1b. Read the digest — and only the digest
 
@@ -281,6 +290,16 @@ Tips:
 Generating the import skeleton, writing `mappings.yaml`, filling IDs with
 `import-id-match`, multi-provider setup, and batched imports:
 **`references/import-mechanics.md`**.
+
+**Resources that cannot be imported.** `import-id-match` drops any resource the
+digest flagged `nonImportable` and records it in a `*.non-importable.json`
+sidecar next to the output. These resources **already exist**, so letting the
+next `pulumi up` create them is not a safe fallback — for association and toggle
+resources the create fails against the pre-existing object and dies partway
+through the stack. Write them into state from the sidecar instead, and verify
+with `pulumi preview` reporting zero operations; `pulumi refresh` reporting
+"unchanged" only proves the IDs resolve, not that the values are right. Full
+background: **`docs/non-importable-resources.md`** in the tool repo.
 
 Eliminating the diffs that survive import with `patch-state` (including falsy
 default suppression and how to tell that a field simply needs adding to the

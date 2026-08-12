@@ -25,6 +25,7 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/bridge"
+	"github.com/pulumi-proserv/pulumi-tool-import/pkg/importsupport"
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/providermap"
 	"github.com/pulumi/opentofu/addrs"
 	"github.com/pulumi/opentofu/configs"
@@ -38,6 +39,11 @@ type ModuleMap struct {
 	Modules       map[string]*ModuleMapEntry `json:"modules"`
 	RootResources []ModuleResource           `json:"rootResources,omitempty"`
 	Providers     map[string]string          `json:"providers,omitempty"`
+	// ImportSupportChecked records whether resource types were checked for
+	// import support. Without it, a digest built with the check skipped is
+	// indistinguishable from one where the check ran and flagged nothing, and
+	// consumers cannot tell "nothing is non-importable" from "nobody looked".
+	ImportSupportChecked bool `json:"importSupportChecked,omitempty"`
 }
 
 // ModuleResource represents a single resource within a module instance.
@@ -47,6 +53,19 @@ type ModuleResource struct {
 	TerraformAddress string                 `json:"terraformAddress"`
 	ImportID         string                 `json:"importId"`
 	Attributes       map[string]interface{} `json:"attributes,omitempty"`
+	// NonImportable marks a resource whose Terraform type declares no importer.
+	// "pulumi import" cannot bring it into state — the attempt fails with a
+	// misleading "resource '<id>' does not exist" — so resolve leaves it out of
+	// the import file rather than emitting an entry guaranteed to fail.
+	NonImportable bool `json:"nonImportable,omitempty"`
+}
+
+// ImportSupportChecker reports whether a Terraform resource type can be
+// imported. providerAddr is the full provider source address (e.g.
+// "registry.terraform.io/hashicorp/aws"). Implemented by
+// *importsupport.Prober.
+type ImportSupportChecker interface {
+	Check(ctx context.Context, providerAddr, tfType string) importsupport.Support
 }
 
 // ModuleMapEntry represents a single module instance in the module map.
@@ -80,16 +99,20 @@ type ModuleInterfaceField struct {
 // BuildModuleMap constructs a ModuleMap from Terraform configuration and state.
 // tofuCtx and state may be nil if evaluation is not available.
 // pulumiProviders may be nil if URN generation should fall back to raw addresses.
+// importChecker may be nil to skip flagging non-importable resource types.
 func BuildModuleMap(
+	ctx context.Context,
 	config *configs.Config,
 	evalScopes *EvalScopes,
 	state *states.State,
 	pulumiProviders map[providermap.TerraformProviderName]*ProviderWithMetadata,
 	stackName string,
 	projectName string,
+	importChecker ImportSupportChecker,
 ) (*ModuleMap, error) {
 	mm := &ModuleMap{
-		Modules: make(map[string]*ModuleMapEntry),
+		Modules:              make(map[string]*ModuleMapEntry),
+		ImportSupportChecked: importChecker != nil,
 	}
 
 	// Store provider registry addresses for downstream consumers (e.g., patch-state).
@@ -101,7 +124,7 @@ func BuildModuleMap(
 	}
 
 	fmt.Fprintf(os.Stderr, "  Building module entries...\n")
-	err := buildModuleMapLevel(mm.Modules, config, evalScopes, state, pulumiProviders, stackName, projectName, nil) //nolint:lll
+	err := buildModuleMapLevel(ctx, mm.Modules, config, evalScopes, state, pulumiProviders, stackName, projectName, nil, importChecker) //nolint:lll
 	if err != nil {
 		return nil, err
 	}
@@ -109,7 +132,7 @@ func BuildModuleMap(
 
 	// Collect root-level resources (empty segments = root module).
 	fmt.Fprintf(os.Stderr, "  Matching root-level resources...\n")
-	rootResources := matchResources(state, nil, pulumiProviders, stackName, projectName)
+	rootResources := matchResources(ctx, state, nil, pulumiProviders, stackName, projectName, importChecker)
 	if len(rootResources) > 0 {
 		mm.RootResources = rootResources
 	}
@@ -121,6 +144,7 @@ func BuildModuleMap(
 // buildModuleMapLevel processes one level of module calls and recurses into children.
 // parentSegments tracks the module path prefix for nested modules.
 func buildModuleMapLevel(
+	ctx context.Context,
 	target map[string]*ModuleMapEntry,
 	config *configs.Config,
 	evalScopes *EvalScopes,
@@ -129,6 +153,7 @@ func buildModuleMapLevel(
 	stackName string,
 	projectName string,
 	parentSegments []moduleSegment,
+	importChecker ImportSupportChecker,
 ) error {
 	if config == nil || config.Module == nil {
 		return nil
@@ -157,7 +182,7 @@ func buildModuleMapLevel(
 				TerraformPath: buildModulePath(segments),
 				Source:        call.SourceAddrRaw,
 				IndexKey:      inst.key,
-				Resources:     matchResources(state, segments, pulumiProviders, stackName, projectName),
+				Resources:     matchResources(ctx, state, segments, pulumiProviders, stackName, projectName, importChecker),
 			}
 			fmt.Fprintf(os.Stderr, "      %s: %d resources\n", mapKey, len(entry.Resources))
 
@@ -187,8 +212,8 @@ func buildModuleMapLevel(
 			if childConfig != nil && len(childConfig.Module.ModuleCalls) > 0 {
 				entry.Modules = make(map[string]*ModuleMapEntry)
 				err := buildModuleMapLevel(
-					entry.Modules, childConfig, evalScopes, state,
-					pulumiProviders, stackName, projectName, segments,
+					ctx, entry.Modules, childConfig, evalScopes, state,
+					pulumiProviders, stackName, projectName, segments, importChecker,
 				)
 				if err != nil {
 					return err
@@ -268,11 +293,13 @@ func discoverModuleInstances(state *states.State, parentSegments []moduleSegment
 // matchResources finds resources in raw state that belong to the given module instance
 // and returns ModuleResource entries with URN, Terraform address, and import ID.
 func matchResources(
+	ctx context.Context,
 	state *states.State,
 	segments []moduleSegment,
 	pulumiProviders map[providermap.TerraformProviderName]*ProviderWithMetadata,
 	stackName string,
 	projectName string,
+	importChecker ImportSupportChecker,
 ) []ModuleResource {
 	var resources []ModuleResource
 	modulePath := buildModulePath(segments)
@@ -330,6 +357,12 @@ func matchResources(
 						TranslatedURN:    urn,
 						TerraformAddress: address,
 						ImportID:         importID,
+					}
+
+					// Only managed resources are ever imported, so only they
+					// are worth checking.
+					if mode == "managed" && importChecker != nil {
+						mr.NonImportable = importChecker.Check(ctx, providerName, resourceType) == importsupport.Unsupported
 					}
 
 					// Include attributes, redacting sensitive paths from state.
