@@ -27,6 +27,9 @@ jobs:
         with:
           distribution: goreleaser
           version: "~> v2"
-          args: release --clean -p 10 -f .goreleaser.yml --skip=validate --timeout 60m0s
+          # -p 2: build 2 targets at a time. This binary pulls a huge dep tree
+          # (OpenTofu, terraform-bridge, AWS SDK v1+v2, Pulumi SDK); building all
+          # 6 targets concurrently (-p 10) OOM-killed the 16GB runner.
+          args: release --clean -p 2 -f .goreleaser.yml --skip=validate --timeout 60m0s
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
