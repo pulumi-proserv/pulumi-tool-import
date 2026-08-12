@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-12
+
 ### Added
 - **Detection of resource types that cannot be imported.** Terraform types that
   declare no importer fail `pulumi import` with a misleading "resource '<id>'
@@ -17,6 +19,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   file, records them in a `*.non-importable.json` sidecar for state injection,
   and warns. Opt out with `digest tf --skip-import-check`. See
   [docs/non-importable-resources.md](docs/non-importable-resources.md).
+
+### Fixed
+- `aws_route` import IDs are now translated. Terraform state carries an opaque
+  `r-rtb-…` hash, which `pulumi import` rejects; the ID is now composed as
+  `ROUTETABLEID_DESTINATION` from `route_table_id` plus whichever of
+  `destination_cidr_block`, `destination_ipv6_cidr_block`, or
+  `destination_prefix_list_id` is set.
+
+### Changed
+- The test workflow caches provider downloads (`~/.pulumi/plugins`,
+  `~/.pulumi/dynamic_tf_plugins`, `~/.pulumi/mapping-cache`) and enables the
+  Terraform plugin cache, so runs no longer re-download every Pulumi plugin,
+  bridge mapping, and Terraform provider. These downloads are the job's least
+  reliable step — transient registry 503s and GitHub release timeouts have
+  failed runs with nothing wrong in them.
+
+## [0.1.0] - 2026-08-12
+
+First release under the new repository.
+
+### Added
 - Production-readiness scaffolding: `golangci-lint` config, `Makefile`, Dependabot
   config, CI lint / `go vet` / gofmt / `govulncheck` jobs, and community/governance
   files (`CONTRIBUTING`, `SECURITY`, `CODE_OF_CONDUCT`, issue/PR templates,
@@ -31,19 +54,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   need neither Pulumi Cloud nor AWS credentials).
 - `aws-import-diff-fields.json` moved to `data/`.
 - CI now runs on pushes to the default branch (previously `pull_request` only).
-- The test workflow caches provider downloads (`~/.pulumi/plugins`,
-  `~/.pulumi/dynamic_tf_plugins`, `~/.pulumi/mapping-cache`) and enables the
-  Terraform plugin cache, so runs no longer re-download every Pulumi plugin,
-  bridge mapping, and Terraform provider. These downloads are the job's least
-  reliable step — transient registry 503s and GitHub release timeouts have
-  failed runs with nothing wrong in them.
 
 ### Fixed
-- `aws_route` import IDs are now translated. Terraform state carries an opaque
-  `r-rtb-…` hash, which `pulumi import` rejects; the ID is now composed as
-  `ROUTETABLEID_DESTINATION` from `route_table_id` plus whichever of
-  `destination_cidr_block`, `destination_ipv6_cidr_block`, or
-  `destination_prefix_list_id` is set.
 - Release workflow now derives the Go toolchain from `go.mod` instead of a pinned
   (and stale) version, and uses `actions/checkout@v4`.
 
@@ -52,3 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it (~5,300 LOC). The tool now focuses solely on the `pulumi import` workflow.
 - Committed `.envrc` containing a developer-specific AWS profile (replaced with
   `.envrc.example`).
+
+[Unreleased]: https://github.com/pulumi-proserv/pulumi-tool-import/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/pulumi-proserv/pulumi-tool-import/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/pulumi-proserv/pulumi-tool-import/releases/tag/v0.1.0
