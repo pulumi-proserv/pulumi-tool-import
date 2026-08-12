@@ -34,6 +34,35 @@ jobs:
       - name: Set up OpenTofu
         uses: opentofu/setup-opentofu@9d84900f3238fab8cd84ce47d658d25dd008be2f # v1
 
+      # The tests download a lot: Pulumi provider plugins, bridge mappings, and
+      # Terraform provider binaries. Those downloads are the slowest and by far
+      # the least reliable part of this job — transient 503s and timeouts from
+      # the registries and from GitHub release assets have failed runs that had
+      # nothing wrong with them. Restoring the caches removes most of that
+      # surface; a miss just downloads as before.
+      - name: Cache provider downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.pulumi/plugins
+            ~/.pulumi/dynamic_tf_plugins
+            ~/.pulumi/mapping-cache
+            ~/.terraform.d/plugin-cache
+          # Provider versions come from the providermap and the test fixtures,
+          # not from go.sum alone, so all three feed the key. restore-keys lets
+          # a run reuse a slightly stale cache rather than starting cold.
+          key: providers-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/providermap/**', '**/.terraform.lock.hcl') }}
+          restore-keys: |
+            providers-${{ runner.os }}-
+
+      - name: Enable the Terraform plugin cache
+        # Lets "tofu init" reuse provider binaries across runs instead of
+        # downloading them into every temporary fixture directory. OpenTofu
+        # errors rather than creating the directory itself.
+        run: |
+          echo "TF_PLUGIN_CACHE_DIR=$HOME/.terraform.d/plugin-cache" >> "$GITHUB_ENV"
+          mkdir -p "$HOME/.terraform.d/plugin-cache"
+
       - name: Setup local Pulumi backend
         run: |
           pulumi login --local

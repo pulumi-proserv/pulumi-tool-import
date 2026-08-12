@@ -31,6 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   need neither Pulumi Cloud nor AWS credentials).
 - `aws-import-diff-fields.json` moved to `data/`.
 - CI now runs on pushes to the default branch (previously `pull_request` only).
+- The test workflow caches provider downloads (`~/.pulumi/plugins`,
+  `~/.pulumi/dynamic_tf_plugins`, `~/.pulumi/mapping-cache`) and enables the
+  Terraform plugin cache, so runs no longer re-download every Pulumi plugin,
+  bridge mapping, and Terraform provider. These downloads are the job's least
+  reliable step — transient registry 503s and GitHub release timeouts have
+  failed runs with nothing wrong in them.
 
 ### Fixed
 - Release workflow now derives the Go toolchain from `go.mod` instead of a pinned
