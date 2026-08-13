@@ -71,9 +71,19 @@ by hand — both are wrong here). Communicate the adjusted plan before proceedin
 
 - **Cloud credentials.** Run AWS-touching commands with your credential wrapper
   (e.g. `pulumi env run <esc-env> -- <cmd>` for ESC/OIDC).
-- **The migration tool** — `pulumi-tool-import`
-  (`pulumi plugin run import -- <cmd>`, or build with
-  `go build -o bin/pulumi-tool-import .`). Provides `digest cfn`,
+- **The migration tool** — `pulumi-tool-import`. Install it from the repo's
+  GitHub releases, then invoke as `pulumi plugin run import -- <cmd>`:
+
+  ```bash
+  pulumi plugin install tool import \
+    --server github://api.github.com/pulumi-proserv/pulumi-tool-import
+  ```
+
+  With no version it installs the latest release; append a version (e.g.
+  `tool import v0.2.0`) to pin one. The `github://api.github.com/<owner>/<repo>`
+  form is required — a plain `https://github.com/...` server 404s. Confirm with
+  `pulumi plugin run import -- version`. Or build with
+  `go build -o bin/pulumi-tool-import .`. Provides `digest cfn`,
   `resolve cfn`, `patch-state cfn`, `set-secrets`. `patch-state cfn` needs the
   curated `aws-import-diff-fields.json` that ships with the tool.
 - **`pulumi` CLI**, with the latest `@pulumi/aws` in the project.
