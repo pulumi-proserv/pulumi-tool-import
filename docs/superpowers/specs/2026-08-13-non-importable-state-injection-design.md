@@ -41,8 +41,11 @@ In scope: injection of sidecar resources into an exported deployment; stack mode
 export/import/preview so no hand-run `pulumi` steps remain; structural verification via the
 engine's own integrity check; preview-based value verification with revert on disagreement.
 
-Out of scope: reconstructing `dependencies` edges (see Known gaps); synthesizing
-`__pulumi_raw_state_delta` (see Findings); CFN support — this is the `tf` subcommand only.
+Also in scope: a new `Dependencies` field on the digest, since dependency edges have to be
+captured at digest time to be available at injection time.
+
+Out of scope: synthesizing `__pulumi_raw_state_delta` (see Findings); CFN support — this is the
+`tf` subcommand only.
 
 ## Findings that shaped the design
 
@@ -191,7 +194,7 @@ Per matched sidecar entry, one `custom: true` object appended to `deployment.res
 | `inputs` | the program's inputs from the preview step, plus `__defaults: []` |
 | `outputs` | every sidecar attribute, TF name → Pulumi name |
 | `__pulumi_raw_state_delta` | omitted — see Findings |
-| `dependencies` | omitted — see Known gaps |
+| `dependencies` | digest, translated to URNs — see below |
 
 **Property name mapping is reuse, not new code.** `GetSchemaFieldInfo` (`pkg/schema_fields.go:72`)
 gives `TFName → PulumiName`, and `LookupProviderForPulumiType` (`:125`) finds the provider for a
@@ -210,10 +213,35 @@ config and written inside Pulumi's secret envelope, reusing the `configSecrets` 
 and `--stack`, or the key is absent from config — the command **fails**. Injecting the
 placeholder would write a known-wrong value into state, which is worse than refusing.
 
+**Dependencies come from the digest.** Terraform records each instance's dependency edges at
+apply time, from real config references. They are available as
+`ResourceInstanceObjectSrc.Dependencies` (`opentofu/states/instance_object_src.go:65`) on
+`inst.Current`, exactly where `digest tf` builds each `ModuleResource`
+(`pkg/module_map.go:355`). So they are read, not inferred:
+
+1. `ModuleResource` gains a `Dependencies []string` field holding Terraform config addresses.
+   `digest tf` populates it. A digest produced before this change simply lacks the field, and
+   injection then omits dependency edges — graceful degradation, no error.
+2. At injection, each address is resolved to the URN of the corresponding resource in the
+   deployment, through the same digest↔state correspondence `BuildDigestNameMap`
+   (`pkg/state_patcher.go:307`) already computes for the patch half. Injection needs the
+   inverse direction of that map.
+3. An edge that does not resolve is dropped, with a warning naming the address. A missing edge
+   costs delete ordering; a fabricated one breaks `VerifyIntegrity`.
+
+Two properties of this data to keep in mind. Terraform stores **config** addresses
+(`aws_route_table.rt`), not instance addresses (`aws_route_table.rt[0]`), so for counted and
+`for_each` resources one recorded edge expands to every instance of that address. The result is
+a superset of the true edges — conservative in the safe direction for delete ordering, but it
+is an over-approximation and should not be described as exact. And edges pointing at data
+sources or at resources outside the migrated scope will not resolve, which is what step 3 is
+for.
+
 **Ordering.** Injected entries are inserted so that each appears after its parent and after any
-injected resource it depends on, because `VerifyIntegrity` rejects forward references. Rather
-than reason about this per case, the output is validated by `VerifyIntegrity` before being
-written or imported, in both modes.
+injected resource it depends on, because `VerifyIntegrity` rejects forward references. With
+dependency edges now present, this ordering is a topological sort over the injected set rather
+than an append. The output is validated by `VerifyIntegrity` before being written or imported,
+in both modes.
 
 ### Verification
 
@@ -239,13 +267,14 @@ leaving it as a documented step.
 
 ## Known gaps
 
-**`dependencies` is not populated.** `StepEventStateMetadata` does not carry dependency edges,
-and reconstructing them by matching attribute values against existing resource IDs is exactly
-the brittle heuristic this design avoids. The consequence is bounded: the first `pulumi up`
-re-registers each resource from the program and rewrites its dependencies, and verification is
-unaffected because the engine diffs inputs, not dependency metadata. The exposure is a
-`destroy` run *before* any `up`, where delete ordering among injected resources would be
-unconstrained. This is documented, not worked around.
+**Dependency edges are an over-approximation, and only as good as the digest.**
+`StepEventStateMetadata` carries no dependency edges, so they come from the digest instead.
+Terraform's config-level granularity means counted resources get a superset of their true
+edges, and a digest predating the new field yields none at all. Neither case affects
+verification — the engine diffs inputs, not dependency metadata — and the first `pulumi up`
+re-registers each resource from the program and rewrites its dependencies from the source of
+truth. The residual exposure is a `destroy` run *before* any `up`, where delete ordering would
+rest on whatever edges resolved.
 
 **Stack mode requires a runnable program and credentials.** Unavoidable — preview executes the
 program. File mode covers the air-gapped case.
@@ -263,7 +292,11 @@ Unit tests over fixture deployments in `pkg/testdata`:
 - TF → Pulumi property name mapping, and the input/output split;
 - secret resolution from config, and the failure when a redacted attribute cannot be resolved;
 - `__defaults: []` present, delta absent;
-- ordering, with a `VerifyIntegrity` pass over the output.
+- dependency translation: a resolving edge, an unresolvable one (dropped with a warning), a
+  counted resource whose config address fans out to several instances, and a digest with no
+  `Dependencies` field at all;
+- ordering, including a topological case where one injected resource depends on another, with a
+  `VerifyIntegrity` pass over the output.
 
 End-to-end, per the AWS CE fixture: the v0.2.0 topology (VPC, three route tables, VPN gateway
 with three route propagations, customer gateway, VPN connection with a connection route),
