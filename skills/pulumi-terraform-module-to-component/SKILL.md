@@ -19,6 +19,17 @@ covers only what is specific to translating *from Terraform*.
   skill). The digest is the agent-safe view of TF state — **never read the raw
   `.tfstate`**, it contains secrets.
 
+  If the tool is not installed yet:
+
+  ```bash
+  pulumi plugin install tool import \
+    --server github://api.github.com/pulumi-proserv/pulumi-tool-import
+  ```
+
+  With no version it installs the latest release. The
+  `github://api.github.com/<owner>/<repo>` form is required — a plain
+  `https://github.com/...` server 404s.
+
 ## Phase 1 — Analyze the module
 
 Read the digest entry for this module:
