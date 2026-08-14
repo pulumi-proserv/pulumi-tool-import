@@ -4,6 +4,10 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.100"
     }
+    archive = {
+      source  = "hashicorp/archive"
+      version = "~> 2.4"
+    }
   }
 }
 
@@ -96,36 +100,88 @@ resource "aws_iot_certificate" "cert" {
   active = true
 }
 
-# aws_vpclattice_target_group is importable (declares Importer) and attaches
-# to the fixture's existing VPC, adding no new dependency category.
-resource "aws_vpclattice_target_group" "tg" {
-  name = "${local.name}-tg"
-  type = "IP"
-  config {
-    port            = 80
-    protocol        = "HTTP"
-    vpc_identifier  = aws_vpc.main.id
-    ip_address_type = "IPV4"
-    health_check {
-      enabled = false
+# --- Minimal Lambda function to back the LAMBDA-type target group below. It
+# is never invoked by this test; it only needs to exist and be registerable
+# as a VPC Lattice target.
+
+data "archive_file" "lambda" {
+  type        = "zip"
+  output_path = "${path.module}/.terraform-tmp/lambda.zip"
+  source {
+    content  = "exports.handler = async () => ({statusCode: 200, body: \"ok\"});"
+    filename = "index.js"
+  }
+}
+
+data "aws_iam_policy_document" "lambda_assume_role" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["lambda.amazonaws.com"]
     }
   }
+}
+
+resource "aws_iam_role" "lambda" {
+  name               = "${local.name}-lambda"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
+  tags               = local.tags
+}
+
+resource "aws_lambda_function" "target" {
+  function_name    = "${local.name}-target"
+  role             = aws_iam_role.lambda.arn
+  handler          = "index.handler"
+  runtime          = "nodejs20.x"
+  filename         = data.archive_file.lambda.output_path
+  source_code_hash = data.archive_file.lambda.output_base64sha256
+  tags             = local.tags
+}
+
+# VPC Lattice must be allowed to invoke the function before it can be
+# registered as a target group target.
+resource "aws_lambda_permission" "vpclattice" {
+  statement_id  = "AllowVPCLatticeInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.target.function_name
+  principal     = "vpc-lattice.amazonaws.com"
+  source_arn    = aws_vpclattice_target_group.tg.arn
+}
+
+# aws_vpclattice_target_group is importable (declares Importer) and attaches
+# to the fixture's existing VPC, adding no new dependency category.
+#
+# type = "LAMBDA" rather than "IP": an original version of this fixture used
+# an IP-type target group with a made-up address ("10.42.0.10") and nothing
+# actually listening on it, so the target group attachment below never
+# became healthy and "tofu apply" timed out after 21 retries
+# ("waiting for VPC Lattice Target Group Attachment ... create: couldn't
+# find resource"). Lambda targets have no health-check state machine at all
+# -- VPC Lattice considers a registered Lambda target healthy as soon as
+# it is registered -- so this avoids the wait entirely while still needing
+# no long-lived compute (no EC2 instance, no ALB) behind it. See the
+# archive_file/aws_iam_role/aws_lambda_function/aws_lambda_permission
+# resources above for the minimal function this target group points at.
+# "config" is deliberately omitted: it is documented as not applicable
+# (and rejected) for LAMBDA-type target groups.
+resource "aws_vpclattice_target_group" "tg" {
+  name = "${local.name}-tg"
+  type = "LAMBDA"
   tags = local.tags
 }
 
 # aws_vpclattice_target_group_attachment declares no importer and has a real
 # nested list-of-objects "target" block ({id, port}) -- the first non-flat
-# shape in this fixture, which every other injected resource lacks. The
-# target need not be a real running workload: registering an IP-type target
-# only requires an address that plausibly belongs to the target group's
-# VPC, and health checking is disabled above, so AWS accepts the
-# registration without ever probing it.
+# shape in this fixture, which every other injected resource lacks. "port"
+# is omitted: it is not applicable to a Lambda target and the provider
+# rejects it if set.
 resource "aws_vpclattice_target_group_attachment" "attach" {
   target_group_identifier = aws_vpclattice_target_group.tg.id
   target {
-    id   = "10.42.0.10"
-    port = 80
+    id = aws_lambda_function.target.arn
   }
+  depends_on = [aws_lambda_permission.vpclattice]
 }
 
 output "vpc_id" {

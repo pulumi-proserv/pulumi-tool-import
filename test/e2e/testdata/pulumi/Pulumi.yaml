@@ -146,18 +146,48 @@ resources:
       active: true
       caPem: "not a real certificate authority -- placeholder value only, see testdata/tf/main.tf"
 
+  # Backs the LAMBDA-type target group below (see testdata/tf/main.tf for
+  # why LAMBDA rather than IP: an IP target with nothing listening behind it
+  # never becomes healthy, timing out "tofu apply"). Both are importable and
+  # matched by Terraform address (aws_iam_role.lambda, aws_lambda_function.
+  # target), so they are imported like main/rt*/vgw/cgw/vpn/tg above --
+  # their real, account-specific ARNs are never written into this file,
+  # only referenced through interpolation.
+  lambdaRole:
+    type: aws:iam:Role
+    name: lambda
+    properties:
+      assumeRolePolicy: |
+        {
+          "Version": "2012-10-17",
+          "Statement": [{
+            "Effect": "Allow",
+            "Principal": {"Service": "lambda.amazonaws.com"},
+            "Action": "sts:AssumeRole"
+          }]
+        }
+      tags:
+        Name: tool-import-e2e
+        ManagedBy: pulumi-tool-import-e2e
+        Purpose: issue-22-non-importable-injection
+
+  lambdaFn:
+    type: aws:lambda:Function
+    name: target
+    properties:
+      role: ${lambdaRole.arn}
+      handler: index.handler
+      runtime: nodejs20.x
+      tags:
+        Name: tool-import-e2e
+        ManagedBy: pulumi-tool-import-e2e
+        Purpose: issue-22-non-importable-injection
+
   tg:
     type: aws:vpclattice:TargetGroup
     name: tg
     properties:
-      type: IP
-      config:
-        port: 80
-        protocol: HTTP
-        vpcIdentifier: ${main.id}
-        ipAddressType: IPV4
-        healthCheck:
-          enabled: false
+      type: LAMBDA
       tags:
         Name: tool-import-e2e
         ManagedBy: pulumi-tool-import-e2e
@@ -165,12 +195,12 @@ resources:
 
   # Non-importable, and the only resource in this program with a nested
   # list-of-objects property ("target": {id, port}) -- every other injected
-  # resource here is flat top-level strings.
+  # resource here is flat top-level strings. "port" is omitted -- it is not
+  # applicable to a Lambda target, matching testdata/tf/main.tf.
   attach:
     type: aws:vpclattice:TargetGroupAttachment
     name: attach
     properties:
       targetGroupIdentifier: ${tg.id}
       target:
-        id: 10.42.0.10
-        port: 80
+        id: ${lambdaFn.arn}

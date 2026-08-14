@@ -169,18 +169,29 @@ func TestNonImportableStateInjection(t *testing.T) {
 
 	// --- Create the real fixture, once, shared by every scenario below. ---
 	runTofu(t, ctx, tfDir, env, "init", "-input=false")
-	runTofu(t, ctx, tfDir, env, "apply", "-auto-approve", "-input=false")
-	// Registered immediately after apply succeeds, so it runs on failure or
-	// panic too, and so it runs after every subtest below regardless of
-	// which ones fail. The VPN connection this fixture creates costs money
-	// and takes 3-5 minutes to tear down each way.
+	// Registered before "apply" runs — not after it succeeds — so it also
+	// covers a failed or partial apply, not just a successful one. This is
+	// the fix for a real incident: apply created a VPC, three route tables,
+	// a VPN gateway, a customer gateway and a VPN connection (which bills),
+	// then failed on its last resource; because the cleanup was registered
+	// only after "apply" returned, t.Fatalf inside runTofu exited the test
+	// before the cleanup was ever registered, and everything was left
+	// running until it was torn down by hand.
+	//
+	// "tofu destroy" against a partially-applied or even empty state is
+	// safe — it is a no-op when there is nothing to destroy — so
+	// registering this early costs nothing. t.Cleanup runs on every path
+	// out of this test (success, t.Fatalf, panic), which is the actual
+	// guarantee here; it is not specific to subtest failures.
 	t.Cleanup(func() {
 		out, err := runTofuCombined(ctx, tfDir, env, "destroy", "-auto-approve", "-input=false")
 		if err != nil {
 			t.Errorf("tofu destroy failed — clean up by hand from %s (terraform state left in place):\n%v\n%s",
 				tfDir, err, out)
 		}
+		verifyFixtureResourcesGone(t, ctx, tfDir)
 	})
+	runTofu(t, ctx, tfDir, env, "apply", "-auto-approve", "-input=false")
 
 	fx := &fixture{
 		repoRoot:         repoRoot,
