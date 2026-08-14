@@ -81,7 +81,7 @@ reported `+-1 to replace`. These types' `Read` either sets no attributes or re-d
 from the resource ID, so refresh only proves the ID resolves. **Zero operations on preview is
 the acceptance criterion. Refresh is never acceptable as one.**
 
-### The raw state delta: what it is for, and why injection cannot produce one
+### The raw state delta: what it is for, and why this change does not write one
 
 The delta encodes the difference between a Pulumi `PropertyMap` and the provider's raw
 Terraform state, so the latter can be reconstructed without storing it twice. Its purpose,
@@ -124,16 +124,22 @@ aws_vpn_gateway_route_propagation  InstanceState → "mock schema does not suppo
 ```
 
 `ResourceShim.InstanceState` is a hard error (`pkg/tfshim/schema/resource.go:56`) and
-`SchemaType` returns an unpopulated field. The Terraform provider's Go code is not linked into
-this binary, so there is no `v2Resource2` to obtain. **Injection therefore writes no delta**,
-placing injected resources on the pre-delta reconstruction path described above. Whether that
-reconstruction is faithful for a given type is decided per run by the verifying preview, which
-is the design's answer to this whole class of risk.
+`SchemaType` returns an unpopulated field, so the provider's create path cannot be mirrored.
 
-The same probe makes `__meta` unwritable for the right reason: the mock reports
-`SchemaVersion=0` for every type probed, including `aws_instance`, whose upstream schema
-version is non-zero. That number is an artifact of the marshalled info, so recording it would
-write a *wrong* schema version, which is worse than recording none.
+**A second route exists and is not blocked.** `RawStateComputeDelta` takes `valueshim.Type` and
+`valueshim.Value` rather than an instance state, and `pkg/tfprovider/loader.go` already launches
+real Terraform provider binaries over go-plugin — `pkg/provider_schema.go:77` and the
+import-support prober behind #20 both use it. From a live provider,
+`providers.Schema.Block.ImpliedType()` gives the cty type and `ctyjson.Unmarshal` turns the
+digest's `AttrsJSON` into the value; `valueshim.FromCtyType`/`FromCtyValue` accept the zclconf
+cty that OpenTofu uses. `providers.Schema.Version` likewise gives the true `SchemaVersion`,
+making `__meta` writable.
+
+**This design still writes neither**, to keep the first change scoped: it would add a provider
+download and launch to `patch-state`, which today needs neither, and therefore network access on
+a cold plugin cache. Injected resources sit on the pre-delta reconstruction path, and the
+verifying preview decides per run whether that reconstruction is faithful. Tracked with the full
+recipe in [#25](https://github.com/pulumi-proserv/pulumi-tool-import/issues/25).
 
 ### Existing Recover validation does not apply
 
@@ -259,15 +265,14 @@ Per matched sidecar entry, one `custom: true` object appended to `deployment.res
 | `id` | sidecar, verbatim — already the provider's ID format |
 | `inputs` | `newState.Inputs`, with `[secret]` values resolved from config, plus `__defaults: []` |
 | `outputs` | every sidecar attribute, TF name → Pulumi name |
-| `__pulumi_raw_state_delta` | omitted — unreachable from this tool, see Findings |
-| `__meta` | omitted — the loaded schema cannot report a trustworthy version, see Findings |
+| `__pulumi_raw_state_delta` | omitted — deferred to #25, see Findings |
+| `__meta` | omitted — needs a live provider for a truthful version, deferred to #25 |
 
-**No delta and no `__meta` are written**, for the reasons established in Findings: the schema
-mock this tool loads exposes neither an instance state nor a trustworthy schema version, so
-both would have to be fabricated. Injected resources therefore sit on the bridge's pre-delta
-reconstruction path, and the verifying preview decides per run whether that reconstruction is
-faithful for the types at hand. Closing this gap needs a live Terraform provider handle; tracked in
-[#25](https://github.com/pulumi-proserv/pulumi-tool-import/issues/25).
+**No delta and no `__meta` are written by this change.** Both are achievable — the route is in
+Findings and in [#25](https://github.com/pulumi-proserv/pulumi-tool-import/issues/25) — but both
+require `patch-state` to launch a Terraform provider, which it does not do today. Injected
+resources therefore sit on the bridge's pre-delta reconstruction path, and the verifying preview
+decides per run whether that reconstruction is faithful for the types at hand.
 
 **Property name mapping is reuse, not new code.** `GetSchemaFieldInfo` (`pkg/schema_fields.go:72`)
 gives `TFName → PulumiName`, and `LookupProviderForPulumiType` (`:125`) finds the provider for a
