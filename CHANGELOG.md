@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `patch-state tf --non-importable <sidecar>` writes resources that cannot be
+  imported into the stack's state, closing the loop opened in v0.2.0 when
+  `resolve tf` began detecting them (#22).
+- `patch-state tf` gains a stack mode: given `--project-dir` and `--stack` with
+  no `--state`/`--out`, it exports the deployment, writes a timestamped backup,
+  patches and injects, imports the result, and verifies it with
+  `pulumi preview`, restoring the backup if any injected resource does not
+  preview as unchanged.
+- `digest tf` now records the Pulumi outputs, raw state delta, and Terraform
+  schema version for resources it flags as non-importable, computed while the
+  provider it already starts for the import-support probe is open. `patch-state`
+  consumes them, so it needs no provider of its own.
+
 ## [0.2.0] - 2026-08-12
 
 ### Added

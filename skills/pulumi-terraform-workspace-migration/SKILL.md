@@ -296,10 +296,22 @@ digest flagged `nonImportable` and records it in a `*.non-importable.json`
 sidecar next to the output. These resources **already exist**, so letting the
 next `pulumi up` create them is not a safe fallback — for association and toggle
 resources the create fails against the pre-existing object and dies partway
-through the stack. Write them into state from the sidecar instead, and verify
-with `pulumi preview` reporting zero operations; `pulumi refresh` reporting
-"unchanged" only proves the IDs resolve, not that the values are right. Full
-background: **`docs/non-importable-resources.md`** in the tool repo.
+through the stack. Write them into state with `patch-state tf --non-importable`,
+which takes each resource's URN, parent, provider and dependencies from a
+preview of the program you have already written, fills in the ID and outputs
+from the sidecar, and verifies the result with a second preview — restoring its
+backup if any injected resource does not preview as unchanged:
+
+    pulumi plugin run import -- patch-state tf \
+      --digest tf-digest.json \
+      --fields data/aws-import-diff-fields.json \
+      --config-dir ./terraform \
+      --non-importable imports-ready.non-importable.json \
+      --project-dir . --stack dev
+
+`pulumi refresh` reporting "unchanged" is never the check: it only proves the
+IDs resolve, not that the values are right. Full background:
+**`docs/non-importable-resources.md`** in the tool repo.
 
 Eliminating the diffs that survive import with `patch-state` (including falsy
 default suppression and how to tell that a field simply needs adding to the

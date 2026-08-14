@@ -48,6 +48,12 @@ remote object — means the type *is* importable.
 Probes are memoized per provider and type, so a 159-resource digest spanning 40
 types costs 40 probes.
 
+`digest tf` also computes, for each flagged resource, the data injection needs
+later: Pulumi outputs, the raw state delta, and the Terraform schema version —
+using the same provider connection the probe already opened. For the
+line-level trace of that computation and how the pieces move between commands,
+see [docs/pipeline-schema-and-state.md](pipeline-schema-and-state.md#s2b--the-non-importable-enrichment-new-on-this-branch).
+
 ## What each command does
 
 `digest tf` sets `"nonImportable": true` on the flagged resources in
@@ -91,10 +97,82 @@ resolution `patch-state` already performs for sensitive fields
 
 ## What to do with them
 
-Write them into the stack's state directly. These types have working `Read`
-implementations even without an importer, so the provider can read them back.
-Append a state object per resource to a `pulumi stack export`, using the ID and
-attributes from the sidecar, then `pulumi stack import`.
+Write them into the stack's state directly with `patch-state tf
+--non-importable`. These types have working `Read` implementations even
+without an importer, so the provider can read them back once their state
+object is present with the right ID; the command builds that object from the
+sidecar and a preview of the program.
+
+### Stack mode — the tool runs the previews, backs up, imports and verifies
+
+```bash
+pulumi plugin run import -- patch-state tf \
+  --digest tf-digest.json \
+  --fields data/aws-import-diff-fields.json \
+  --config-dir ./terraform \
+  --non-importable imports-ready.non-importable.json \
+  --project-dir . --stack dev
+```
+
+Omitting `--state`/`--out` selects stack mode. In order, the command:
+
+1. exports the stack's current deployment;
+2. writes a backup of that export and prints its absolute path;
+3. takes a baseline preview, before any mutation;
+4. patches state and injects the non-importable resources;
+5. imports the result;
+6. takes a verifying preview;
+7. reverts to the pre-mutation export if verification fails.
+
+The backup contains **decrypted secrets** — `pulumi stack export --show-secrets`
+is what the Automation API runs underneath. Delete it once the change is
+confirmed. `--backup-dir` chooses where it is written (default: the current
+directory); create it somewhere with appropriate access if the default isn't
+suitable.
+
+Stack mode needs a runnable program and live credentials, because it runs
+`pulumi preview` itself, twice.
+
+### File mode — offline; you run the pulumi steps
+
+```bash
+pulumi preview --json > preview.json
+pulumi stack export > state.json
+pulumi plugin run import -- patch-state tf \
+  --state state.json --out injected.json \
+  --digest tf-digest.json \
+  --fields data/aws-import-diff-fields.json \
+  --config-dir ./terraform \
+  --non-importable imports-ready.non-importable.json \
+  --preview-json preview.json
+pulumi stack import --file injected.json
+pulumi preview   # must report zero operations
+```
+
+File mode is selected by passing both `--state` and `--out`. `--non-importable`
+still requires a preview to source injected resources' URN, parent, provider
+and dependencies from — supply it with `--preview-json` since there is no stack
+to preview directly, and `--preview-json` is rejected in stack mode for the
+same reason.
+
+### How verification works
+
+Verification is not "the preview must be clean." A stack mid-migration
+legitimately still has outstanding diffs — `patch-state` is often run
+iteratively against exactly that stack — so demanding a perfectly clean preview
+after every pass would revert almost every legitimate run.
+
+The actual gate, comparing the verifying preview against the baseline taken
+before any mutation:
+
+- every injected resource's URN must report `same`;
+- no resource that was `same` (or absent) in the baseline may become non-`same`
+  afterward;
+- the total count of non-`same` steps outside the injected set must not
+  increase.
+
+What must not happen is regression. If either check fails, stack mode reverts
+the stack to the pre-mutation export and reports why.
 
 ### Verify with preview, not refresh
 
