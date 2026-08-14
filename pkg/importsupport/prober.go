@@ -145,6 +145,24 @@ func (p *Prober) discard(ctx context.Context, providerAddr string) {
 	p.failed[providerAddr] = true
 }
 
+// Provider returns the running provider Check uses to answer for
+// providerAddr, loading it on first use if necessary. It exists so a caller
+// that already has a Prober (matchResources, via ImportSupportChecker) can
+// reuse the same live provider process to compute the Pulumi outputs, raw
+// state delta, and schema version a non-importable resource needs — without
+// this package's ImportSupportChecker interface having to expose the
+// provider to every implementation.
+//
+// The second return value is false when no provider could be loaded for
+// providerAddr (no locked version, load failure, or a provider already
+// discarded after going unresponsive); callers should treat that the same
+// way Check's fallback does, as "nothing more to learn here."
+func (p *Prober) Provider(ctx context.Context, providerAddr string) (tfprovider.Provider, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.provider(ctx, providerAddr)
+}
+
 // provider returns a running provider, loading it on first use. The caller
 // holds p.mu.
 func (p *Prober) provider(ctx context.Context, providerAddr string) (tfprovider.Provider, bool) {

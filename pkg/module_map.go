@@ -27,9 +27,12 @@ import (
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/bridge"
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/importsupport"
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/providermap"
+	"github.com/pulumi-proserv/pulumi-tool-import/pkg/tfprovider"
 	"github.com/pulumi/opentofu/addrs"
 	"github.com/pulumi/opentofu/configs"
 	"github.com/pulumi/opentofu/states"
+	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
+	shim "github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfshim"
 	"github.com/pulumi/pulumi/sdk/v3/go/auto"
 	"github.com/zclconf/go-cty/cty"
 )
@@ -58,6 +61,17 @@ type ModuleResource struct {
 	// misleading "resource '<id>' does not exist" — so resolve leaves it out of
 	// the import file rather than emitting an entry guaranteed to fail.
 	NonImportable bool `json:"nonImportable,omitempty"`
+	// PulumiOutputs are the resource's Terraform attributes converted to Pulumi
+	// property names and shapes, computed while a provider was open. Populated
+	// only for resources NonImportable flags, since nothing else needs them.
+	PulumiOutputs map[string]interface{} `json:"pulumiOutputs,omitempty"`
+	// RawStateDelta is the bridge's __pulumi_raw_state_delta for those outputs.
+	// Computed from redacted attributes, so it never contains a secret.
+	RawStateDelta map[string]interface{} `json:"rawStateDelta,omitempty"`
+	// SchemaVersion is the Terraform resource type's schema version, read from
+	// the live provider. Written into state as __meta so that a later provider
+	// upgrade runs the right state upgraders.
+	SchemaVersion int64 `json:"schemaVersion,omitempty"`
 }
 
 // ImportSupportChecker reports whether a Terraform resource type can be
@@ -66,6 +80,24 @@ type ModuleResource struct {
 // *importsupport.Prober.
 type ImportSupportChecker interface {
 	Check(ctx context.Context, providerAddr, tfType string) importsupport.Support
+}
+
+// ProviderAccessor is an optional capability of an ImportSupportChecker: a
+// checker backed by a live Terraform provider (namely *importsupport.Prober)
+// can implement it to let matchResources reuse that same open provider to
+// compute a non-importable resource's Pulumi outputs, raw state delta, and
+// schema version.
+//
+// This is deliberately not folded into ImportSupportChecker. Widening that
+// interface would force every implementation — including the test fake in
+// pkg/importsupport/prober_test.go — to supply a provider, when most callers
+// only need the Check verdict. matchResources type-asserts for this
+// interface and degrades to leaving the new ModuleResource fields empty when
+// it is absent, which is the correct behaviour when digest tf runs without
+// the import-support probe (no provider, no non-importable detection, and so
+// nothing for these fields to hold).
+type ProviderAccessor interface {
+	Provider(ctx context.Context, providerAddr string) (tfprovider.Provider, bool)
 }
 
 // ModuleMapEntry represents a single module instance in the module map.
@@ -359,16 +391,22 @@ func matchResources(
 						ImportID:         importID,
 					}
 
+					// Include attributes, redacting sensitive paths from state.
+					// This must happen before the non-importable state
+					// computation below: RawStateDelta is computed from these
+					// attributes, and must never see an unredacted secret.
+					if attrs != nil {
+						redactSensitivePaths(attrs, inst.Current.AttrSensitivePaths)
+						mr.Attributes = attrs
+					}
+
 					// Only managed resources are ever imported, so only they
 					// are worth checking.
 					if mode == "managed" && importChecker != nil {
 						mr.NonImportable = importChecker.Check(ctx, providerName, resourceType) == importsupport.Unsupported
-					}
-
-					// Include attributes, redacting sensitive paths from state.
-					if attrs != nil {
-						redactSensitivePaths(attrs, inst.Current.AttrSensitivePaths)
-						mr.Attributes = attrs
+						if mr.NonImportable && attrs != nil {
+							populateInjectionState(ctx, &mr, importChecker, pulumiProviders, providerName, resourceType, attrs)
+						}
 					}
 
 					resources = append(resources, mr)
@@ -381,6 +419,63 @@ func matchResources(
 		resources = []ModuleResource{}
 	}
 	return resources
+}
+
+// populateInjectionState fills mr's PulumiOutputs, RawStateDelta and
+// SchemaVersion for a resource matchResources has already flagged
+// NonImportable. attrs must already be redacted.
+//
+// It needs a live Terraform provider, which only importChecker (in practice
+// *importsupport.Prober) can supply, and only when it implements
+// ProviderAccessor — otherwise there is nothing more to compute, and mr is
+// left with these fields empty. That degradation is deliberate: it is not an
+// error, it means whoever built the digest ran without the import-support
+// probe, or the provider that flagged this resource could not be reused.
+func populateInjectionState(
+	ctx context.Context,
+	mr *ModuleResource,
+	importChecker ImportSupportChecker,
+	pulumiProviders map[providermap.TerraformProviderName]*ProviderWithMetadata,
+	providerName string,
+	resourceType string,
+	attrs map[string]interface{},
+) {
+	accessor, ok := importChecker.(ProviderAccessor)
+	if !ok {
+		return
+	}
+	prov, ok := accessor.Provider(ctx, providerName)
+	if !ok {
+		return
+	}
+
+	// schemaMap/schemaInfos come from the mock Pulumi-bridged schema the
+	// digest already has for this provider, not from the live provider's own
+	// protocol schema: RawStateComputeDelta needs Pulumi naming, which only
+	// the bridge's schema mock carries.
+	var schemaMap shim.SchemaMap
+	var schemaInfos map[string]*tfbridge.SchemaInfo
+	if pwm, ok := pulumiProviders[providermap.TerraformProviderName(providerName)]; ok && pwm != nil {
+		if shimResource := pwm.P.ResourcesMap().Get(resourceType); shimResource != nil {
+			schemaMap = shimResource.Schema()
+		}
+		if ri := pwm.Resources[resourceType]; ri != nil {
+			schemaInfos = ri.Fields
+		}
+	}
+
+	attrsJSON, err := json.Marshal(attrs)
+	if err != nil {
+		return
+	}
+
+	outputs, delta, version, err := ComputeInjectionState(ctx, prov, resourceType, attrsJSON, schemaMap, schemaInfos)
+	if err != nil {
+		return
+	}
+	mr.PulumiOutputs = outputs
+	mr.RawStateDelta = delta
+	mr.SchemaVersion = version
 }
 
 // buildResourceURN constructs a Pulumi URN for a Terraform resource, or falls back

@@ -73,6 +73,16 @@ type NonImportableResource struct {
 	// from config before the resource is written to state, the same way
 	// patch-state resolves sensitive fields.
 	RedactedAttributes map[string]string `json:"redactedAttributes,omitempty"`
+	// PulumiOutputs are the resource's Terraform attributes converted to Pulumi
+	// property names and shapes, computed while a provider was open.
+	PulumiOutputs map[string]interface{} `json:"pulumiOutputs,omitempty"`
+	// RawStateDelta is the bridge's __pulumi_raw_state_delta for those outputs.
+	// Computed from redacted attributes, so it never contains a secret.
+	RawStateDelta map[string]interface{} `json:"rawStateDelta,omitempty"`
+	// SchemaVersion is the Terraform resource type's schema version, read from
+	// the live provider. Written into state as __meta so that a later provider
+	// upgrade runs the right state upgraders.
+	SchemaVersion int64 `json:"schemaVersion,omitempty"`
 }
 
 // redactedPlaceholder is the value the digest substitutes for attributes
@@ -260,6 +270,9 @@ func (s *fillState) assign(entry *ImportEntry, tfRes *ModuleResource) {
 			ID:                 tfRes.ImportID,
 			Attributes:         tfRes.Attributes,
 			RedactedAttributes: redactedAttributeKeys(tfRes.TerraformAddress, tfRes.Attributes),
+			PulumiOutputs:      tfRes.PulumiOutputs,
+			RawStateDelta:      tfRes.RawStateDelta,
+			SchemaVersion:      tfRes.SchemaVersion,
 		})
 		s.dropped[entry] = true
 		return
