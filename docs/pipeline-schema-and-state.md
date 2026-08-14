@@ -20,23 +20,35 @@ spec `docs/superpowers/specs/2026-08-13-non-importable-state-injection-design.md
 
 ## Orientation
 
-The pipeline is five commands and one document that survives between them:
+The pipeline is five commands and two documents that survive between them — the
+digest, and the non-importable sidecar:
 
 ```
 terraform.tfstate ──digest tf──▶ tf-digest.json ──resolve tf──▶ imports-ready.json
                                        │                        imports-ready.non-importable.json
-                                       │                                │
-                                       │                            import
-                                       │                                ▼
-                                       └──────patch-state tf──▶ pulumi stack export
-                                                                        │
+                                       │                                │             │
+                                       │                            import            │
+                                       │                                ▼             │
+                                       └──────patch-state tf──▶ pulumi stack export   │
+                                                     ▲                  │             │
+                                       pulumi preview --json  ──────────┼─────────────┘
+                                                                        ▼
                                                               pulumi stack import
 ```
 
 `tf-digest.json` is the pivot. It is read by `resolve tf`
-(`cmd/import_id_match.go:84`) and again by `patch-state tf`
-(`cmd/patch_state_tf.go:78`), and everything either command knows about
+(`cmd/import_id_match.go:85`) and again by `patch-state tf`
+(`cmd/patch_state_tf.go:164`), and everything either command knows about
 Terraform values comes from it. Nothing downstream re-reads Terraform state.
+
+`patch-state tf` has two modes (`cmd/patch_state_tf.go:74`). **File mode**
+(`--state` + `--out`) reads and writes files and leaves `pulumi stack import` to
+the operator. **Stack mode** (`--project-dir` + `--stack`, neither `--state` nor
+`--out`) drives the whole export → patch → inject → import → verify cycle
+through the Automation API (`pkg/state_stack.go`). Injection of non-importable
+resources (`--non-importable`) works in both, but file mode additionally needs
+`--preview-json` because the program metadata cannot come from anywhere else
+(`cmd/patch_state_tf.go:86`).
 
 Two provider loaders run, for different reasons, and they never see each other's
 results except through `pulumiProviders` being passed into `populateInjectionState`:
@@ -44,7 +56,7 @@ results except through `pulumiProviders` being passed into `populateInjectionSta
 | Loader | Started by | Protocol | Purpose |
 |---|---|---|---|
 | `tfprovider.LoadProvider` (`pkg/tfprovider/loader.go:65`) | `importsupport.Prober` (`pkg/importsupport/prober.go:184`), `BuildSensitivityMap` (`pkg/provider_schema.go:77`) | go-plugin, real Terraform provider binary | `ImportResourceState` probe; `GetProviderSchema` for cty types |
-| `PulumiProvidersForTerraformProviders` (`pkg/pulumi_providers.go:75`) | `GenerateModuleMap` (`pkg/generate_module_map.go:116`, `:131`) | Pulumi plugin gRPC, `GetMapping("terraform")` | Pulumi type tokens and property names |
+| `PulumiProvidersForTerraformProviders` (`pkg/pulumi_providers.go:75`) | `GenerateModuleMap` (`pkg/generate_module_map.go:116`, `:131`); `loadProvidersForDigest` (`cmd/patch_state_tf.go:429`) | Pulumi plugin gRPC, `GetMapping("terraform")` | Pulumi type tokens and property names |
 
 See [#26](https://github.com/pulumi-proserv/pulumi-tool-import/issues/26).
 
@@ -76,16 +88,21 @@ That second path loses three things at once:
 
 1. **Numbers.** `json.Unmarshal` without `UseNumber` turns every JSON number
    into `float64`; re-marshalling a 19-digit integer yields a rounded value
-   (`1234567890123456789` → `1234567890123456800`). This is the first hop of a
-   number-fidelity problem that recurs throughout (see
-   [Weaknesses](#weaknesses-and-open-questions)).
+   (`1234567890123456789` → `1234567890123456800`). The loss is silent — it
+   takes an integer above 2^53 to trigger it, and scientific notation only
+   appears at ≥1e21 — so nothing downstream can detect that it happened. The
+   raw `.tfstate` path was fixed on this branch (`decodeAttrs`,
+   `pkg/module_map.go:432`); **this path was not**. See
+   [#27](https://github.com/pulumi-proserv/pulumi-tool-import/issues/27) and
+   [Weaknesses §1](#weaknesses-and-open-questions).
 2. **Sensitivity.** `tfjson.StateResource.SensitiveValues`
    (`terraform-json@v0.27.1/state.go:164`) is never read.
    `ResourceInstanceObjectSrc` is built with only `AttrsJSON`
    (`pkg/generate_module_map.go:302`), so `AttrSensitivePaths` is empty. Every
    downstream consumer of sensitivity — `redactSensitivePaths`,
    `DiscoverSensitiveSecrets`, `redactedAttributeKeys` — silently finds nothing
-   on this path. **Secrets are written to the digest in plaintext.**
+   on this path. **Secrets are written to the digest in plaintext.** See
+   [#28](https://github.com/pulumi-proserv/pulumi-tool-import/issues/28).
 3. **Instance keys.** The resource instance is always registered under
    `addrs.NoKey` (`pkg/generate_module_map.go:301`), and
    `tfjson.StateResource.Index` (`state.go:142`) is not read. Two instances of a
@@ -103,31 +120,31 @@ corrupt an attribute, and no guard exists.
 
 ### S2 — in-memory state → `ModuleMap` (the digest)
 
-`matchResources` (`pkg/module_map.go:327`) walks the state and emits one
+`matchResources` (`pkg/module_map.go:328`) walks the state and emits one
 `ModuleResource` (`pkg/module_map.go:53`) per current instance.
 
 | Field | Source | Notes |
 |---|---|---|
-| `TerraformAddress` | `res.Addr` + instance key + module addr (`:356-362`) | The join key for everything downstream. |
-| `ImportID` | `attrs["id"]` via `fmt.Sprintf("%v", id)` (`:370`) | Stringified. For a numeric id decoded as `float64`, this yields scientific notation. |
-| `Attributes` | `json.Unmarshal(AttrsJSON)` (`:368`), then redacted | **No `UseNumber`.** |
-| `TranslatedURN` | `buildResourceURN` (`:525`) | Needs the Pulumi provider mapping; falls back to the raw TF address when absent (`:533`, `:539`, `:544`). |
-| `Mode` | `managed` / `data` (`:376`) | Data sources get no URN and are never imported. |
-| `NonImportable` | `importChecker.Check` (`:406`) | See S2b. |
-| `PulumiOutputs`, `RawStateDelta`, `SchemaVersion` | `populateInjectionState` (`:434`) | Only for non-importable resources. |
+| `TerraformAddress` | `res.Addr` + instance key + module addr (`:357-363`) | The join key for everything downstream. |
+| `ImportID` | `attrs["id"]` via `formatImportID` (`:372`, definition `:446`) | Stringified with `%v`. Now safe: `json.Number` is a string type, so `%v` prints the original digits. |
+| `Attributes` | `decodeAttrs(AttrsJSON)` (`:369`, definition `:432`), then redacted | Decodes with `UseNumber`, so integers above 2^53 survive as `json.Number`. Fixed on this branch. |
+| `TranslatedURN` | `buildResourceURN` (`:551`) | Needs the Pulumi provider mapping; falls back to the raw TF address when absent (`:559`, `:565`, `:570`). |
+| `Mode` | `managed` / `data` (`:378`) | Data sources get no URN and are never imported. |
+| `NonImportable` | `importChecker.Check` (`:408`) | See S2b. |
+| `PulumiOutputs`, `RawStateDelta`, `SchemaVersion` | `populateInjectionState` (`:460`) | Only for non-importable resources. See S2b. |
 
-**Redaction.** `redactSensitivePaths` (`pkg/module_map.go:1021`) replaces each
+**Redaction.** `redactSensitivePaths` (`pkg/module_map.go:1047`) replaces each
 sensitive attribute's value with the literal string `(sensitive)`
-(`:1034`). It handles **top-level paths only** — `len(pvm.Path) == 1`
-(`:1032`); a sensitive value nested inside a block or map is left in the digest
-in plaintext, and the code says so (`:1036`). Redaction happens *before*
+(`:1060`). It handles **top-level paths only** — `len(pvm.Path) == 1`
+(`:1058`); a sensitive value nested inside a block or map is left in the digest
+in plaintext, and the code says so (`:1062`). Redaction happens *before*
 `populateInjectionState`, deliberately, so the raw state delta can never embed a
-secret (`:394-400`).
+secret (`:396-403`).
 
 **Where the real value goes.** Separately, `DiscoverSensitiveSecrets`
-(`pkg/module_map.go:698`) re-parses the same `AttrsJSON` (`:731`) and reads the
-*unredacted* value (`:751`), keying it by `flattenAddress(address, attribute)`
-(`:767`, definition at `:818`). `SetSecretsFromState` (`:967`) writes those into
+(`pkg/module_map.go:724`) re-parses the same `AttrsJSON` (`:757`) and reads the
+*unredacted* value (`:777`), keying it by `flattenAddress(address, attribute)`
+(`:793`, definition at `:844`). `SetSecretsFromState` (`:993`) writes those into
 Pulumi stack config as secrets. So after `digest tf`:
 
 - the digest holds `(sensitive)`;
@@ -135,35 +152,43 @@ Pulumi stack config as secrets. So after `digest tf`:
 - the mapping between them is *not written down anywhere* — it is recomputed by
   calling `flattenAddress` again, in `redactedAttributeKeys`
   (`pkg/import_filler.go:102`) and in `patchResourceFields`
-  (`pkg/state_patcher.go:554`).
+  (`pkg/state_patcher.go:554`), and a fourth time in `resolveOutputSecrets` /
+  `resolveSecretInputs` (`pkg/state_injector.go:383`, `:444`), which look the
+  recomputed key up in `r.RedactedAttributes`.
 
 `flattenAddress` is therefore a load-bearing pure function whose output is a
 cross-command contract. It also dedups colliding keys by appending `_2`, `_3`
-(`pkg/module_map.go:776`) — and the dedup counter lives only in
-`DiscoverSensitiveSecrets`. The two later call sites recompute the *undeduped*
+(`pkg/module_map.go:803`) — and the dedup counter lives only in
+`DiscoverSensitiveSecrets`. The later call sites recompute the *undeduped*
 key, so **the second and later resources that collide on a key can never have
-their secret resolved.** A warning is printed at digest time (`:778`) and
-nothing checks later.
+their secret resolved.** A warning is printed at digest time (`:804`) and
+nothing checks later. Injection at least fails loudly when this happens
+(`pkg/state_injector.go:401`, `:453`); `patch-state`'s patching half silently
+counts it as `SkippedSensitive`.
 
-`DiscoverSensitiveSecrets` also stringifies with `fmt.Sprintf("%v", value)`
-(`:751`), so a numeric secret loses fidelity the same way `ImportID` does.
+`DiscoverSensitiveSecrets` still decodes with plain `json.Unmarshal` (`:757`)
+and stringifies with `fmt.Sprintf("%v", value)` (`:777`), so a numeric secret
+loses fidelity the way `ImportID` used to. It was not covered by the branch's
+`UseNumber` fix.
 
 `BuildSensitivityMap` / `RedactSensitiveAttributes` (`pkg/provider_schema.go:44`,
 `:235`) implement a second, schema-driven redaction mechanism that reads
 `Sensitive` off the *live* provider schema and handles nested paths
 (`findSensitiveAttributes`, `:155`). Nothing outside tests calls either. It is
 the mechanism that would fix the nested-path and `tofu show -json` gaps above.
+See [#28](https://github.com/pulumi-proserv/pulumi-tool-import/issues/28).
 
-### S2b — the non-importable enrichment (new on this branch)
+### S2b — the non-importable enrichment
 
 When `Check` returns `Unsupported`, `populateInjectionState`
-(`pkg/module_map.go:434`) computes three extra fields. It needs **both**
-loaders at once:
+(`pkg/module_map.go:460`) computes three extra fields — `PulumiOutputs`,
+`RawStateDelta` and `SchemaVersion` — which are what makes S7 injection
+possible without a provider. It needs **both** loaders at once:
 
 - the live Terraform provider, obtained by type-asserting the
-  `ImportSupportChecker` to `ProviderAccessor` (`:443`, interface at `:99`,
+  `ImportSupportChecker` to `ProviderAccessor` (`:469`, interface at `:100`,
   implementation at `pkg/importsupport/prober.go:160`) — for the cty type;
-- the Pulumi bridge mock, from `pulumiProviders` (`:458-464`) — for Pulumi
+- the Pulumi bridge mock, from `pulumiProviders` (`:484-490`) — for Pulumi
   naming.
 
 `ComputeInjectionState` (`pkg/raw_state_delta.go:43`) then does:
@@ -191,10 +216,11 @@ Three notes on this hop:
   equivalent. It is a copy, and will drift.
 - Failure is silent by design: a delta that cannot be computed returns `nil`
   and no error (`:75-77`), a panic is caught and turned into "no fields"
-  (`safeComputeInjectionState`, `pkg/module_map.go:501`), and a missing schema
-  map returns early (`:466-477`). The digest is written either way, so a
+  (`safeComputeInjectionState`, `pkg/module_map.go:527`), and a missing schema
+  map returns early (`:492-503`). The digest is written either way, so a
   consumer cannot distinguish "this resource needs no delta" from "computing it
-  blew up".
+  blew up". The injector reports the aggregate as `InjectResult.NoDelta`
+  (`pkg/state_injector.go:50`), which is the only signal an operator gets.
 
 ### S3 — digest → import file
 
@@ -228,18 +254,16 @@ Non-importable resources are diverted here rather than filled: `assign`
 `Attributes`, `RedactedAttributes`, `PulumiOutputs`, `RawStateDelta`,
 `SchemaVersion` (`pkg/import_filler.go:265-276`).
 
-The digest was read at `cmd/import_id_match.go:84` with plain `json.Unmarshal`
-and the sidecar is written with `json.MarshalIndent` (`cmd/non_importable.go:55`),
-so **every number in the sidecar has been through `float64` even though
-`LoadNonImportableFile` (`pkg/non_importable_file.go:36`) carefully reads it back
-with `UseNumber`.** The care is applied at the wrong end.
+The digest is read at `cmd/import_id_match.go:86` with `UseNumber` and the
+sidecar is written with `json.MarshalIndent` (`cmd/non_importable.go:55`), so
+numbers now cross as `json.Number` and reach `LoadNonImportableFile`
+(`pkg/non_importable_file.go:36`) — which reads them back with `UseNumber` —
+exactly as they were in Terraform state. Before the fix on this branch the care
+was applied only at the reading end and every number had already been through
+`float64`.
 
-Nothing consumes the sidecar yet. `LoadNonImportableFile`,
-`MapTFAttributesToPulumi` (`:54`), `PulumiToTFNames` (`:71`),
-`ParsePreviewJSON` (`pkg/preview.go:54`) and `VerifyDeploymentIntegrity`
-(`pkg/state_verify.go:34`) are all built and tested but not wired to any
-command — the in-progress half of
-[#22](https://github.com/pulumi-proserv/pulumi-tool-import/issues/22).
+The sidecar is consumed by `patch-state tf --non-importable`
+(`cmd/patch_state_tf.go:245`) — see S7.
 
 ### S4 — import file → `pulumi import` → deployment
 
@@ -254,20 +278,29 @@ whatever the provider's `Read` returned, marshalled by the bridge — including
 `__meta` and `__pulumi_raw_state_delta` in the outputs, written by the bridge,
 never by this tool.
 
-The state as it exists after this stage is the *only* state the tool ever sees
-in Pulumi form. Everything `patch-state` does is repair work on it.
+The state as it exists after this stage is the only *deployed* state the tool
+sees in Pulumi form, and everything `patch-state` patches is repair work on it.
+It is no longer the only Pulumi-shaped input, though: injection reads a second
+one, `newState` from a preview create step (S7), which describes resources that
+were never imported at all.
 
 ### S5 — deployment → `patch-state tf` → patched deployment
 
-`PatchState` (`pkg/state_patcher.go:691`) reads `pulumi stack export` output
-with `UseNumber` (`:705`), walks `deployment.resources`, and for each custom
-resource whose short Pulumi type appears in the fields file, builds
-`patchFieldDescriptor`s (`:812`) and calls `patchAndValidateResource` (`:825`).
+In file mode the exported deployment comes from disk (`cmd/patch_state_tf.go:152`);
+in stack mode from `StackSession.Export` (`pkg/state_stack.go:58`), which
+re-marshals the whole `{"version":…,"deployment":{…}}` envelope because
+`auto.Stack.Export` hands back only the inner object and every consumer here
+reads the envelope (`:49-57`).
+
+`PatchState` (`pkg/state_patcher.go:691`) reads it with `UseNumber` (`:706`),
+walks `deployment.resources`, and for each custom resource whose short Pulumi
+type appears in the fields file, builds `patchFieldDescriptor`s (`:813`) and
+calls `patchAndValidateResource` (`:826`).
 
 Per field, `patchResourceFields` (`:495`):
 
 1. **Reads the digest value** by TF attribute name (`:511`) and camelCases
-   nested keys (`camelCaseKeys`, `:515` → `:1497`).
+   nested keys (`camelCaseKeys`, `:515` → `:1545`).
 2. **Builds asset sentinels** for asset-typed fields (`:527-550`), which may
    reach out to AWS and download Lambda code (`:540`).
 3. **Resolves `(sensitive)`** by recomputing `flattenAddress` (`:554`) and
@@ -282,22 +315,25 @@ Per field, `patchResourceFields` (`:495`):
 
 Then, in `patchAndValidateResource` (`:637`):
 
-- `injectAssetDeltas` (`:663` → `:1164`) adds `{"asset": …}` entries to
+- `injectAssetDeltas` (`:663` → `:1165`) adds `{"asset": …}` entries to
   `__pulumi_raw_state_delta.obj.ps` for each patched asset field;
-- `validateRecover` (`:671` → `:1448`) runs the bridge's own
+- `validateRecover` (`:671` → `:1496`) runs the bridge's own
   `UnmarshalRawStateDelta` + `Recover` over the patched outputs, and **on
   failure reverts inputs and outputs wholesale** (`:672-676`).
 
-The revert is the tool's only value-level safety net, and it is structural: it
-proves outputs and delta are mutually consistent, not that either is right.
+The revert is structural: it proves outputs and delta are mutually consistent,
+not that either is right. Value correctness is checked only by the verifying
+preview in stack mode (S7).
 
-The result is re-serialized with `json.MarshalIndent` (`:855`) and written by
-`cmd/patch_state_tf.go:148`. The operator runs `pulumi stack import`.
+The result is re-serialized with `json.MarshalIndent` (`:856`). In file mode it
+is written to `--out` (`cmd/patch_state_tf.go:351`) and the operator runs
+`pulumi stack import`; in stack mode it is handed to injection and then to
+`StackSession.Import` (`cmd/patch_state_tf.go:292`).
 
 **Dead or near-dead machinery in this file.** `updateDeltaForPatchedOutputs`
-(`:1205`) and `patchedOutputFieldInfo` (`:1146`) have no callers at all.
-`conformToDelta` (`:1331`) is called only from `pkg/state_patcher_test.go`.
-`PatchStateFromSchema` (`:1608`) — the schema-driven alternative to the curated
+(`:1206`) and `patchedOutputFieldInfo` (`:1147`) have no callers at all.
+`conformToDelta` (`:1379`) is called only from `pkg/state_patcher_test.go`.
+`PatchStateFromSchema` (`:1656`) — the schema-driven alternative to the curated
 fields file — is called only from tests; no command wires it up. That is
 consistent with the finding in [S-schema](#schema-forms-and-their-consumers)
 that its default-fallback path cannot work in production.
@@ -305,20 +341,114 @@ that its default-fallback path cannot work in production.
 ### S6 — re-imported state
 
 `pulumi stack import` runs `Snapshot.VerifyIntegrity`
-(`pulumi/pkg/v3@v3.222.0/resource/deploy/snapshot.go`). The tool has an
-in-process copy of that check, `VerifyDeploymentIntegrity`
-(`pkg/state_verify.go:34`), with an extra pre-check for an empty provider
-reference on a resource that has an ID (`:47-52`) — but nothing calls it. It
-is staged for stack mode in #22.
+(`pulumi/pkg/v3@v3.222.0/resource/deploy/snapshot.go`). The tool runs the same
+check in-process first, `VerifyDeploymentIntegrity` (`pkg/state_verify.go:35`),
+with an extra pre-check for an empty provider reference on a resource that has
+an ID (`:48-53`). It is called at the end of `InjectNonImportable`
+(`pkg/state_injector.go:154`), so an injected deployment is rejected before it
+is written or imported rather than by the CLI afterwards.
 
-### S7 — injection (designed, not wired)
+Note the asymmetry: a **patch-only** run is not integrity-checked. `PatchState`
+mutates values inside existing resources and adds no URNs, parents or provider
+references, so it cannot produce the structural faults `VerifyIntegrity` looks
+for — but nothing enforces that, and the check is cheap.
 
-Per the design spec, injection takes each sidecar entry, matches it to a
-`create` step from `pulumi preview --json`, and appends a state object built
-from `newState` plus the sidecar's `id`, `outputs`, `__pulumi_raw_state_delta`
-and `__meta`. `pkg/preview.go` (parsing, `CreatesByTypeName` at `:67`) and
-`pkg/state_verify.go` exist; `pkg/state_injector.go` and `pkg/state_stack.go` do
-not. See [#22](https://github.com/pulumi-proserv/pulumi-tool-import/issues/22).
+In stack mode the re-import goes through `StackSession.Import`
+(`pkg/state_stack.go:71`), which unmarshals the envelope back into an
+`apitype.UntypedDeployment` and calls `auto.Stack.Import`.
+
+### S7 — injection of non-importable resources
+
+`patch-state tf --non-importable` writes the resources `resolve tf` left out of
+the import file directly into the deployment. `InjectNonImportable`
+(`pkg/state_injector.go:69`) is the whole of it, and it **starts no provider**:
+everything provider-derived was computed by `digest tf` in S2b and travels in
+the sidecar (`:63-68`). The `providers` argument is only used for
+`GetSchemaFieldInfo` name lookups (`:188`).
+
+**The program is the source of truth for everything but the values.** A preview
+of the user's program reports these resources as `create` steps — they are
+declared, they simply could not be imported — and each step's `newState`
+carries the URN, parent, provider reference, inputs and dependency edges the
+engine computed. `CreatesByTypeName` (`pkg/preview.go:67`) indexes those by
+Pulumi type and name; `buildInjectedResource` (`pkg/state_injector.go:164`)
+copies `newState` wholesale (`:172-180`) and overrides only what the sidecar
+knows:
+
+| Field | Source |
+|---|---|
+| `urn`, `parent`, `provider`, `protect`, `dependencies`, `propertyDependencies`, … | `newState`, verbatim (`:172-180`) |
+| `custom` | `true` (`:181`) |
+| `id` | sidecar (`:182`) |
+| `outputs` | `r.PulumiOutputs` from S2b, or `MapTFAttributesToPulumi(r.Attributes, fields)` for a sidecar written before S2b existed (`:195-203`) |
+| `__pulumi_raw_state_delta`, `__meta` | `attachRawStateDelta` (`:304`) |
+| `inputs` | `newState.inputs` plus `__defaults: []` when the engine did not already supply one (`:212-230`) |
+
+Matching is strict in both directions: a sidecar entry listed twice is an error
+(`:113-118`), and a sidecar entry with no matching create step is an error
+(`:121-127`). There is no fallback heuristic.
+
+**Two placeholders have to be resolved, from opposite directions.**
+`(sensitive)` arrives in the *outputs* from the digest and is resolved by
+`resolveOutputSecrets` (`:365`), which maps the TF attribute name to a Pulumi
+name and looks the config key up in `r.RedactedAttributes`. `[secret]` arrives
+in the *inputs* from the preview — `MassageSecrets` masks every secret property
+in `pulumi preview --json` output — and is resolved by `resolveSecretInputs`
+(`:416`), which maps the Pulumi name back to a TF name (falling back to
+`tfbridge.PulumiToTerraformName` when no schema is loaded, `:442`) and wraps the
+real value in Pulumi's secret envelope (`:463-466`). Both hard-error when the
+value cannot be resolved (`:401`, `:446`, `:453`).
+
+Because both resolutions depend on a name mapping being right,
+`checkNoPlaceholders` (`:261`) then walks inputs and outputs recursively —
+including nested objects and arrays, which the targeted resolvers do not — and
+fails the injection if either literal survives anywhere (`:242-247`). That
+backstop depends on no mapping at all.
+
+**The delta is attached conservatively.** `attachRawStateDelta` (`:304`) writes
+`__meta` whenever a non-zero schema version is known (`:310-314`), independently
+of the delta, since a provider upgrade needs the version even when no delta
+exists. It then drops the delta outright if its raw JSON contains `(sensitive)`
+anywhere (`:324-327`) — substituting the real secret into outputs does not
+change what a `Replace` node reconstructs, so such a delta would rebuild
+Terraform state containing the placeholder — and otherwise validates it with
+`validateRecover` and deletes it on failure (`:332-335`). Every drop increments
+`InjectResult.NoDelta`, and the resource falls back to the bridge's pre-delta
+reconstruction. This is what closes
+[#25](https://github.com/pulumi-proserv/pulumi-tool-import/issues/25) for the
+common case; the residue is exactly the `NoDelta` count.
+
+`orderInjected` (`:479`) topologically sorts the batch so a resource appears
+after its parent and after any injected resource it depends on, because
+`VerifyIntegrity` rejects forward references. Only edges *within* the batch
+matter — anything already in the deployment is necessarily earlier (`:476-478`).
+
+**Stack mode wraps the cycle** (`pkg/state_stack.go`, driven from
+`cmd/patch_state_tf.go:97-348`):
+
+1. `Export` the deployment, write a timestamped backup to disk and print an
+   absolute `pulumi stack import` recovery command — **before any mutation**
+   (`cmd/patch_state_tf.go:104-149`).
+2. `PreviewJSON` (`pkg/state_stack.go:88`) for the injection skeleton; that same
+   preview is reused as the **baseline** (`cmd/patch_state_tf.go:254`). A
+   patch-only run takes a baseline of its own, still before import (`:280-288`).
+3. Patch, then inject, then `VerifyDeploymentIntegrity`, then `Import`.
+4. `PreviewJSON` again and compare.
+
+**The verification rule is a comparison, not a cleanliness check.**
+`CheckInjectionVerification` (`pkg/state_stack.go:156`) requires two things:
+every injected URN reports `same` (`CheckInjectedOps`, `:105`), and the run did
+not make anything else worse — no URN that was `same` or absent in the baseline
+is non-`same` afterwards (`:181-191`), and the count of non-`same` steps outside
+the injected set does not increase (`:192-196`). A stack mid-migration
+legitimately still has diffs, which is why the operator is running the tool at
+all; demanding an absolutely clean preview would revert nearly every legitimate
+patch-only pass (`:146-153`). `CheckPreviewClean` (`:129`) exists but is
+diagnostic only — it reports how many operations remain outstanding (`:345`).
+
+Any problem triggers `revertOrExplain` (`cmd/patch_state_tf.go:304`), which
+re-imports the pre-mutation export and, if even that fails, prints the
+hand-restore command pointing at the on-disk backup.
 
 ---
 
@@ -329,16 +459,18 @@ Defined in `pulumi-terraform-bridge/v3@v3.121.0/pkg/reservedkeys/keys.go`:
 `RawStateDelta = "__pulumi_raw_state_delta"` (`:30`).
 
 **This repo never imports `reservedkeys`.** Every occurrence is a string
-literal: `pkg/state_patcher.go:661`, `:663`, `:670`, `:1332`, `:1376`, `:1449`.
-`__meta` and `__defaults` appear only in comments
-(`pkg/module_map.go:72`, `pkg/import_filler.go:83`) — nothing in the tool reads
-or writes either today.
+literal or a locally redeclared constant: `pkg/state_patcher.go:661`, `:663`,
+`:670`, `:1380`, `:1424`, `:1497`, and `rawStateDeltaKey` / `metaKey` /
+`reservedDefaultsKey` in `pkg/state_injector.go:38`, `:39`, `:291`. The
+injector's comment (`:33-36`) says explicitly that it duplicates the constants
+to match the rest of the package. All three keys are now written by the tool,
+so the duplication has more surface than it did.
 
 | Key | Written by | Read by this tool | Mutated by this tool |
 |---|---|---|---|
-| `__pulumi_raw_state_delta` | The bridge, during `pulumi import`. Also computed by `ComputeInjectionState` (`pkg/raw_state_delta.go:69`) into the digest and sidecar. | `validateRecover` (`pkg/state_patcher.go:1449`), `conformToDelta` (`:1332`, tests only) | `injectAssetDeltas` (`:1164`) adds asset entries. `updateDeltaForPatchedOutputs` (`:1205`) would rebuild array deltas but is uncalled. |
-| `__meta` | The bridge (schema version + private state). | Nothing. | Nothing. `SchemaVersion` is carried in the digest (`pkg/module_map.go:74`) for a future injector to write. |
-| `__defaults` | The bridge, on inputs. | Nothing. | Nothing. The design calls for injecting `__defaults: []`. |
+| `__pulumi_raw_state_delta` | The bridge, during `pulumi import`. Computed by `ComputeInjectionState` (`pkg/raw_state_delta.go:69`) into the digest and sidecar, and written into outputs by `attachRawStateDelta` (`pkg/state_injector.go:329`). | `validateRecover` (`pkg/state_patcher.go:1497`), `attachRawStateDelta` (`pkg/state_injector.go:324`), `conformToDelta` (`pkg/state_patcher.go:1380`, tests only) | `injectAssetDeltas` (`:1165`) adds asset entries; `attachRawStateDelta` deletes the key when `Recover` fails (`pkg/state_injector.go:333`). `updateDeltaForPatchedOutputs` (`:1206`) would rebuild array deltas but is uncalled. Explicitly *not* copied from a preview create step (`pkg/state_injector.go:176-178`). |
+| `__meta` | The bridge (schema version + private state). Now also by `attachRawStateDelta` (`pkg/state_injector.go:312`), from the sidecar's `SchemaVersion`. | Nothing reads it back. | `metaPayload` (`:342`) builds the bridge's own `{"schema_version":"N"}` string and omits it entirely for version 0 (`:350-352`), mirroring `tfbridge.MakeTerraformResult`. |
+| `__defaults` | The bridge, on inputs; and by the injector, but **only when absent** (`pkg/state_injector.go:228-230`). | The same presence check. | Never overwritten: the engine's `Check` usually supplies a populated list, and replacing it with `[]` would discard what `Check` worked out (`:225-227`). |
 
 The delta's contract, per the bridge's own `turnaroundCheck`
 (`rawstate.go:522`), is that `Recover` must reproduce the raw state byte for
@@ -348,8 +480,12 @@ byte. That is why `patch-state` must edit it when it edits a value, and why
 refuses object values outright (`:263`), which is why an absent delta and an
 empty delta are not the same thing.
 
-[#25](https://github.com/pulumi-proserv/pulumi-tool-import/issues/25) covers the
-raw state delta gap.
+[#25](https://github.com/pulumi-proserv/pulumi-tool-import/issues/25) recorded
+that injected resources were written without a delta at all, because computing
+one appeared to need a `shim.InstanceState` the tool cannot build. This branch
+closes that by taking the `RawStateComputeDelta` route instead (S2b). What
+remains of the issue is the `NoDelta` residue: resources whose delta could not
+be computed, embedded `(sensitive)`, or failed `Recover`.
 
 ---
 
@@ -415,7 +551,7 @@ Consequently, on this mock:
 The last row is not documented anywhere else and matters: `GetSchemaFieldInfo`
 sets `HasDefault` from `schema.Default()` (`pkg/schema_fields.go:97`), so
 **`HasDefault` is always false in production**, and `PatchStateFromSchema`'s
-default-fallback branch (`pkg/state_patcher.go:602`, fed at `:1716-1717`) can
+default-fallback branch (`pkg/state_patcher.go:602`, fed at `:1765-1766`) can
 never fire against a real provider. It fires in tests, which construct
 `schema.Schema{Default: …}` directly. This is very likely why the curated
 `data/aws-import-diff-fields.json` exists and why `PatchStateFromSchema` was
@@ -423,42 +559,54 @@ never wired to a command.
 
 Consumers of the mock:
 - `bridge.PulumiTypeToken` (`pkg/bridge/pulumi_type_token.go:28`) — Pulumi type
-  token for a TF type, used to build URNs (`pkg/module_map.go:542`).
+  token for a TF type, used to build URNs (`pkg/module_map.go:568`).
 - `GetSchemaFieldInfo` (`pkg/schema_fields.go:72`) — TF→Pulumi names via
   `tfbridge.TerraformToPulumiNameV2` (`:93`), input/computed classification
   (`:103-104`), asset overlay (`:107-113`).
 - `ComputeInjectionState` — passes `schemaMap` and `schemaInfos` straight into
   `MakeTerraformOutputs` and `RawStateComputeDelta`
-  (`pkg/module_map.go:456-465` → `pkg/raw_state_delta.go:69`, `:110`).
+  (`pkg/module_map.go:482-491` → `pkg/raw_state_delta.go:69`, `:110`).
 
 Note `PulumiTypeToken` calls `camelPascalPulumiName`, which contains a
 `contract.Assertf` on the resource-type prefix
 (`pkg/bridge/pulumi_type_token.go:42`). That is a **panic**, not an error, and
-`buildResourceURN` (`pkg/module_map.go:542`) only handles the error return. A
+`buildResourceURN` (`pkg/module_map.go:568`) only handles the error return. A
 provider whose resources do not all share its `GetResourcePrefix()` would abort
 the digest.
 
 ### 4. Curated data files
 
 `data/aws-import-diff-fields.json`, loaded by `LoadFieldsFile`
-(`pkg/state_patcher.go:1774`), and `pkg/importsupport/fallback.json`. These
+(`pkg/state_patcher.go:1823`), and `pkg/importsupport/fallback.json`. These
 encode facts about provider *Go code* — `Default`, `Read` behaviour, `Importer`
 — that no schema exposes. `docs/aws-import-diff-fields.md` explains the
 categories; `docs/non-importable-resources.md:135-145` explains why `Read`
 semantics cannot be probed.
 
-### Property naming: three mechanisms that can disagree
+### Property naming: five mechanisms that can disagree
 
 | Mechanism | Where | Basis |
 |---|---|---|
 | `tfbridge.TerraformToPulumiNameV2(tfName, schemaMap, fieldInfos)` | `pkg/schema_fields.go:93` | Schema-aware; handles pluralization from `MaxItems`, and `info.Schema.Name` overrides |
-| `snakeToCamel` | `pkg/state_patcher.go:1484`, applied recursively by `camelCaseKeys` (`:1497`) | Pure string transform, no schema |
+| `snakeToCamel` | `pkg/state_patcher.go:1532`, applied recursively by `camelCaseKeys` (`:1545`) | Pure string transform, no schema |
 | `tfToPulumiField` / `pulumiToTFField` | `pkg/state_patcher.go:121`, `:147` | A 23-entry hand-written table |
 | `tfbridge.MakeTerraformOutputs` | via `pkg/raw_state_delta.go:110` | The bridge's own conversion, schema-driven at every nested level |
+| `tfbridge.PulumiToTerraformName` | `pkg/state_injector.go:442` | The bridge's generic reverse transform, used only when no schema describes the field |
 
 `MapTFAttributesToPulumi` (`pkg/non_importable_file.go:54`) uses the first when
 a field is in the schema and falls back to the second when it is not (`:60-63`),
-which is the only place the two are reconciled explicitly.
+which is the only place the two are reconciled explicitly. It is now live, as
+the injector's fallback when a sidecar predates S2b
+(`pkg/state_injector.go:202`).
+
+The injector needs the mapping in **both** directions at once and gets each
+from a different mechanism: `resolveOutputSecrets` goes TF→Pulumi through
+`SchemaFieldInfo.PulumiName` with a `snakeToCamel` fallback
+(`pkg/state_injector.go:385-388`), while `resolveSecretInputs` goes
+Pulumi→TF through `PulumiToTFNames` with a `tfbridge.PulumiToTerraformName`
+fallback (`:436-443`). The two fallbacks are not inverses of each other, which
+is precisely why `checkNoPlaceholders` (`:261`) exists as a name-independent
+backstop.
 
 They disagree in predictable cases:
 
@@ -473,8 +621,8 @@ They disagree in predictable cases:
   encodes one such override by hand — `"filename": "code"` (`:126`) and
   `"parameter": "parameters"` (`:134`).
 - **`PatchState` vs `PatchStateFromSchema`.** The former derives the TF name
-  from the Pulumi name through the hand table (`:814`); the latter takes both
-  from the schema (`:1714-1715`). A field present in the fields file but absent
+  from the Pulumi name through the hand table (`:815`); the latter takes both
+  from the schema (`:1763-1764`). A field present in the fields file but absent
   from the table gets `TFName: ""` and is therefore never matched to a digest
   value at all (`:510`) — it can only ever be patched from its default.
 
@@ -486,11 +634,11 @@ They disagree in predictable cases:
 |---|---|---|---|---|
 | 1 | `.tfstate` bytes | Terraform | `*states.State` | `statefile.Read`, `pkg/tofu_eval.go:147` |
 | 1a | `tofu show -json` bytes | `tofu` | `tfjson.State` → `*states.State` | `pkg/generate_module_map.go:125`, `:259` |
-| 2 | `AttrsJSON` (`[]byte`, exact) | Terraform | `map[string]interface{}` (float64) | `json.Unmarshal`, `pkg/module_map.go:368` |
-| 3 | `[]cty.PathValueMarks` | Terraform | `(sensitive)` placeholders | `redactSensitivePaths`, `pkg/module_map.go:1021` |
-| 3b | same | | stack config secrets | `DiscoverSensitiveSecrets` → `SetSecretsFromState`, `:698`, `:967` |
-| 4 | `ModuleResource` | `matchResources`, `:327` | `tf-digest.json` | `WriteModuleMap`, `:1098` |
-| 5 | `AttrsJSON` (redacted, re-marshalled) | `pkg/module_map.go:479` | `cty.Value` | `ctyjson.Unmarshal`, `pkg/raw_state_delta.go:58` |
+| 2 | `AttrsJSON` (`[]byte`, exact) | Terraform | `map[string]interface{}` with `json.Number` | `decodeAttrs`, `pkg/module_map.go:432` |
+| 3 | `[]cty.PathValueMarks` | Terraform | `(sensitive)` placeholders | `redactSensitivePaths`, `pkg/module_map.go:1047` |
+| 3b | same | | stack config secrets | `DiscoverSensitiveSecrets` → `SetSecretsFromState`, `:724`, `:993` |
+| 4 | `ModuleResource` | `matchResources`, `:328` | `tf-digest.json` | `WriteModuleMap`, `:1124` |
+| 5 | `AttrsJSON` (redacted, re-marshalled) | `pkg/module_map.go:505` | `cty.Value` | `ctyjson.Unmarshal`, `pkg/raw_state_delta.go:58` |
 | 6 | `cty.Value` | | `resource.PropertyMap` | `MakeTerraformOutputs`, `pkg/raw_state_delta.go:110` |
 | 7 | `cty.Value` + `PropertyMap` | | `RawStateDelta` | `RawStateComputeDelta`, `:69` |
 | 8 | `RawStateDelta` | | `map[string]interface{}` | `delta.Marshal().Mappable()`, `:79` |
@@ -498,10 +646,14 @@ They disagree in predictable cases:
 | 10 | `ModuleResource` | | `NonImportableResource` | `pkg/import_filler.go:265` |
 | 11 | `ImportFile` | | `[]*optimport.ImportResource` | `pkg/batchimport/file.go:39` |
 | 12 | — | `pulumi import` | deployment JSON (`apitype.DeploymentV3`) | the engine + bridge |
-| 13 | deployment JSON | `pulumi stack export` | `map[string]interface{}` with `json.Number` | `pkg/state_patcher.go:705` |
-| 14 | `map[string]interface{}` | `patchResourceFields`, `:495` | patched deployment JSON | `json.MarshalIndent`, `:855` |
-| 15 | deployment JSON | | `deploy.Snapshot` | `stack.DeserializeDeploymentV3`, `pkg/state_verify.go:54` (uncalled) |
-| 16 | `pulumi preview --json` | | `PreviewDigest` with `json.Number` | `ParsePreviewJSON`, `pkg/preview.go:54` (uncalled) |
+| 13 | `apitype.UntypedDeployment` | `auto.Stack.Export` | full envelope bytes | `StackSession.Export`, `pkg/state_stack.go:58` |
+| 14 | deployment JSON | `pulumi stack export` | `map[string]interface{}` with `json.Number` | `pkg/state_patcher.go:706` |
+| 15 | `map[string]interface{}` | `patchResourceFields`, `:495` | patched deployment JSON | `json.MarshalIndent`, `:856` |
+| 16 | `pulumi preview --json` | `StackSession.PreviewJSON`, `pkg/state_stack.go:88` | `PreviewDigest` with `json.Number` | `ParsePreviewJSON`, `pkg/preview.go:54` |
+| 17 | `PreviewDigest` | | `map[PreviewKey]newState` | `CreatesByTypeName`, `pkg/preview.go:67` |
+| 18 | `NonImportableResource` + `newState` | | injected resource object | `buildInjectedResource`, `pkg/state_injector.go:164` |
+| 19 | injected deployment JSON | `InjectNonImportable`, `:150` | `deploy.Snapshot` | `stack.DeserializeDeploymentV3`, `pkg/state_verify.go:55` |
+| 20 | deployment bytes | | `apitype.UntypedDeployment` → stack | `StackSession.Import`, `pkg/state_stack.go:71` |
 
 `shim.InstanceState` appears nowhere in this table. The tool never constructs
 one and cannot: the only `shim.Resource` it holds is the mock, whose
@@ -516,43 +668,57 @@ state).
 
 Ordered roughly by how much damage each can do.
 
-### 1. `UseNumber` is applied at the reading end, never at the producing end
+### 1. `UseNumber` is applied at the reading end; the producing end is now only partly covered
 
-`UseNumber` appears in five places: `pkg/preview.go:57`,
-`pkg/non_importable_file.go:43`, `pkg/state_patcher.go:705` and `:1623`,
-`pkg/state_patcher_cfn.go:42` and `:102`. All six of those read documents the
-tool did not write, or wrote through a path that had already lost precision.
+**Partly fixed on this branch.** The original finding was that `UseNumber`
+appeared only where the tool *read* a document it did not write, while every
+site that *produced* one decoded plainly — so the precision was already gone
+before the careful reader saw it. Three sites on the path into Pulumi state have
+since been fixed:
 
-Every place a value is *produced* uses plain `json.Unmarshal`:
+| Site | Fix |
+|---|---|
+| `pkg/module_map.go:369` | `decodeAttrs` (`:432`) decodes `AttrsJSON` with `UseNumber`, so digest `attributes` carry `json.Number`. |
+| `pkg/module_map.go:372` | `formatImportID` (`:446`) is still `%v`, but `json.Number` is a string type, so it now prints the original digits. |
+| `cmd/import_id_match.go:86`, `cmd/patch_state_tf.go:165` | Both digest decodes use `UseNumber`, so the sidecar and the patched deployment keep exact integers. |
+
+What the fix does **not** cover, and why each still matters:
 
 | Site | Consequence |
 |---|---|
-| `pkg/module_map.go:368` | Digest `attributes` are float64. A 19-digit integer is rounded before it is ever written. |
-| `pkg/module_map.go:370` | `ImportID` is `fmt.Sprintf("%v", float64)` → `1.2345678901234568e+18` for a large numeric id. |
-| `pkg/module_map.go:731`, `:751` | Secret values written to stack config go through the same float64 stringification. |
-| `pkg/generate_module_map.go:125`, `pkg/tofu/loader.go:82` | The `tofu show -json` path loses precision before the digest is even built. |
-| `cmd/import_id_match.go:84` | Digest read as float64, then re-marshalled into the sidecar — defeating `LoadNonImportableFile`'s `UseNumber`. |
-| `cmd/patch_state_tf.go:78` | Digest read as float64, then written into a deployment that was carefully read with `UseNumber`. **This is the direct contradiction:** the state is protected, the values being written into it are not. |
-| `pkg/raw_state_delta.go:106` | Outputs pass through float64; unavoidable, since `resource.PropertyValue` numbers are float64. |
+| `pkg/generate_module_map.go:125`, `pkg/tofu/loader.go:82` | The `tofu show -json` entry path still loses precision before the digest is built. `decodeAttrs` cannot help: by the time it runs, `rawStateFromTfjson` has already re-marshalled a `float64` (`pkg/generate_module_map.go:296`). |
+| `pkg/module_map.go:757`, `:777` | `DiscoverSensitiveSecrets` still decodes plainly and stringifies with `fmt.Sprintf("%v", …)`, so a numeric secret is corrupted on its way into stack config — and that config value is what injection and patching write back into state. |
+| `cmd/resolve_cfn.go:39`, `cmd/patch_state_cfn.go:84` | The CFN digest decodes have the same shape as the two TF ones that were fixed. |
+| `pkg/raw_state_delta.go:106` | Outputs pass through `float64`; unavoidable, since `resource.PropertyValue` numbers are `float64`. The delta itself is computed from the cty value and stays exact. |
 
-Verified empirically: `json.Unmarshal` + `json.Marshal` maps
-`1234567890123456789` to `1234567890123456800`, and `fmt.Sprintf("%v", …)` on
-the intermediate `float64` gives `1.2345678901234568e+18`.
+**The failure mode is silence, not a parse error.** Measured: `json.Unmarshal` +
+`json.Marshal` maps `1234567890123456789` to `1234567890123456800` — a wrong
+value that is still valid JSON and still an integer. Scientific notation, which
+Pulumi's state parser would reject loudly, only appears at ≥1e21. AWS account
+IDs are not affected: they appear in state as strings. So the realistic damage
+is a silently wrong large integer (snowflake IDs, epoch-nanosecond timestamps,
+some resource IDs), not a crash.
 
-The cheap fix is a single `pkg` helper — decode-with-`UseNumber` — used at every
-`json.Unmarshal` that touches state or digest data. The expensive part is that
-`resource.PropertyValue` cannot represent an exact large integer at all, so
-`PulumiOutputs` and anything derived from a `PropertyMap` has a hard ceiling
-regardless.
+The remaining fix is the same shape as the one applied: a single decode-with-
+`UseNumber` helper used at every `json.Unmarshal` that touches state or digest
+data. See
+[#27](https://github.com/pulumi-proserv/pulumi-tool-import/issues/27).
 
 ### 2. Two provider loaders, neither able to do the other's job (#26)
 
-`populateInjectionState` (`pkg/module_map.go:434`) is the clearest symptom: it
+`populateInjectionState` (`pkg/module_map.go:460`) is the clearest symptom: it
 needs the live provider for the cty type *and* the bridge mock for Pulumi
-naming, and bails out entirely if either is missing (`:445`, `:449`, `:466`).
-The comment at `:466-477` documents that these are "two different loaders with
+naming, and bails out entirely if either is missing (`:471`, `:475`, `:492`).
+The comment at `:492-503` documents that these are "two different loaders with
 different failure modes" and that a mismatch produces a silently
 under-populated digest.
+
+Injection has made the consequence concrete rather than theoretical: a digest
+built while the two disagreed carries no `pulumiOutputs`, so the injector falls
+back to `MapTFAttributesToPulumi` (`pkg/state_injector.go:202`), and no
+`rawStateDelta`, so the resource is injected without one and counted in
+`NoDelta`. Both degradations are correct, and neither is distinguishable from
+"this resource genuinely needed nothing".
 
 The mock's specific gaps, all verified above: no `Default` (so
 `PatchStateFromSchema` is unusable), `SchemaVersion` always 0, `Importer`
@@ -574,32 +740,39 @@ Two directions worth evaluating, neither traced here:
 
 ### 3. Sensitivity handling has three independent implementations and two blind spots
 
-- `redactSensitivePaths` (`pkg/module_map.go:1021`) handles top-level paths
-  only; nested sensitive values reach the digest in plaintext (`:1036`).
+- `redactSensitivePaths` (`pkg/module_map.go:1047`) handles top-level paths
+  only; nested sensitive values reach the digest in plaintext (`:1062`).
 - The `tofu show -json` path carries no sensitivity at all
   (`pkg/generate_module_map.go:302` vs `terraform-json/state.go:164`), so on
   that path *nothing* is redacted and no secret is written to config.
 - `BuildSensitivityMap` (`pkg/provider_schema.go:44`) — the schema-driven
   implementation that handles nesting — is unused.
 - The digest↔config link is the pure function `flattenAddress`
-  (`pkg/module_map.go:818`), recomputed at three sites
-  (`:767`, `pkg/import_filler.go:102`, `pkg/state_patcher.go:554`), and only
-  the first applies dedup suffixes (`:776`). Colliding keys are therefore
+  (`pkg/module_map.go:844`), recomputed at four sites
+  (`:793`, `pkg/import_filler.go:102`, `pkg/state_patcher.go:554`, and
+  indirectly via `RedactedAttributes` in `pkg/state_injector.go:383`), and only
+  the first applies dedup suffixes (`:803`). Colliding keys are therefore
   unresolvable downstream, with only a digest-time warning.
-- The design spec adds a *second* placeholder to worry about: `[secret]`, from
-  `MassageSecrets` in `stateForJSONOutput`, on the preview path.
+- The **second placeholder is now live**, not just designed: `[secret]`, from
+  `MassageSecrets` on the preview path, arrives in injected *inputs* while
+  `(sensitive)` arrives in injected *outputs*, and each is resolved by a
+  different function using a different name mapping
+  (`pkg/state_injector.go:365`, `:416`). `checkNoPlaceholders` (`:261`) is the
+  name-independent backstop that makes the pair safe, and its existence is a
+  fair measure of how hard the naming is to get right.
 
 Recording `RedactedAttributes` in the digest itself (rather than recomputing it
 in `resolve tf` from a string match against `"(sensitive)"`,
-`pkg/import_filler.go:98`) would make the link explicit and dedup-safe.
+`pkg/import_filler.go:98`) would make the link explicit and dedup-safe. See
+[#28](https://github.com/pulumi-proserv/pulumi-tool-import/issues/28).
 
 ### 4. `patch-state` can only repair what the digest kept, and only by name
 
 `PatchState` matches state resources to digest resources by Pulumi resource
-*name* (`pkg/state_patcher.go:781`, built by `BuildDigestNameMap` at `:307`),
+*name* (`pkg/state_patcher.go:782`, built by `BuildDigestNameMap` at `:307`),
 with a chain of fallbacks ending in "exactly one unused candidate of this type"
 (`:412`, `:461`). A mismatch is reported only as an aggregate `NoMatch` count
-(`:844`) — there is no per-resource report of what went unmatched, and no way to
+(`:845`) — there is no per-resource report of what went unmatched, and no way to
 assert that a resource the operator cares about was matched.
 
 The same fallback exists in `FillImportFile` (`pkg/import_filler.go:364`) with
@@ -608,64 +781,120 @@ a warning, and in `matchChildren`'s normalized-name pass
 different rules is a simplification opportunity: `FillImportFile` and
 `BuildDigestNameMap` are the same algorithm over different input shapes.
 
+Injection deliberately went the other way. `InjectNonImportable` matches on
+Pulumi type plus name against preview create steps and **fails** on a duplicate
+or a miss (`pkg/state_injector.go:113-127`) rather than falling back to a
+"single candidate" guess. It is the same matching problem with the opposite
+policy, and the stricter policy is the one that produces an actionable error.
+
 ### 5. Dead and half-wired code obscures which path is real
 
-- `updateDeltaForPatchedOutputs` (`pkg/state_patcher.go:1205`): no callers.
-- `conformToDelta` (`:1331`): tests only.
-- `PatchStateFromSchema` (`:1608`): tests only, and its default path is
+- `updateDeltaForPatchedOutputs` (`pkg/state_patcher.go:1206`): no callers.
+- `conformToDelta` (`:1379`): tests only.
+- `PatchStateFromSchema` (`:1656`): tests only, and its default path is
   unreachable in production (see §2).
 - `BuildSensitivityMap`, `RedactSensitiveAttributes` (`pkg/provider_schema.go`):
   tests only.
-- `ParsePreviewJSON`, `VerifyDeploymentIntegrity`, `LoadNonImportableFile`,
-  `MapTFAttributesToPulumi`, `PulumiToTFNames`: built for #22, not yet wired.
 
-The last group is expected work-in-progress. The first four are not, and
-`PatchStateFromSchema` in particular reads like a supported alternative to the
-curated fields file when it cannot currently work.
+**Resolved for the #22 group.** `ParsePreviewJSON`, `VerifyDeploymentIntegrity`,
+`LoadNonImportableFile`, `MapTFAttributesToPulumi` and `PulumiToTFNames` were
+listed here as built-but-unwired; all five are now on the live injection path
+(`pkg/state_injector.go:99`, `:154`, `:202`, `:422`, `cmd/patch_state_tf.go:246`).
+
+What remains is the first four, and `PatchStateFromSchema` in particular still
+reads like a supported alternative to the curated fields file when it cannot
+currently work.
 
 ### 6. The digest is the only inter-command contract, and it is untyped at the boundaries
 
-`ModuleMap` is decoded with `json.Unmarshal` into a struct whose `Attributes`
-is `map[string]interface{}`. There is no schema version on the file, no
-checksum, and no record of which provider versions produced it — only
-`mm.Providers`, a map whose values are always the empty string
-(`pkg/module_map.go:154`). A digest built against AWS provider 5.x and consumed
-by a `patch-state` run against 7.x is indistinguishable from a matched pair.
+`ModuleMap` is decoded into a struct whose `Attributes` is
+`map[string]interface{}`. There is no schema version on the file, no checksum,
+and no record of which provider versions produced it — only `mm.Providers`, a
+map whose values are always the empty string (`pkg/module_map.go:155`). A digest
+built against AWS provider 5.x and consumed by a `patch-state` run against 7.x
+is indistinguishable from a matched pair.
 
-`ImportSupportChecked` (`:49`) is the one piece of provenance that *is*
-recorded, and `resolve tf` uses it well (`cmd/import_id_match.go:171`). The
+That map has since grown a second job: `loadProvidersForDigest`
+(`cmd/patch_state_tf.go:417`) uses its *keys* to re-resolve provider schemas at
+injection time without a Terraform state file, passing `nil` versions
+(`:429`). So the tool now depends on the digest recording which providers were
+involved, while still recording nothing about which versions — and the injected
+property names come from whatever version `RecommendPulumiProvider` picks today.
+
+`ImportSupportChecked` (`:50`) is the one piece of provenance that *is*
+recorded, and `resolve tf` uses it well (`cmd/import_id_match.go:174`). The
 same treatment for provider versions and for "injection state was computed /
 was attempted and failed" would let consumers tell absence from failure —
-today `PulumiOutputs == nil` means both.
+today `PulumiOutputs == nil` means both, and the injector's `NoDelta` count
+collapses three distinct causes into one number
+(`pkg/state_injector.go:46-50`).
 
-### 7. Verification is structural everywhere it exists
+### 7. Verification is structural, except in stack mode
 
-`validateRecover` (`pkg/state_patcher.go:1448`) checks delta↔outputs
-consistency. `VerifyDeploymentIntegrity` (`pkg/state_verify.go:34`) checks
-snapshot structure. Neither checks a value against the cloud, and per the design
-spec's third finding, `refresh` cannot either for the types that matter. The
-only real check is `pulumi preview` reporting zero operations, and no command
-runs it — it is a documented manual step. That gap is the whole content of the
-stack-mode half of #22.
+**Partly fixed on this branch.** `validateRecover`
+(`pkg/state_patcher.go:1496`) checks delta↔outputs consistency;
+`VerifyDeploymentIntegrity` (`pkg/state_verify.go:35`) checks snapshot
+structure. Neither checks a value against the cloud, and `refresh` cannot
+either for the types that matter — it reports these resources unchanged even
+when their values are wrong.
+
+Stack mode now closes that: it runs `pulumi preview --json` before and after
+the mutation and reverts on regression (`pkg/state_stack.go:156`,
+`cmd/patch_state_tf.go:313-339`). Three things about that gate are worth being
+precise about, because each is easy to misread:
+
+- **It is a comparison, not a clean bill.** A stack mid-migration legitimately
+  has diffs. Requiring an absolutely clean preview would revert nearly every
+  legitimate patch-only pass, so the bar is "no regression versus the baseline"
+  plus "every injected URN reports `same`" (`pkg/state_stack.go:146-153`).
+- **The baseline is the pre-mutation preview**, reused from the injection
+  skeleton when there is one (`cmd/patch_state_tf.go:254`). It is therefore
+  taken against unpatched state, which is what makes the comparison meaningful.
+- **It covers stack mode only.** File mode writes `--out` and prints the
+  verification instructions (`cmd/patch_state_tf.go:380-383`); nothing enforces
+  that the operator follows them. The air-gapped path is still unverified by
+  construction.
+
+The residual gap: `CheckInjectionVerification` compares *counts* of non-`same`
+steps outside the injected set (`pkg/state_stack.go:192-196`) as well as
+per-URN regressions. A run that fixes one neighbouring resource and breaks
+another nets to zero on the count, but the per-URN `newlyDirty` check
+(`:181-191`) catches it — so the count is a backstop for churn the per-URN pass
+cannot see (resources absent from one preview entirely), not the primary gate.
 
 ### 8. Related, already tracked
 
 - [#22](https://github.com/pulumi-proserv/pulumi-tool-import/issues/22) —
-  non-importable state injection; S3b and S7 above.
+  non-importable state injection; S2b, S3b and S7 above. Implemented on this
+  branch.
 - [#24](https://github.com/pulumi-proserv/pulumi-tool-import/issues/24) —
   splitting large workspaces into shard stacks. Relevant here because it needs
-  the same export/verify/import helpers as #22, and because sharding multiplies
-  the digest-provenance problem in §6.
+  the same export/verify/import helpers `pkg/state_stack.go` now provides, and
+  because sharding multiplies the digest-provenance problem in §6.
 - [#25](https://github.com/pulumi-proserv/pulumi-tool-import/issues/25) — the
-  raw state delta gap.
+  raw state delta gap. Closed for the common case by S2b; the residue is the
+  `NoDelta` count.
 - [#26](https://github.com/pulumi-proserv/pulumi-tool-import/issues/26) — the
   two loaders; §2.
+- [#27](https://github.com/pulumi-proserv/pulumi-tool-import/issues/27) — JSON
+  number precision; §1. Three sites fixed on this branch, the rest outstanding.
+- [#28](https://github.com/pulumi-proserv/pulumi-tool-import/issues/28) —
+  sensitive values: the three implementations, the two uncovered paths, and the
+  recomputed config-key link; §3.
 
 ### Not traced
 
 - What the engine and bridge write into `__meta` and `__defaults` during
-  `pulumi import`, in detail. The tool reads neither, so their contents were
-  taken from the `reservedkeys` doc comments rather than from the write sites.
+  `pulumi import`, in detail. The tool now writes both on the injection path,
+  but modelled on the bridge rather than read from its write sites:
+  `metaPayload` (`pkg/state_injector.go:342`) mirrors what
+  `tfbridge.MakeTerraformResult` produces, and the `__defaults` handling assumes
+  the engine's `Check` populates the list. Neither assumption was verified
+  against the bridge source; both are asserted only by unit test.
+- Whether `__meta` carries anything besides `schema_version` for the resource
+  types injection targets. `metaPayload` writes only that key, which is correct
+  for a resource with no provider private state — but "these types have none"
+  was not established.
 - The CFN half of the pipeline (`pkg/state_patcher_cfn.go`, `pkg/cfn`). It has
   its own state representation and its own `UseNumber` discipline
   (`pkg/state_patcher_cfn.go:42`, `:102`), and shares only
