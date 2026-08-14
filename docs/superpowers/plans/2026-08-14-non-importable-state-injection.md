@@ -572,7 +572,10 @@ func TestComputeInjectionState_RandomPet(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	prov, err := tfprovider.LoadProvider(ctx, "registry.opentofu.org/hashicorp/random", "")
+	// LoadProvider requires an exact version — it calls getproviders.ParseVersion,
+	// which rejects "". These are the constants pkg/importsupport's tests use, and
+	// TestMain there already warms this provider into the plugin cache.
+	prov, err := tfprovider.LoadProvider(ctx, "registry.terraform.io/hashicorp/random", "3.7.2")
 	require.NoError(t, err)
 	defer prov.Close(ctx)
 
@@ -641,7 +644,7 @@ func ComputeInjectionState(
 	schemaMap shim.SchemaMap,
 	schemaInfos map[string]*tfbridge.SchemaInfo,
 ) (map[string]interface{}, map[string]interface{}, int64, error) {
-	schemas := prov.GetProviderSchema(ctx)
+	schemas := prov.GetProviderSchema()
 	sch, ok := schemas.ResourceTypes[tfType]
 	if !ok {
 		return nil, nil, 0, fmt.Errorf("provider has no schema for %s", tfType)
@@ -702,7 +705,8 @@ func TestComputeInjectionState_NestedBlockDeltaRecovers(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	prov, err := tfprovider.LoadProvider(ctx, "registry.opentofu.org/hashicorp/aws", "")
+	// An exact version is required; pick the one the repo's fixtures already use.
+	prov, err := tfprovider.LoadProvider(ctx, "registry.terraform.io/hashicorp/aws", "7.24.0")
 	if err != nil {
 		t.Skipf("aws provider unavailable: %v", err)
 	}
