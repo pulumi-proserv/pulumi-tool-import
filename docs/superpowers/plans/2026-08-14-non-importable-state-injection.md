@@ -912,7 +912,7 @@ git commit -m "feat(inject): verify deployments with the engine's snapshot integ
 **Interfaces:**
 - Consumes: `PreviewKey`, `PreviewDigest.CreatesByTypeName` (Task 1); `NonImportableFile`, `MapTFAttributesToPulumi`, `PulumiToTFNames` (Task 2); `VerifyDeploymentIntegrity` (Task 3); `GetSchemaFieldInfo`, `LookupProviderForPulumiType`, `BuildPulumiToTFTypeMap` (`pkg/schema_fields.go`); `ProviderWithMetadata`, `providermap.TerraformProviderName`.
 - Produces:
-  - `type InjectResult struct { Injected int; SecretsResolved int; Skipped []string }`
+  - `type InjectResult struct { Injected int; SecretsResolved int; NoDelta int; URNs []string; Skipped []string }`
   - `func InjectNonImportable(stateData []byte, sidecar *NonImportableFile, preview *PreviewDigest, providers map[providermap.TerraformProviderName]*ProviderWithMetadata, configSecrets map[string]string) ([]byte, *InjectResult, error)`
 
 **Rules this task implements, from the spec:**
@@ -1980,7 +1980,7 @@ And after injection, in stack mode only, import and verify:
 			}
 ```
 
-`injectedURNs` comes from the injection result — add `URNs []string` to `pkg.InjectResult` in `pkg/state_injector.go`, appending each object's `urn` where `result.Injected++` happens, and use `injectResult.URNs` here. Add `"time"` to the command's imports.
+`injectedURNs` is `injectResult.URNs`. Task 4 already defines that field and populates it where `result.Injected++` happens — do not re-add it. Add `"time"` to the command's imports.
 
 - [ ] **Step 6: Run all tests, lint, and vet**
 
@@ -2053,7 +2053,14 @@ Add under `## [Unreleased]`:
   preview as unchanged.
 ```
 
-Do not add an entry for `digest tf` — this work leaves it unchanged.
+Add a `digest tf` entry too — Task 2b changes it:
+
+```markdown
+- `digest tf` now records the Pulumi outputs, raw state delta, and Terraform
+  schema version for resources it flags as non-importable, computed while the
+  provider it already starts for the import-support probe is open. `patch-state`
+  consumes them, so it needs no provider of its own.
+```
 
 - [ ] **Step 4: Commit**
 
