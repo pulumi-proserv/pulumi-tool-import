@@ -37,13 +37,13 @@ the result with a preview, and leaves the stack either correct or untouched.
 
 ## Scope
 
-In scope: injection of sidecar resources into an exported deployment; stack mode that wraps
+In scope: injection of sidecar resources into an exported deployment; outputs and
+`__pulumi_raw_state_delta` built through the bridge's own conversion; stack mode that wraps
 export/import/preview so no hand-run `pulumi` steps remain; structural verification via the
 engine's own integrity check; preview-based value verification with revert on disagreement.
 
 Out of scope: any change to `digest tf` — dependency edges come from the preview, not the
-digest; synthesizing `__pulumi_raw_state_delta` (see Findings); CFN support — this is the
-`tf` subcommand only.
+digest; CFN support — this is the `tf` subcommand only.
 
 ## Findings that shaped the design
 
@@ -82,18 +82,40 @@ reported `+-1 to replace`. These types' `Read` either sets no attributes or re-d
 from the resource ID, so refresh only proves the ID resolves. **Zero operations on preview is
 the acceptance criterion. Refresh is never acceptable as one.**
 
-### Omitting `__pulumi_raw_state_delta` is a supported path
+### The raw state delta: what it is for, and why injection should produce one
 
-`makeTerraformStateViaUpgradeEnabled` (`pulumi-terraform-bridge/v3@v3.121.0/pkg/tfbridge/schema.go:1365`)
-returns false when the key is absent, and the bridge falls back to `makeTerraformStateWithOpts`,
-which rebuilds Terraform state from the Pulumi property bag. That is the route every state
-written before the delta existed takes. Injecting without a delta is therefore not a
-degradation, and synthesizing one is worse than omitting it: a subtly wrong delta would make
-`validateRecover` pass on bad state.
+The delta encodes the difference between a Pulumi `PropertyMap` and the provider's raw
+Terraform state, so the latter can be reconstructed without storing it twice. Its purpose,
+from its own doc comment (`pkg/tfbridge/rawstate.go:39-56`), is **provider version upgrades**:
+"the transformation to PropertyMap is schema aware and may rename fields or even change their
+type, and the V-prev schema is not available at read time."
 
-One consequence to record: without a delta, `parseMeta` stamps `schema_version` with the
-resource's *current* schema version, where the delta path forces zero. For freshly injected,
-current-shaped data, current is correct.
+Three facts govern the design.
+
+**Delta and property map are a matched pair.** When the bridge writes a delta it runs
+`turnaroundCheck` (`rawstate.go:522`), which calls `Recover` immediately and requires the
+result to match the original raw state byte for byte, refusing to write otherwise. This is why
+`patch-state` must edit the delta when it edits a value (`updateDeltaForPatchedOutputs`,
+`pkg/state_patcher.go:1205`): leaving it stale makes `Recover` either fail with "does not apply
+cleanly to the resource state" or, in the `Replace` case which stores raw JSON verbatim,
+silently rebuild state containing the old value.
+
+**An absent delta is not an empty delta.** `rawStateRecoverNatural` — the empty-delta case —
+errors on any object value ("cannot process Object values due to map vs object confusion",
+`rawstate.go:261`), so any resource with a nested block or map necessarily carries a non-empty
+delta. But when the key is *absent*, `makeTerraformStateViaUpgradeEnabled` (`schema.go:1365`)
+returns false and that code is never reached: the bridge uses `makeTerraformStateWithOpts`,
+which is schema-aware and handles objects by construction. That is the pre-delta mechanism,
+still the path for all state written by older bridges. Injecting without a delta is therefore
+viable, and it is the graceful fallback here — but it reconstructs through the *current*
+schema, so it cannot serve a future provider upgrade, and it cannot round-trip anything the
+schema does not describe.
+
+**The bridge will compute a delta for us.** `RawStateInjectDelta` and `RawStateComputeDelta`
+are exported (`rawstate.go:457`, `:485`), and every argument is an ordinary exported call. So
+injection produces a delta rather than omitting one, with the bridge's own turnaround check
+deciding whether it is correct — a much better failure mode than discovering a lossy
+reconstruction at preview time.
 
 ### Existing Recover validation does not apply
 
@@ -218,10 +240,47 @@ Per matched sidecar entry, one `custom: true` object appended to `deployment.res
 | `custom` | `true` |
 | `id` | sidecar, verbatim — already the provider's ID format |
 | `inputs` | `newState.Inputs`, with `[secret]` values resolved from config, plus `__defaults: []` |
-| `outputs` | every sidecar attribute, TF name → Pulumi name |
-| `__pulumi_raw_state_delta` | omitted — see Findings |
+| `outputs` | built by the bridge from the sidecar attributes — see below |
+| `__pulumi_raw_state_delta` | computed by the bridge, inside `outputs` — see below |
 
-**Property name mapping is reuse, not new code.** `GetSchemaFieldInfo` (`pkg/schema_fields.go:72`)
+**Outputs and the delta are built by the bridge, not by this tool.** The provider's own
+create path (`pkg/tfbridge/provider.go:1360-1375`) turns a Terraform instance state into Pulumi
+outputs and then attaches a delta. Injection does the same, substituting the sidecar's recorded
+attributes for the provider's response:
+
+```go
+res := prov.P.ResourcesMap().Get(tfType)                       // shim.Resource
+istate, err := res.InstanceState(id, attrs, nil)               // TF attributes → typed cty state
+props, err := tfbridge.MakeTerraformResult(                    // → Pulumi outputs
+    ctx, prov.P, istate, res.Schema(), fields, nil, true)
+err = tfbridge.RawStateInjectDelta(                            // → adds the delta to props
+    ctx, res.Schema(), fields, props, res.SchemaType(), istate)
+```
+
+`InstanceState` takes a plain `map[string]interface{}` — the exact shape of the sidecar's
+`attributes` — and coerces it against the resource schema
+(`recoverAndCoerceCtyValueWithSchema`, `pkg/tfshim/sdk-v2/provider2.go:58`), so nested blocks,
+sets, maps, and numbers acquire their proper types. The result implements
+`InstanceStateWithTypedValue` (`provider2.go:96`), which is what `RawStateInjectDelta`
+requires.
+
+This replaces hand-rolled TF→Pulumi property renaming with the bridge's real conversion —
+`MaxItems=1` flattening, set handling, asset translation, and secret marking included — and
+yields the delta as part of the same operation.
+
+**Sensitive values must be resolved before the instance state is built,** not after. The
+sidecar's `redactedAttributes` is already keyed by Terraform attribute name, so each real value
+is substituted into `attributes` first; otherwise the delta would encode `(sensitive)` and the
+turnaround check would enshrine it.
+
+**If the provider is not on the `v2Resource2` path**, `InstanceState` returns a value that does
+not implement `InstanceStateWithTypedValue`, and `RawStateInjectDelta` returns nil without
+writing anything. Injection then proceeds with no delta, which is the pre-delta behaviour
+described in Findings. This degradation is silent by design in the bridge; this tool logs it.
+
+**Property name mapping is the fallback path.** When no provider schema can be loaded for a
+type, injection falls back to renaming attributes directly, in which case there is no delta and
+no bridge-computed conversion. `GetSchemaFieldInfo` (`pkg/schema_fields.go:72`)
 gives `TFName → PulumiName`, and `LookupProviderForPulumiType` (`:125`) finds the provider for a
 Pulumi type token. Both are already used by `PatchStateFromSchema`.
 
@@ -297,7 +356,10 @@ Unit tests over fixture deployments in `pkg/testdata`:
 - sidecar entry matching: exact match, no match, ambiguous match (the last two must fail);
 - TF → Pulumi property name mapping, and the input/output split;
 - secret resolution from config, and the failure when a redacted attribute cannot be resolved;
-- `__defaults: []` present, delta absent;
+- `__defaults: []` present in inputs;
+- outputs and delta built through the bridge for a resource with a nested block, asserting the
+  delta is present and that `RawStateDelta.Recover` reproduces the original attributes;
+- the no-schema fallback: attributes renamed directly, no delta, no error;
 - `previewDigest` parsing: create steps collected, non-create steps ignored, `dependencies` and
   `propertyDependencies` carried through verbatim;
 - a `[secret]` input resolved from config, and the failure when it cannot be;
