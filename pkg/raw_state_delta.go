@@ -68,7 +68,7 @@ func ComputeInjectionState(
 
 	delta, err := tfbridge.RawStateComputeDelta(ctx, schemaMap, schemaInfos,
 		props,
-		valueshim.FromCtyType(resourceType(ty)),
+		valueshim.FromCtyType(stripTimeouts(ty)),
 		valueshim.FromCtyValue(value))
 	if err != nil {
 		// A delta that cannot be computed is not fatal: the resource is injected
@@ -120,10 +120,10 @@ func (noSetChecker) IsSet(context.Context, interface{}) ([]interface{}, bool) {
 	return nil, false
 }
 
-// resourceType strips the timeouts attribute, the way the bridge's own
+// stripTimeouts removes the timeouts attribute, the way the bridge's own
 // FromHctyResourceType does for the hcty flavour (valueshim.FromHctyResourceType).
 // There is no zclconf equivalent, so it is replicated here.
-func resourceType(t cty.Type) cty.Type {
+func stripTimeouts(t cty.Type) cty.Type {
 	if !t.IsObjectType() {
 		return t
 	}

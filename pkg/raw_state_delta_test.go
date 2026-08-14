@@ -16,6 +16,7 @@ package pkg
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/providermap"
@@ -51,7 +52,6 @@ func TestComputeInjectionState_RandomPet(t *testing.T) {
 
 	// A delta is produced and is not a secret-bearing blob.
 	assert.NotNil(t, delta)
-	_ = delta
 }
 
 // nestedBlockTestAWSProviderAddr and nestedBlockTestAWSProviderVersion pin the
@@ -204,12 +204,33 @@ func TestComputeInjectionState_NestedBlockDeltaRecovers(t *testing.T) {
 
 	outputs, delta, _, err := ComputeInjectionState(ctx, prov, "aws_vpn_connection", attrs, schemaMap, schemaInfos)
 	require.NoError(t, err)
-	require.NotNil(t, delta, "a nested-block type should produce a non-empty delta")
+	require.NotEmpty(t, delta, "a nested-block type should produce a non-empty delta")
 
-	// The delta must recover the outputs it was computed from.
-	props := resource.NewPropertyMapFromMap(outputs)
-	rsd, err := tfbridge.UnmarshalRawStateDelta(resource.NewPropertyValue(delta))
+	// PulumiOutputs and RawStateDelta are written to the sidecar as JSON and
+	// read back by a later task — that JSON round trip, not the in-memory
+	// value, is the real contract between this task and the next. Numbers,
+	// nulls and nested maps must all survive it and still satisfy Recover.
+	outputsJSON, err := json.Marshal(outputs)
 	require.NoError(t, err)
-	_, err = rsd.Recover(resource.NewObjectProperty(props))
+	deltaJSON, err := json.Marshal(delta)
+	require.NoError(t, err)
+
+	var outputsFromSidecar map[string]interface{}
+	require.NoError(t, json.Unmarshal(outputsJSON, &outputsFromSidecar))
+	var deltaFromSidecar map[string]interface{}
+	require.NoError(t, json.Unmarshal(deltaJSON, &deltaFromSidecar))
+
+	// The delta must recover the exact attributes it was computed from, not
+	// merely apply without an error: compare the recovered raw state against
+	// the original attribute JSON.
+	props := resource.NewPropertyMapFromMap(outputsFromSidecar)
+	rsd, err := tfbridge.UnmarshalRawStateDelta(resource.NewPropertyValue(deltaFromSidecar))
+	require.NoError(t, err)
+	recovered, err := rsd.Recover(resource.NewObjectProperty(props))
 	require.NoError(t, err, "delta must apply cleanly to the outputs")
+
+	var want, got interface{}
+	require.NoError(t, json.Unmarshal(attrs, &want))
+	require.NoError(t, json.Unmarshal(recovered, &got))
+	assert.Equal(t, want, got, "recovered raw state must match the original attributes exactly")
 }

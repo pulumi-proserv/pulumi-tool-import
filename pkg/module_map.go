@@ -463,19 +463,61 @@ func populateInjectionState(
 			schemaInfos = ri.Fields
 		}
 	}
+	if schemaMap == nil {
+		// pulumiProviders and the import prober are two different loaders
+		// with different failure modes: PulumiProvidersForTerraformProviders
+		// can fail to bridge a provider and skip it (pkg/pulumi_providers.go)
+		// while the prober still loaded that same provider fine and used it
+		// to flag this resource non-importable. Without a schema,
+		// RawStateComputeDelta cannot resolve nested attribute names and, for
+		// a nested-block type, panics rather than erroring — so there is
+		// nothing safe to compute here. Leaving the new fields empty is the
+		// correct degradation, not an error.
+		return
+	}
 
 	attrsJSON, err := json.Marshal(attrs)
 	if err != nil {
 		return
 	}
 
-	outputs, delta, version, err := ComputeInjectionState(ctx, prov, resourceType, attrsJSON, schemaMap, schemaInfos)
-	if err != nil {
+	outputs, delta, version, ok := safeComputeInjectionState(ctx, prov, resourceType, attrsJSON, schemaMap, schemaInfos)
+	if !ok {
 		return
 	}
 	mr.PulumiOutputs = outputs
 	mr.RawStateDelta = delta
 	mr.SchemaVersion = version
+}
+
+// safeComputeInjectionState calls ComputeInjectionState and converts any
+// panic from it into a false ok. This is a best-effort enrichment path — a
+// resource whose injection state cannot be computed still belongs in the
+// digest — and ComputeInjectionState calls into tfbridge internals
+// (RawStateComputeDelta's schema walk) that are known to panic rather than
+// return an error on some schema/value mismatches (see the nil-schemaMap
+// case this guards against above). A malformed resource must not be able to
+// abort the whole digest.
+func safeComputeInjectionState(
+	ctx context.Context,
+	prov tfprovider.Provider,
+	tfType string,
+	attrsJSON []byte,
+	schemaMap shim.SchemaMap,
+	schemaInfos map[string]*tfbridge.SchemaInfo,
+) (outputs map[string]interface{}, delta map[string]interface{}, version int64, ok bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "Warning: computing injection state for %s panicked: %v\n", tfType, r)
+			outputs, delta, version, ok = nil, nil, 0, false
+		}
+	}()
+
+	o, d, v, err := ComputeInjectionState(ctx, prov, tfType, attrsJSON, schemaMap, schemaInfos)
+	if err != nil {
+		return nil, nil, 0, false
+	}
+	return o, d, v, true
 }
 
 // buildResourceURN constructs a Pulumi URN for a Terraform resource, or falls back
