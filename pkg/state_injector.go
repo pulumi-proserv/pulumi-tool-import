@@ -1,0 +1,489 @@
+// Copyright 2016-2025, Pulumi Corporation.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package pkg
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"sort"
+	"strconv"
+
+	"github.com/pulumi-proserv/pulumi-tool-import/pkg/providermap"
+	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
+)
+
+// secretPlaceholder is what "pulumi preview --json" substitutes for a secret
+// input value (MassageSecrets in pulumi/pkg/v3/backend/display/json.go). It must
+// never reach state.
+const secretPlaceholder = "[secret]"
+
+// rawStateDeltaKey and metaKey mirror the bridge's reserved output keys
+// (reservedkeys.RawStateDelta, reservedkeys.Meta). Hardcoded here to match the
+// rest of this package (see pkg/state_patcher.go), which does the same rather
+// than importing the bridge's internal reservedkeys package.
+const (
+	rawStateDeltaKey = "__pulumi_raw_state_delta"
+	metaKey          = "__meta"
+)
+
+// InjectResult reports what injection did, for the command's summary output.
+type InjectResult struct {
+	Injected        int
+	SecretsResolved int
+	// NoDelta counts resources injected without a raw state delta, either
+	// because the sidecar carried none, because it embedded an unresolvable
+	// "(sensitive)" placeholder, or because it no longer validated against the
+	// resource's outputs after secret substitution.
+	NoDelta int
+	URNs    []string
+	Skipped []string
+}
+
+// InjectNonImportable appends the sidecar's resources to an exported deployment.
+//
+// Everything but the resource ID and outputs comes from the program: a preview
+// reports these resources as creates, and each create's newState carries the
+// URN, parent, provider reference, protect flag, inputs, and dependency edges
+// the engine computed. Copying that is what makes injection correct without
+// inferring anything from the deployment.
+//
+// InjectNonImportable does not load a Terraform provider. Everything
+// provider-derived (Pulumi property names, output shapes, the raw state delta)
+// was already computed by "digest tf" while a live provider was open, and
+// travels in the sidecar; providers is used only to look up schema field
+// metadata already loaded elsewhere in the command (attribute renaming), never
+// to start a new provider.
+func InjectNonImportable(
+	stateData []byte,
+	sidecar *NonImportableFile,
+	preview *PreviewDigest,
+	providers map[providermap.TerraformProviderName]*ProviderWithMetadata,
+	configSecrets map[string]string,
+) ([]byte, *InjectResult, error) {
+	if sidecar == nil || len(sidecar.Resources) == 0 {
+		return stateData, &InjectResult{}, nil
+	}
+	if preview == nil {
+		return nil, nil, fmt.Errorf("injection requires a preview: run \"pulumi preview --json\"")
+	}
+
+	var state map[string]interface{}
+	dec := json.NewDecoder(bytes.NewReader(stateData))
+	dec.UseNumber()
+	if err := dec.Decode(&state); err != nil {
+		return nil, nil, fmt.Errorf("parsing state: %w", err)
+	}
+
+	deployment, ok := state["deployment"].(map[string]interface{})
+	if !ok {
+		return nil, nil, fmt.Errorf("state missing deployment")
+	}
+	resources, ok := deployment["resources"].([]interface{})
+	if !ok {
+		return nil, nil, fmt.Errorf("state missing resources")
+	}
+
+	creates, err := preview.CreatesByTypeName()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	typeMap := BuildPulumiToTFTypeMap(providers)
+	result := &InjectResult{}
+
+	built := make([]map[string]interface{}, 0, len(sidecar.Resources))
+	seen := make(map[PreviewKey]*NonImportableResource, len(sidecar.Resources))
+	for i := range sidecar.Resources {
+		r := &sidecar.Resources[i]
+		key := PreviewKey{Type: r.Type, Name: r.Name}
+
+		if prev, dup := seen[key]; dup {
+			return nil, nil, fmt.Errorf(
+				"sidecar lists %s %q twice, for both %s and %s; each preview create step must "+
+					"match exactly one sidecar entry",
+				r.Type, r.Name, prev.TerraformAddress, r.TerraformAddress)
+		}
+		seen[key] = r
+
+		newState, ok := creates[key]
+		if !ok {
+			return nil, nil, fmt.Errorf(
+				"no create step in the preview matches %s %q (%s); the program must declare "+
+					"this resource for its state to be injected",
+				r.Type, r.Name, r.TerraformAddress)
+		}
+
+		obj, secrets, noDelta, err := buildInjectedResource(r, newState, typeMap, providers, configSecrets)
+		if err != nil {
+			return nil, nil, err
+		}
+		result.SecretsResolved += secrets
+		if noDelta {
+			result.NoDelta++
+		}
+		built = append(built, obj)
+	}
+
+	orderInjected(built)
+	for _, obj := range built {
+		resources = append(resources, obj)
+		result.Injected++
+		if urn, ok := obj["urn"].(string); ok {
+			result.URNs = append(result.URNs, urn)
+		}
+	}
+	deployment["resources"] = resources
+
+	out, err := json.MarshalIndent(state, "", "    ")
+	if err != nil {
+		return nil, nil, fmt.Errorf("serializing injected state: %w", err)
+	}
+	if err := VerifyDeploymentIntegrity(out); err != nil {
+		return nil, nil, err
+	}
+	return out, result, nil
+}
+
+// buildInjectedResource copies the preview's newState and fills in the parts
+// only the sidecar knows. It returns the number of secret placeholders it
+// resolved (across inputs and outputs) and whether the resource ends up
+// without a usable raw state delta.
+func buildInjectedResource(
+	r *NonImportableResource,
+	newState map[string]interface{},
+	typeMap map[string]string,
+	providers map[providermap.TerraformProviderName]*ProviderWithMetadata,
+	configSecrets map[string]string,
+) (map[string]interface{}, int, bool, error) {
+	obj := make(map[string]interface{}, len(newState)+3)
+	for k, v := range newState {
+		// The delta belongs to the sidecar, not the program's preview; a create
+		// step from the engine never carries one anyway, but this guards
+		// against copying a stray key verbatim.
+		if k == rawStateDeltaKey {
+			continue
+		}
+		obj[k] = v
+	}
+	obj["custom"] = true
+	obj["id"] = r.ID
+
+	// Field info lets attributes be renamed with the provider's own mapping
+	// rather than a camelCase guess. Absent a loaded schema the fallback applies.
+	var fields map[string]*SchemaFieldInfo
+	if prov, tfType, found := LookupProviderForPulumiType(r.Type, typeMap, providers); found {
+		fields = GetSchemaFieldInfo(prov, tfType)
+	}
+
+	// Outputs come from what "digest tf" computed with a live provider open
+	// (Task 2b) when available; sidecars written before that change carry only
+	// the raw Terraform attributes, which are renamed the same way an import
+	// would rename them.
+	var outputs map[string]interface{}
+	if r.PulumiOutputs != nil {
+		outputs = make(map[string]interface{}, len(r.PulumiOutputs))
+		for k, v := range r.PulumiOutputs {
+			outputs[k] = v
+		}
+	} else {
+		outputs = MapTFAttributesToPulumi(r.Attributes, fields)
+	}
+
+	secretsResolved, err := resolveOutputSecrets(r, outputs, fields, configSecrets)
+	if err != nil {
+		return nil, 0, false, err
+	}
+
+	noDelta := attachRawStateDelta(r, obj, outputs)
+
+	inputs := map[string]interface{}{}
+	if raw, ok := newState["inputs"].(map[string]interface{}); ok {
+		for k, v := range raw {
+			inputs[k] = v
+		}
+	}
+
+	inputSecrets, err := resolveSecretInputs(r, inputs, fields, configSecrets)
+	if err != nil {
+		return nil, 0, false, err
+	}
+	secretsResolved += inputSecrets
+
+	// __defaults records which properties came from schema defaults. The engine's
+	// Check usually supplies it already; only add it when missing, since an empty
+	// list would otherwise discard what Check worked out.
+	if _, ok := inputs[reservedDefaultsKey]; !ok {
+		inputs[reservedDefaultsKey] = []interface{}{}
+	}
+	obj["inputs"] = inputs
+	obj["outputs"] = outputs
+
+	return obj, secretsResolved, noDelta, nil
+}
+
+const reservedDefaultsKey = "__defaults"
+
+// attachRawStateDelta adds the sidecar's raw state delta and __meta to outputs
+// when they are usable, and reports whether the resource ends up without one.
+//
+// A delta computed from redacted attributes can embed the literal string
+// "(sensitive)" in its raw JSON, where the bridge fell back to a Replace node.
+// Substituting the real secret into outputs does not change what such a node
+// recovers, so a delta like that is dropped rather than repaired: writing it
+// would reconstruct Terraform state containing the placeholder. Whatever
+// survives that check is then validated with the bridge's own Recover, which
+// catches a delta that no longer applies to these outputs for any other
+// reason (validateRecover, pkg/state_patcher.go).
+func attachRawStateDelta(r *NonImportableResource, obj, outputs map[string]interface{}) bool {
+	// __meta records the provider's schema version independently of whether a
+	// raw state delta exists: ComputeInjectionState (pkg/raw_state_delta.go)
+	// can report a schema version even when it could not compute a delta at
+	// all, and a later provider upgrade still needs that version to run the
+	// right state upgraders.
+	if r.SchemaVersion != 0 {
+		if payload, ok := metaPayload(r.SchemaVersion); ok {
+			outputs[metaKey] = payload
+		}
+	}
+
+	if r.RawStateDelta == nil {
+		return true
+	}
+
+	if len(r.RedactedAttributes) > 0 {
+		deltaJSON, err := json.Marshal(r.RawStateDelta)
+		if err == nil && bytes.Contains(deltaJSON, []byte(redactedPlaceholder)) {
+			return true
+		}
+	}
+
+	outputs[rawStateDeltaKey] = r.RawStateDelta
+
+	urn, _ := obj["urn"].(string)
+	if err := validateRecover(urn, outputs); err != nil {
+		delete(outputs, rawStateDeltaKey)
+		return true
+	}
+	return false
+}
+
+// metaPayload builds the bridge's __meta JSON string from a schema version,
+// mirroring tfbridge.MakeTerraformResult: the default "schema_version: 0"
+// payload is omitted, since a later provider needs no upgrade from that.
+func metaPayload(schemaVersion int64) (string, bool) {
+	metaJSON, err := json.Marshal(map[string]interface{}{
+		"schema_version": strconv.FormatInt(schemaVersion, 10),
+	})
+	if err != nil {
+		return "", false
+	}
+	payload := string(metaJSON)
+	if payload == `{"schema_version":"0"}` {
+		return "", false
+	}
+	return payload, true
+}
+
+// resolveOutputSecrets substitutes each redacted attribute's real value into
+// the resource's outputs.
+//
+// redactedAttributes maps a Terraform attribute name to the stack config key
+// holding its real value, while outputs is keyed by Pulumi property name — the
+// digest computed it from the same redacted attributes, so the placeholder
+// lands there under the Pulumi name. An unresolvable placeholder is a hard
+// error, the same as for inputs: writing "(sensitive)" into state would be
+// worse than refusing to write anything.
+func resolveOutputSecrets(
+	r *NonImportableResource,
+	outputs map[string]interface{},
+	fields map[string]*SchemaFieldInfo,
+	configSecrets map[string]string,
+) (int, error) {
+	if len(r.RedactedAttributes) == 0 {
+		return 0, nil
+	}
+
+	tfNames := make([]string, 0, len(r.RedactedAttributes))
+	for tfName := range r.RedactedAttributes {
+		tfNames = append(tfNames, tfName)
+	}
+	sort.Strings(tfNames)
+
+	resolved := 0
+	for _, tfName := range tfNames {
+		configKey := r.RedactedAttributes[tfName]
+
+		pulumiName := snakeToCamel(tfName)
+		if fi, ok := fields[tfName]; ok && fi.PulumiName != "" {
+			pulumiName = fi.PulumiName
+		}
+
+		val, ok := outputs[pulumiName]
+		if !ok {
+			continue
+		}
+		s, isString := val.(string)
+		if !isString || s != redactedPlaceholder {
+			continue
+		}
+
+		value, ok := configSecrets[configKey]
+		if !ok || value == "" {
+			return 0, fmt.Errorf(
+				"%s %q output %q needs the secret in stack config key %q, which is not set; "+
+					"pass --project-dir and --stack so it can be read",
+				r.Type, r.Name, pulumiName, configKey)
+		}
+		outputs[pulumiName] = value
+		resolved++
+	}
+	return resolved, nil
+}
+
+// resolveSecretInputs replaces "[secret]" placeholders with the real value from
+// stack config, wrapped in Pulumi's secret envelope. An unresolvable placeholder
+// is a hard error: writing the placeholder would put a known-wrong value into
+// state, which is worse than refusing to write anything.
+func resolveSecretInputs(
+	r *NonImportableResource,
+	inputs map[string]interface{},
+	fields map[string]*SchemaFieldInfo,
+	configSecrets map[string]string,
+) (int, error) {
+	pulumiToTF := PulumiToTFNames(fields)
+	resolved := 0
+
+	names := make([]string, 0, len(inputs))
+	for name := range inputs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		if s, ok := inputs[name].(string); !ok || s != secretPlaceholder {
+			continue
+		}
+
+		tfName, ok := pulumiToTF[name]
+		if !ok {
+			// No loaded schema (or the schema does not describe this field):
+			// fall back to the bridge's own generic PascalCase/camelCase to
+			// underscore_case conversion, the same transform it uses when it
+			// has no schema-derived name to prefer.
+			tfName = tfbridge.PulumiToTerraformName(name, nil, nil)
+		}
+		configKey, ok := r.RedactedAttributes[tfName]
+		if !ok {
+			return 0, fmt.Errorf(
+				"%s %q input %q is a masked secret but the sidecar records no config key for "+
+					"Terraform attribute %q; re-run \"resolve tf\" or set the value by hand",
+				r.Type, r.Name, name, tfName)
+		}
+		value, ok := configSecrets[configKey]
+		if !ok || value == "" {
+			return 0, fmt.Errorf(
+				"%s %q input %q needs the secret in stack config key %q, which is not set; "+
+					"pass --project-dir and --stack so it can be read",
+				r.Type, r.Name, name, configKey)
+		}
+
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return 0, fmt.Errorf("encoding secret for %s: %w", configKey, err)
+		}
+		inputs[name] = map[string]interface{}{
+			sigKey:      "1b47061264138c4ac30d75fd1eb44270",
+			"plaintext": string(encoded),
+		}
+		resolved++
+	}
+	return resolved, nil
+}
+
+// orderInjected sorts injected resources so that one depending on another
+// comes after it. VerifyIntegrity rejects a resource whose parent or
+// dependency appears later in the array.
+//
+// Only edges between two resources in this same batch matter: a reference to
+// a resource already in the deployment is necessarily earlier in the array
+// already, and needs no reordering here.
+func orderInjected(objs []map[string]interface{}) {
+	n := len(objs)
+	index := make(map[string]int, n)
+	for i, obj := range objs {
+		if urn, ok := obj["urn"].(string); ok {
+			index[urn] = i
+		}
+	}
+
+	deps := make([][]int, n)
+	for i, obj := range objs {
+		add := func(urn string) {
+			j, ok := index[urn]
+			if !ok || j == i {
+				return
+			}
+			for _, existing := range deps[i] {
+				if existing == j {
+					return
+				}
+			}
+			deps[i] = append(deps[i], j)
+		}
+		if ds, ok := obj["dependencies"].([]interface{}); ok {
+			for _, d := range ds {
+				if s, ok := d.(string); ok {
+					add(s)
+				}
+			}
+		}
+		if parent, ok := obj["parent"].(string); ok {
+			add(parent)
+		}
+	}
+
+	// DFS post-order topological sort: a node is appended to the order only
+	// after everything it depends on, and visiting in original order keeps
+	// unrelated resources in the sidecar's own order.
+	const (
+		unvisited = iota
+		visiting
+		done
+	)
+	state := make([]uint8, n)
+	order := make([]int, 0, n)
+	var visit func(i int)
+	visit = func(i int) {
+		if state[i] != unvisited {
+			return
+		}
+		state[i] = visiting
+		for _, j := range deps[i] {
+			visit(j)
+		}
+		state[i] = done
+		order = append(order, i)
+	}
+	for i := 0; i < n; i++ {
+		visit(i)
+	}
+
+	sorted := make([]map[string]interface{}, n)
+	for pos, i := range order {
+		sorted[pos] = objs[i]
+	}
+	copy(objs, sorted)
+}
