@@ -133,3 +133,44 @@ resources:
     properties:
       destinationCidrBlock: 10.99.0.0/16
       vpnConnectionId: ${vpn.id}
+
+  # Non-importable, and the only resource in this program with Sensitive
+  # properties (caPem is a secret input; privateKey/certificatePem/publicKey
+  # are secret outputs). caPem's value matches testdata/tf/main.tf's comment
+  # explaining why it is set at all -- AWS never reads it on this resource's
+  # create path.
+  cert:
+    type: aws:iot:Certificate
+    name: cert
+    properties:
+      active: true
+      caPem: "not a real certificate authority -- placeholder value only, see testdata/tf/main.tf"
+
+  tg:
+    type: aws:vpclattice:TargetGroup
+    name: tg
+    properties:
+      type: IP
+      config:
+        port: 80
+        protocol: HTTP
+        vpcIdentifier: ${main.id}
+        ipAddressType: IPV4
+        healthCheck:
+          enabled: false
+      tags:
+        Name: tool-import-e2e
+        ManagedBy: pulumi-tool-import-e2e
+        Purpose: issue-22-non-importable-injection
+
+  # Non-importable, and the only resource in this program with a nested
+  # list-of-objects property ("target": {id, port}) -- every other injected
+  # resource here is flat top-level strings.
+  attach:
+    type: aws:vpclattice:TargetGroupAttachment
+    name: attach
+    properties:
+      targetGroupIdentifier: ${tg.id}
+      target:
+        id: 10.42.0.10
+        port: 80

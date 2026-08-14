@@ -72,15 +72,31 @@ import (
 const pulumiProject = "tool-import-e2e"
 
 // wantNonImportable is the sidecar "resolve tf" is expected to produce for
-// testdata/tf/main.tf: the three route-table propagations and the one
+// testdata/tf/main.tf: the three route-table propagations and the
 // connection route that aws_vpn_gateway_route_propagation and
-// aws_vpn_connection_route declare no importer for.
+// aws_vpn_connection_route declare no importer for, plus the IoT
+// certificate (Sensitive attributes, exercises the secrets path end to end)
+// and the VPC Lattice target group attachment (a nested list-of-objects
+// property, exercises MakeTerraformOutputs/RawStateComputeDelta on a
+// non-flat shape for the first time).
 var wantNonImportable = map[string]string{
 	"prop[0]": "aws:ec2/vpnGatewayRoutePropagation:VpnGatewayRoutePropagation",
 	"prop[1]": "aws:ec2/vpnGatewayRoutePropagation:VpnGatewayRoutePropagation",
 	"prop[2]": "aws:ec2/vpnGatewayRoutePropagation:VpnGatewayRoutePropagation",
 	"route":   "aws:ec2/vpnConnectionRoute:VpnConnectionRoute",
+	"cert":    "aws:iot/certificate:Certificate",
+	"attach":  "aws:vpclattice/targetGroupAttachment:TargetGroupAttachment",
 }
+
+// secretSigKey is the Pulumi property-value signature key that marks a
+// serialized value as a secret (resource.SigKey in the Pulumi SDK, mirrored
+// here rather than imported so this test can check for it in raw exported
+// JSON without pulling in the SDK's property-value types). Injection writes
+// it into a resolved secret's envelope (see pkg/state_injector.go's
+// resolveOutputSecrets/resolveSecretInputs); its presence in a raw stack
+// export, on a map value rather than a bare string, is what "the secret is
+// enveloped, not bare plaintext" means concretely.
+const secretSigKey = "4dabf18193072939515e22adb298388d"
 
 // fixture bundles what is shared, read-only, across every scenario: the
 // built binary, the repo root, the applied Terraform fixture, and the
@@ -190,6 +206,12 @@ func TestNonImportableStateInjection(t *testing.T) {
 	t.Run("PatchOnlyStackModeWithOutstandingDiffs", func(t *testing.T) {
 		testPatchOnlyStackMode(t, ctx, fx)
 	})
+	t.Run("SecretInjectedEndToEnd", func(t *testing.T) {
+		testSecretInjectedEndToEnd(t, ctx, fx)
+	})
+	t.Run("NestedBlockInjection", func(t *testing.T) {
+		testNestedBlockInjection(t, ctx, fx)
+	})
 }
 
 // stackSeq gives every scenario's stack a unique name even if two scenarios
@@ -229,6 +251,16 @@ func provisionStack(t *testing.T, ctx context.Context, fx *fixture) *provisioned
 	runPulumi(t, ctx, pulumiDir, fx.env, "stack", "init", stackName)
 	runPulumi(t, ctx, pulumiDir, fx.env, "config", "set", "aws:region", "us-west-2")
 
+	// --skip-secrets is deliberately not passed: the fixture's IoT
+	// certificate has real Sensitive attributes (private_key, certificate_pem,
+	// ca_pem, public_key — see testdata/tf/main.tf), and every scenario below
+	// injects it as part of the generic sidecar loop, not just the dedicated
+	// secrets scenario. Without this, "digest tf" would still redact those
+	// attributes to "(sensitive)" in the digest (that happens unconditionally,
+	// regardless of --skip-secrets) but never write the real values anywhere
+	// resolvable, and every scenario's injection would hard-fail trying to
+	// resolve a stack config key that was never set. --project-dir and
+	// --pulumi-stack are what give it somewhere to write those values.
 	digestPath := filepath.Join(t.TempDir(), "tf-digest.json")
 	runTool(t, ctx, fx.binPath, fx.repoRoot, fx.env, "digest", "tf",
 		"--from", fx.tfDir,
@@ -237,7 +269,6 @@ func provisionStack(t *testing.T, ctx context.Context, fx *fixture) *provisioned
 		"--pulumi-stack", stackName,
 		"--pulumi-project", pulumiProject,
 		"--project-dir", pulumiDir,
-		"--skip-secrets", // fixture has no sensitive attributes to carry through config
 	)
 
 	// "resolve tf" only fills IDs into entries that already exist; it does
@@ -537,6 +568,15 @@ func testIdempotence(t *testing.T, ctx context.Context, fx *fixture) {
 // --preview-json ...", and "pulumi stack import" of the result — the
 // offline path documented in docs/non-importable-resources.md, which had no
 // end-to-end coverage before this.
+//
+// --project-dir and --stack are passed alongside --state/--out/--preview-json
+// even though that combination still selects file mode (file mode is chosen
+// by --state/--out being set, not by whether --project-dir/--stack are
+// absent): patch-state_tf.go reads stack config secrets whenever
+// --project-dir and --stack are both set, independent of mode. Without them,
+// resolving the fixture's IoT certificate secrets would have no source and
+// injection would hard-fail — the same reasoning as provisionStack's digest
+// tf call not passing --skip-secrets.
 func testFileMode(t *testing.T, ctx context.Context, fx *fixture) {
 	p := provisionStack(t, ctx, fx)
 
@@ -554,6 +594,8 @@ func testFileMode(t *testing.T, ctx context.Context, fx *fixture) {
 		"--out", outPath,
 		"--non-importable", p.sidecarPath,
 		"--preview-json", previewJSONPath,
+		"--project-dir", p.pulumiDir,
+		"--stack", p.stackName,
 	)
 	runTool(t, ctx, fx.binPath, fx.repoRoot, fx.env, args...)
 
@@ -649,6 +691,279 @@ func testPatchOnlyStackMode(t *testing.T, ctx context.Context, fx *fixture) {
 		t.Logf("confirmed the patch-only run did not increase outstanding diffs (%d before, %d after) "+
 			"and did not touch the %d resources it left un-injected",
 			len(baselineOutstanding), len(afterOutstanding), len(p.sidecar.Resources))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Scenario 6: a non-importable resource with Sensitive attributes, injected
+// end to end — the highest-value gap in this fixture before this scenario.
+// ---------------------------------------------------------------------------
+
+// testSecretInjectedEndToEnd exercises the one path in this whole test that
+// has never run before: "digest tf" redacting a sensitive attribute to
+// "(sensitive)" and writing the real value into Pulumi stack config as a
+// secret; the sidecar's redactedAttributes recording the config key;
+// "patch-state tf --non-importable" resolving it and writing Pulumi's secret
+// envelope into state; and (as it turns out, see the delta-outcome logging
+// below) a raw-state delta embedding "(sensitive)" being dropped rather than
+// repaired.
+//
+// The four assertions below are ordered by importance, per the design this
+// scenario exists to validate:
+//  1. the injected certificate previews as "same" — weak evidence on its own
+//     (the program declares no input that would make a wrong secret show up
+//     as a diff; certificatePem/privateKey/publicKey are outputs only,
+//     which preview does not diff against without --refresh), but it does
+//     confirm the resource otherwise matches the program's create step, and
+//     a failed resolution would have failed the command outright before
+//     reaching this preview at all (checkNoPlaceholders hard-errors on any
+//     leftover placeholder — see pkg/state_injector.go).
+//  2. no "(sensitive)" placeholder appears anywhere in the raw exported
+//     deployment — the actual failure this redaction design exists to
+//     prevent, checked directly on the exported bytes rather than inferred.
+//  3. the resolved secret sits inside Pulumi's secret envelope (the
+//     well-known sig key on a map value), not as a bare string — checked
+//     structurally, without ever decrypting or reading the real secret
+//     value, so no secret material passes through this test process.
+//  4. whichever way the raw-state delta went (kept, or dropped because it
+//     embedded an unresolvable "(sensitive)"), report it — this path has
+//     never fired live before this scenario.
+func testSecretInjectedEndToEnd(t *testing.T, ctx context.Context, fx *fixture) {
+	p := provisionStack(t, ctx, fx)
+
+	certURN := expectedURN(pulumiProject, p.stackName, wantNonImportable["cert"], "cert")
+
+	before := runPreviewJSON(t, ctx, p.pulumiDir, fx.env, p.stackName)
+	if op, ok := before.OpsByURN()[certURN]; !ok || op != "create" {
+		t.Fatalf("before injection: %s previews as %q (ok=%v), want \"create\"", certURN, op, ok)
+	}
+
+	args := append(patchStateArgs(fx, p),
+		"--project-dir", p.pulumiDir,
+		"--stack", p.stackName,
+		"--non-importable", p.sidecarPath,
+		"--backup-dir", p.backupDir,
+	)
+	out, err := runToolAllowFail(t, ctx, fx.binPath, fx.repoRoot, fx.env, args...)
+	if err != nil {
+		t.Fatalf("patch-state tf --non-importable failed injecting the IoT certificate: %v\n%s", err, out)
+	}
+
+	// --- 1. previews as "same".
+	after := runPreviewJSON(t, ctx, p.pulumiDir, fx.env, p.stackName)
+	if op, ok := after.OpsByURN()[certURN]; !ok || op != "same" {
+		t.Errorf("after injection: %s previews as %q (ok=%v), want \"same\"", certURN, op, ok)
+	} else {
+		t.Logf("confirmed %s previews as \"same\" after injection", certURN)
+	}
+
+	// --- 2. no "(sensitive)" placeholder anywhere in the raw export. This is
+	// the check the whole redaction design exists to satisfy, so it greps
+	// the raw bytes rather than trusting any structured field.
+	raw := rawStackExport(t, ctx, p.pulumiDir, fx.env, p.stackName)
+	if bytes.Contains(raw, []byte(redactedPlaceholderForTest)) {
+		t.Errorf("stack export for %s contains the literal placeholder %q — a redacted secret "+
+			"was never resolved and reached state", p.stackName, redactedPlaceholderForTest)
+	} else {
+		t.Logf("confirmed no %q placeholder anywhere in the raw stack export (%d bytes)",
+			redactedPlaceholderForTest, len(raw))
+	}
+
+	// --- 3. the resolved secret is enveloped, not bare plaintext. Checked
+	// structurally (presence of the secret sig key on a map value) so the
+	// real secret material is never read into this test process.
+	certRes := findResourceByURN(t, raw, certURN)
+	outputs, _ := certRes["outputs"].(map[string]interface{})
+	if outputs == nil {
+		t.Fatalf("%s has no \"outputs\" in the raw export: %+v", certURN, certRes)
+	}
+	for _, prop := range []string{"privateKey", "publicKey", "certificatePem", "caPem"} {
+		val, ok := outputs[prop]
+		if !ok {
+			t.Errorf("%s outputs has no %q property", certURN, prop)
+			continue
+		}
+		envelope, isMap := val.(map[string]interface{})
+		if !isMap {
+			t.Errorf("%s output %q is not enveloped (got %T, a bare value) — a resolved secret "+
+				"must be wrapped in Pulumi's secret envelope, never written as plaintext", certURN, prop, val)
+			continue
+		}
+		if _, hasSig := envelope[secretSigKey]; !hasSig {
+			t.Errorf("%s output %q is a map but carries no secret sig key %q: %+v",
+				certURN, prop, secretSigKey, envelope)
+			continue
+		}
+		t.Logf("confirmed %s output %q is enveloped as a secret", certURN, prop)
+	}
+
+	// caPem is also a program *input* (see testdata/pulumi/Pulumi.yaml), so
+	// it is resolved by resolveSecretInputs (pkg/state_injector.go) — a
+	// different code path than the three output-only properties above.
+	// Checking it here too covers both resolution paths, not just the
+	// output one.
+	if inputs, ok := certRes["inputs"].(map[string]interface{}); ok {
+		val, ok := inputs["caPem"]
+		if !ok {
+			t.Errorf("%s inputs has no %q property", certURN, "caPem")
+		} else if envelope, isMap := val.(map[string]interface{}); !isMap {
+			t.Errorf("%s input %q is not enveloped (got %T, a bare value) — a resolved secret "+
+				"must be wrapped in Pulumi's secret envelope, never written as plaintext", certURN, "caPem", val)
+		} else if _, hasSig := envelope[secretSigKey]; !hasSig {
+			t.Errorf("%s input %q is a map but carries no secret sig key %q: %+v",
+				certURN, "caPem", secretSigKey, envelope)
+		} else {
+			t.Logf("confirmed %s input %q is enveloped as a secret", certURN, "caPem")
+		}
+	} else {
+		t.Errorf("%s has no \"inputs\" in the raw export", certURN)
+	}
+
+	// --- 4. report whether the delta was dropped. Both outcomes are
+	// informative — this is the first live run of either branch — so this
+	// logs rather than asserts a specific one. InjectResult's per-resource
+	// notes (see pkg/state_injector.go's attachRawStateDelta) always name the
+	// resource by its Terraform address, so that address is what
+	// distinguishes "mentioned in a drop/absent section" from "kept intact
+	// and never mentioned at all".
+	const certAddr = "aws_iot_certificate.cert"
+	switch {
+	case strings.Contains(out, certAddr) && strings.Contains(out, "embedded an unresolvable"):
+		t.Logf("FINDING: the certificate's raw-state delta was dropped as predicted — it embedded "+
+			"an unresolvable %q placeholder (every Sensitive attribute on this resource type is "+
+			"redacted before the delta is computed, so this is the expected outcome). Command output:\n%s",
+			redactedPlaceholderForTest, out)
+	case strings.Contains(out, certAddr) && strings.Contains(out, "failed validation"):
+		t.Logf("FINDING: the certificate's raw-state delta was dropped for a different reason than "+
+			"expected — it failed Recover validation rather than embedding a placeholder. Command output:\n%s", out)
+	case strings.Contains(out, certAddr) && strings.Contains(out, "carried no raw-state delta"):
+		t.Logf("FINDING: the certificate was injected with no raw-state delta at all — \"digest tf\" "+
+			"never produced one for it. Command output:\n%s", out)
+	default:
+		t.Logf("FINDING: the certificate's raw-state delta survived injection intact (not named in any "+
+			"drop/absent section) — worth a closer look, since every Sensitive attribute on this "+
+			"resource type should have embedded the redaction placeholder before the delta was "+
+			"computed. Command output:\n%s", out)
+	}
+}
+
+// redactedPlaceholderForTest mirrors pkg's unexported redactedPlaceholder
+// ("(sensitive)"); duplicated here since the package does not export it.
+const redactedPlaceholderForTest = "(sensitive)"
+
+// rawStackExport runs "pulumi stack export" and returns its raw bytes,
+// undecrypted and uncanonicalized — unlike canonicalStackExport, callers of
+// this want to grep the exact bytes a real "pulumi stack export" produces,
+// not a byte-for-byte diff against an earlier export.
+func rawStackExport(t *testing.T, ctx context.Context, dir string, env []string, stackName string) []byte {
+	t.Helper()
+	cmd := exec.CommandContext(ctx, "pulumi", "stack", "export", "--stack", stackName)
+	cmd.Dir = dir
+	cmd.Env = env
+	out, err := cmd.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		stderr := ""
+		if errors.As(err, &exitErr) {
+			stderr = string(exitErr.Stderr)
+		}
+		t.Fatalf("pulumi stack export: %v\n%s", err, stderr)
+	}
+	return out
+}
+
+// findResourceByURN parses a raw "pulumi stack export" deployment and
+// returns the resource entry with the given URN, failing the test if it is
+// not found.
+func findResourceByURN(t *testing.T, exportJSON []byte, urn string) map[string]interface{} {
+	t.Helper()
+	var state map[string]interface{}
+	dec := json.NewDecoder(bytes.NewReader(exportJSON))
+	dec.UseNumber()
+	if err := dec.Decode(&state); err != nil {
+		t.Fatalf("parsing stack export: %v", err)
+	}
+	deployment, _ := state["deployment"].(map[string]interface{})
+	resources, _ := deployment["resources"].([]interface{})
+	for _, r := range resources {
+		res, ok := r.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if res["urn"] == urn {
+			return res
+		}
+	}
+	t.Fatalf("no resource with URN %s found in stack export", urn)
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Scenario 7: a non-importable resource with a nested list-of-objects
+// property, injected end to end.
+// ---------------------------------------------------------------------------
+
+// testNestedBlockInjection exercises MakeTerraformOutputs and
+// RawStateComputeDelta (pkg/raw_state_delta.go) against a genuinely nested
+// shape — every other resource this fixture injects is flat top-level
+// strings, so this is the first time either function has run end to end
+// against a "target": {id, port} object.
+//
+// The resource previewing as "same" is the assertion that matters; whether
+// it got a working raw-state delta is secondary and reported either way,
+// per the task this scenario exists to satisfy — "patch-state" prints a
+// per-resource cause for a dropped delta, so a dropped delta's reason is
+// captured from that output rather than left as a bare pass/fail.
+func testNestedBlockInjection(t *testing.T, ctx context.Context, fx *fixture) {
+	p := provisionStack(t, ctx, fx)
+
+	attachURN := expectedURN(pulumiProject, p.stackName, wantNonImportable["attach"], "attach")
+
+	before := runPreviewJSON(t, ctx, p.pulumiDir, fx.env, p.stackName)
+	if op, ok := before.OpsByURN()[attachURN]; !ok || op != "create" {
+		t.Fatalf("before injection: %s previews as %q (ok=%v), want \"create\"", attachURN, op, ok)
+	}
+
+	args := append(patchStateArgs(fx, p),
+		"--project-dir", p.pulumiDir,
+		"--stack", p.stackName,
+		"--non-importable", p.sidecarPath,
+		"--backup-dir", p.backupDir,
+	)
+	out, err := runToolAllowFail(t, ctx, fx.binPath, fx.repoRoot, fx.env, args...)
+	if err != nil {
+		t.Fatalf("patch-state tf --non-importable failed injecting the target group attachment: %v\n%s", err, out)
+	}
+
+	after := runPreviewJSON(t, ctx, p.pulumiDir, fx.env, p.stackName)
+	if op, ok := after.OpsByURN()[attachURN]; !ok || op != "same" {
+		t.Errorf("after injection: %s previews as %q (ok=%v), want \"same\" — the injected nested "+
+			"\"target\" values do not match reality", attachURN, op, ok)
+	} else {
+		t.Logf("confirmed %s previews as \"same\" after injection (nested \"target\" block round-tripped)",
+			attachURN)
+	}
+
+	// Same reasoning as testSecretInjectedEndToEnd's step 4: InjectResult's
+	// per-resource notes always name the resource by its Terraform address,
+	// so that address distinguishes "mentioned in a drop/absent section"
+	// from "kept intact and never mentioned at all".
+	const attachAddr = "aws_vpclattice_target_group_attachment.attach"
+	switch {
+	case strings.Contains(out, attachAddr) && strings.Contains(out, "failed validation"):
+		t.Logf("FINDING: the target group attachment's raw-state delta was dropped — it failed "+
+			"validation against its (nested) outputs. Command output:\n%s", out)
+	case strings.Contains(out, attachAddr) && strings.Contains(out, "carried no raw-state delta"):
+		t.Logf("FINDING: the target group attachment was injected with no raw-state delta at all — "+
+			"\"digest tf\" never produced one for it. Command output:\n%s", out)
+	case strings.Contains(out, attachAddr) && strings.Contains(out, "embedded an unresolvable"):
+		t.Logf("FINDING: the target group attachment's raw-state delta was dropped for embedding an "+
+			"unresolvable placeholder — unexpected, since this resource has no Sensitive attributes. "+
+			"Command output:\n%s", out)
+	default:
+		t.Logf("FINDING: the target group attachment's nested raw-state delta survived injection intact "+
+			"(not named in any drop/absent section) — MakeTerraformOutputs/RawStateComputeDelta round-"+
+			"tripped the nested \"target\" block correctly. Command output:\n%s", out)
 	}
 }
 
