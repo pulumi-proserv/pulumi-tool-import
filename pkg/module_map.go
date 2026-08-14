@@ -77,7 +77,7 @@ type ModuleResource struct {
 	// attempted and failed, not one that succeeded and came back empty.
 	//
 	// Reconfirmed after fixing the "timeouts" type/value mismatch (see
-	// stripTimeoutsValue and TestComputeInjectionState_TimeoutsDeltaRecovers
+	// stripTimeouts and TestComputeInjectionState_TimeoutsDeltaRecovers
 	// in raw_state_delta.go / raw_state_delta_test.go): a whole-resource delta
 	// is always Obj-shaped at the top level, and even when every field
 	// matches exactly (so objDelta's own fields are all empty and omitted),

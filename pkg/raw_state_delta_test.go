@@ -291,11 +291,17 @@ func TestComputeInjectionState_NestedBlockDeltaRecovers(t *testing.T) {
 // failed RawStateComputeDelta's own turnaround self-check, which is why
 // aws_vpn_gateway_route_propagation got no delta at all.
 //
-// The fix (stripTimeoutsValue) removes "timeouts" from the value the same way
-// stripTimeouts removes it from the type, and the outputs are derived from
-// that stripped value, so all three inputs to RawStateComputeDelta agree that
-// "timeouts" does not exist — the walk never visits it, and the special case
-// above is never reached.
+// The fix removes "timeouts" from the Pulumi outputs (props) unconditionally,
+// matching what the sdk-v2 shim's own production instance-state path already
+// does before a resource's outputs are ever built (see the comment on
+// ComputeInjectionState). With "timeouts" absent from props,
+// RawStateComputeDelta removes it from the cty.Value on its own before
+// encoding raw state, so a separate value-side strip is unneeded — the walk
+// never visits "timeouts", and the special case above is never reached.
+//
+// The third subtest below (populated timeouts) confirms that behavior holds,
+// and what it costs, when a resource's Terraform attributes actually set a
+// timeouts block rather than leaving it null.
 func TestComputeInjectionState_TimeoutsDeltaRecovers(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -383,6 +389,83 @@ func TestComputeInjectionState_TimeoutsDeltaRecovers(t *testing.T) {
 		require.NoError(t, json.Unmarshal(attrs, &want))
 		require.NoError(t, json.Unmarshal(recovered, &got))
 		assert.Equal(t, want, got, "recovered raw state must match the original attributes exactly")
+	})
+
+	t.Run("aws_vpn_gateway_route_propagation: populated timeouts, still excluded from outputs, delta recovers", func(t *testing.T) {
+		// This is the case commit 28af6cf's fix would have broken: it stripped
+		// "timeouts" from props unconditionally, which happened to be safe
+		// only because the fixture above never sets timeouts (the decoded
+		// value is null). Confirm here that a resource whose Terraform
+		// attributes actually populate "timeouts" still gets a delta that
+		// recovers cleanly -- and confirm what happens to the timeouts data,
+		// rather than assuming it survives.
+		//
+		// It does not survive, and per the comment in ComputeInjectionState
+		// this is not a regression: the sdk-v2 shim's own production path
+		// (tfshim/sdk-v2/provider2.go, (*v2InstanceState2).Object)
+		// unconditionally deletes "timeouts" before it ever reaches
+		// MakeTerraformResult, so no bridged resource -- imported through
+		// this tool or created and read normally -- ever carries timeouts
+		// data in its Pulumi outputs or raw state. Confirmed empirically
+		// (not merely by reading the shim) that trying to keep "timeouts" in
+		// props for this populated case, so RawStateComputeDelta would take
+		// its "part of the data model" branch, fails: that branch calls
+		// v.Marshal against the type ComputeInjectionState already has to
+		// strip "timeouts" from (schemaType, needed for a different reason --
+		// see the walk special-case in RawStateComputeDelta), so the marshal
+		// silently drops "timeouts" from the encoded raw state while props
+		// still carries it, and RawStateComputeDelta's turnaround self-check
+		// then fails with "recovered raw state does not byte-for-byte match
+		// the original raw state". So the type-strip (required for the walk
+		// special-case) and a props-side "timeouts survives when populated"
+		// behavior cannot both be satisfied through this bridge entry point;
+		// this test locks in the only combination that actually works.
+		schemaMap, schemaInfos := schemaFor("aws_vpn_gateway_route_propagation")
+
+		attrs := []byte(`{
+			"id": "vgw-0cdee3deb918b1983_rtb-0e370d1fdde0890b3",
+			"route_table_id": "rtb-0e370d1fdde0890b3",
+			"vpn_gateway_id": "vgw-0cdee3deb918b1983",
+			"timeouts": {"create": "10m", "delete": "5m"}
+		}`)
+
+		outputs, delta, deltaReason, _, err := ComputeInjectionState(
+			ctx, prov, "aws_vpn_gateway_route_propagation", attrs, schemaMap, schemaInfos)
+
+		require.NoError(t, err)
+		assert.Empty(t, deltaReason, "a produced delta must not also carry a reason it is missing")
+		require.NotNil(t, delta, "a resource with populated timeouts should still produce a delta")
+
+		// "timeouts" does not survive into the Pulumi outputs: it is not
+		// part of this tool's data model any more than it is for a normally
+		// bridged resource.
+		_, hasTimeouts := outputs["timeouts"]
+		assert.False(t, hasTimeouts, "timeouts must not appear in the injected Pulumi outputs")
+
+		outputsJSON, err := json.Marshal(outputs)
+		require.NoError(t, err)
+		deltaJSON, err := json.Marshal(delta)
+		require.NoError(t, err)
+
+		var outputsFromSidecar map[string]interface{}
+		require.NoError(t, json.Unmarshal(outputsJSON, &outputsFromSidecar))
+		var deltaFromSidecar map[string]interface{}
+		require.NoError(t, json.Unmarshal(deltaJSON, &deltaFromSidecar))
+
+		props := resource.NewPropertyMapFromMap(outputsFromSidecar)
+		rsd, err := tfbridge.UnmarshalRawStateDelta(resource.NewPropertyValue(deltaFromSidecar))
+		require.NoError(t, err)
+		recovered, err := rsd.Recover(resource.NewObjectProperty(props))
+		require.NoError(t, err, "delta must apply cleanly to the outputs")
+
+		// The recovered raw state matches the original attributes with
+		// "timeouts" removed, not the original attributes verbatim: the
+		// timeouts data genuinely does not make it into the injected state.
+		var want, got map[string]interface{}
+		require.NoError(t, json.Unmarshal(attrs, &want))
+		delete(want, "timeouts")
+		require.NoError(t, json.Unmarshal(recovered, &got))
+		assert.Equal(t, want, got, "recovered raw state must match the original attributes minus timeouts")
 	})
 
 	t.Run("aws_vpn_connection_route: no timeouts block, delta available", func(t *testing.T) {

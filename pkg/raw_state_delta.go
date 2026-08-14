@@ -73,31 +73,63 @@ func ComputeInjectionState(
 		return nil, nil, "", 0, fmt.Errorf("decoding %s attributes: %w", tfType, err)
 	}
 
-	// RawStateComputeDelta's own "timeouts" handling (tfbridge/rawstate.go)
-	// only works when the type, the value, and the Pulumi outputs it is
-	// handed all agree about whether a "timeouts" attribute exists.
-	// stripTimeouts removes it from the type, mirroring what the bridge's
-	// own valueshim.FromHctyResourceType does. Left unpaired, that used to
-	// leave a value (and outputs derived from it) still carrying
-	// "timeouts: null" against a type that declared no such attribute,
-	// which is why aws_vpn_gateway_route_propagation's turnaround check
-	// failed (see TestComputeInjectionState_TimeoutsDeltaRecovers).
-	// stripTimeoutsValue removes it from the value too, and the outputs
-	// (props) are derived from the stripped value below, so all three
-	// inputs to RawStateComputeDelta now agree.
+	// RawStateComputeDelta (tfbridge/rawstate.go) special-cases the "timeouts"
+	// attribute in two places:
+	//
+	//   - Its own value/type walk unconditionally treats a top-level
+	//     "timeouts" path as an empty, already-handled Object node, so the
+	//     type it is handed for the walk must not declare "timeouts" either
+	//     (mirroring what the bridge's own valueshim.FromHctyResourceType
+	//     does when building a resource's SchemaType() for every real
+	//     caller). strippedType does that.
+	//
+	//   - Separately, it inspects the Pulumi outputs (props) it is handed:
+	//     if props has a "timeouts" key at all, it treats timeouts as part
+	//     of the resource's real data model and preserves it verbatim in the
+	//     raw state; otherwise it strips "timeouts" from the raw state value
+	//     itself (v.Remove("timeouts")) before encoding.
+	//
+	// The second branch (props carrying "timeouts") turns out to be
+	// unreachable for the sdk-v2 flavour this tool imports through, and not
+	// just for our own inputs: the bridge's own production instance-state
+	// path (sdk-v2's (*v2InstanceState2).Object, tfshim/sdk-v2/provider2.go)
+	// unconditionally deletes "timeouts" from the map it hands to
+	// MakeTerraformResult, with the comment "grpc servers add a timeouts key
+	// to compensate for infinite diffs; this is not needed in the Pulumi
+	// projection." So no real caller's props ever carries "timeouts",
+	// populated or not -- confirmed empirically here too: keeping "timeouts"
+	// in props when it is populated (rather than always excluding it) makes
+	// RawStateComputeDelta take the "part of the data model" branch, which
+	// calls v.Marshal(schemaType) -- but schemaType is (and, per
+	// SchemaType() above, always is for every real caller) the type with
+	// "timeouts" already stripped, so cty's own JSON marshaller silently
+	// drops the attribute from the encoded raw state while props/pv still
+	// carry it, and the turnaround self-check then fails with "recovered raw
+	// state does not byte-for-byte match the original raw state". So props
+	// excludes "timeouts" unconditionally, matching upstream, and timeouts
+	// data -- populated or not -- is never preserved into the injected
+	// resource; that already matches how every other bridged resource
+	// behaves, not a regression this tool introduces.
 	strippedType := stripTimeouts(ty)
-	strippedValue := stripTimeoutsValue(value)
 
-	props, err := pulumiOutputsFromCty(ctx, strippedValue, schemaMap, schemaInfos)
+	props, err := pulumiOutputsFromCty(ctx, value, schemaMap, schemaInfos)
 	if err != nil {
 		return nil, nil, "", 0, fmt.Errorf("converting %s attributes to Pulumi outputs: %w", tfType, err)
 	}
+	delete(props, "timeouts")
 	outputs = props.Mappable()
 
+	// The cty value itself is passed through unstripped: props has no
+	// "timeouts" key (above), so RawStateComputeDelta removes "timeouts" from
+	// the value on our behalf (v.Remove("timeouts")) before encoding raw
+	// state, the same way it does for every real bridge caller -- stripping
+	// it here too would be redundant. Confirmed empirically: a separate
+	// value-side strip is not needed once the props-side strip above is
+	// unconditional.
 	rawDelta, deltaErr := tfbridge.RawStateComputeDelta(ctx, schemaMap, schemaInfos,
 		props,
 		valueshim.FromCtyType(strippedType),
-		valueshim.FromCtyValue(strippedValue))
+		valueshim.FromCtyValue(value))
 	if deltaErr != nil {
 		// A delta that cannot be computed is not fatal: the resource is injected
 		// without one and falls back to the bridge's pre-delta reconstruction.
@@ -172,23 +204,4 @@ func stripTimeouts(t cty.Type) cty.Type {
 	}
 	delete(attrs, "timeouts")
 	return cty.Object(attrs)
-}
-
-// stripTimeoutsValue removes the timeouts attribute from an object value, the
-// value-side counterpart to stripTimeouts. See the comment in
-// ComputeInjectionState for why the type and the value must agree about
-// "timeouts".
-func stripTimeoutsValue(v cty.Value) cty.Value {
-	if v.IsNull() || !v.Type().IsObjectType() {
-		return v
-	}
-	attrs := v.AsValueMap()
-	if _, ok := attrs["timeouts"]; !ok {
-		return v
-	}
-	delete(attrs, "timeouts")
-	if len(attrs) == 0 {
-		return cty.EmptyObjectVal
-	}
-	return cty.ObjectVal(attrs)
 }
