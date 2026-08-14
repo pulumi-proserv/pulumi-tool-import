@@ -23,6 +23,7 @@ import (
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/providermap"
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/tfprovider"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
+	shim "github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfshim"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -66,7 +67,7 @@ func TestComputeInjectionState_RandomPet(t *testing.T) {
 
 	attrs := []byte(`{"id":"cool-pet","keepers":null,"length":2,"prefix":null,"separator":"-"}`)
 
-	outputs, delta, version, err := ComputeInjectionState(ctx, prov, "random_pet", attrs, nil, nil)
+	outputs, delta, deltaReason, version, err := ComputeInjectionState(ctx, prov, "random_pet", attrs, nil, nil)
 	require.NoError(t, err)
 
 	// Outputs carry Pulumi property names.
@@ -78,6 +79,7 @@ func TestComputeInjectionState_RandomPet(t *testing.T) {
 
 	// A delta is produced and is not a secret-bearing blob.
 	assert.NotNil(t, delta)
+	assert.Empty(t, deltaReason, "a produced delta must not also carry a reason it is missing")
 }
 
 // nestedBlockTestAWSProviderAddr and nestedBlockTestAWSProviderVersion pin the
@@ -230,9 +232,11 @@ func TestComputeInjectionState_NestedBlockDeltaRecovers(t *testing.T) {
 
 	attrs := []byte(vpnConnectionAttrsJSON)
 
-	outputs, delta, _, err := ComputeInjectionState(ctx, prov, "aws_vpn_connection", attrs, schemaMap, schemaInfos)
+	outputs, delta, deltaReason, _, err := ComputeInjectionState(
+		ctx, prov, "aws_vpn_connection", attrs, schemaMap, schemaInfos)
 	require.NoError(t, err)
 	require.NotEmpty(t, delta, "a nested-block type should produce a non-empty delta")
+	assert.Empty(t, deltaReason, "a produced delta must not also carry a reason it is missing")
 
 	// PulumiOutputs and RawStateDelta are written to the sidecar as JSON and
 	// read back by a later task — that JSON round trip, not the in-memory
@@ -261,4 +265,125 @@ func TestComputeInjectionState_NestedBlockDeltaRecovers(t *testing.T) {
 	require.NoError(t, json.Unmarshal(attrs, &want))
 	require.NoError(t, json.Unmarshal(recovered, &got))
 	assert.Equal(t, want, got, "recovered raw state must match the original attributes exactly")
+}
+
+// TestComputeInjectionState_TimeoutsOnlyTypeHasNoDelta reproduces, without
+// AWS, why aws_vpn_gateway_route_propagation gets no raw state delta while
+// aws_vpn_connection_route — structurally similar, also a flat pair of string
+// attributes — does.
+//
+// aws_vpn_gateway_route_propagation's live schema (confirmed via
+// sch.Block.ImpliedType() against the same 5.100.0 provider as
+// TestComputeInjectionState_NestedBlockDeltaRecovers) declares a "timeouts"
+// block (create/delete), even though the resource itself never sets one.
+// aws_vpn_connection_route's schema has no such block.
+//
+// The bridge's RawStateComputeDelta has an unconditional early return for any
+// path exactly equal to the top-level "timeouts" attribute: it always
+// produces a non-empty, Object-shaped delta node for it, regardless of the
+// actual Pulumi property value there. When that property is present but null
+// — which it is here, since MakeTerraformOutputs converts the schema's
+// always-present, never-set "timeouts" attribute into an explicit null output
+// — the delta's own turnaround self-check (Recover applied to Marshal, before
+// RawStateComputeDelta returns) fails: it demands an Object PropertyValue at
+// "timeouts" and gets Null. That failure is what makes RawStateComputeDelta
+// return an error for this type, which is what ComputeInjectionState reports
+// as deltaUnavailableReason.
+//
+// This is why the resource genuinely never reaches the "empty but present
+// delta" case that pkg/module_map.go's RawStateDelta doc comment argues is
+// impossible: RawStateComputeDelta either succeeds with a non-empty delta or
+// fails outright before returning one.
+func TestComputeInjectionState_TimeoutsOnlyTypeHasNoDelta(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	prov, err := tfprovider.LoadProvider(ctx, nestedBlockTestAWSProviderAddr, nestedBlockTestAWSProviderVersion)
+	if err != nil {
+		skipOrFailUnavailable(t, err, "aws provider unavailable")
+		return
+	}
+	defer prov.Close(ctx)
+
+	pulumiProviders, err := PulumiProvidersForTerraformProviders(
+		[]providermap.TerraformProviderName{nestedBlockTestAWSProviderAddr},
+		map[string]string{nestedBlockTestAWSProviderAddr: nestedBlockTestAWSProviderVersion},
+	)
+	if err != nil {
+		skipOrFailUnavailable(t, err, "could not bridge aws provider schema")
+		return
+	}
+	pwm := pulumiProviders[providermap.TerraformProviderName(nestedBlockTestAWSProviderAddr)]
+	require.NotNil(t, pwm, "expected a bridged provider for %s", nestedBlockTestAWSProviderAddr)
+
+	schemaFor := func(tfType string) (shim.SchemaMap, map[string]*tfbridge.SchemaInfo) {
+		shimResource := pwm.P.ResourcesMap().Get(tfType)
+		require.NotNil(t, shimResource, "expected %s in the bridged schema", tfType)
+		var schemaInfos map[string]*tfbridge.SchemaInfo
+		if ri := pwm.Resources[tfType]; ri != nil {
+			schemaInfos = ri.Fields
+		}
+		return shimResource.Schema(), schemaInfos
+	}
+
+	t.Run("aws_vpn_gateway_route_propagation: schema declares timeouts, delta unavailable", func(t *testing.T) {
+		schemaMap, schemaInfos := schemaFor("aws_vpn_gateway_route_propagation")
+
+		// Confirm the root cause directly against the live schema: a
+		// "timeouts" attribute is present in the implied type even though
+		// this resource never sets one.
+		schemas := prov.GetProviderSchema(ctx)
+		sch, ok := schemas.ResourceTypes["aws_vpn_gateway_route_propagation"]
+		require.True(t, ok)
+		_, hasTimeouts := sch.Block.ImpliedType().AttributeTypes()["timeouts"]
+		require.True(t, hasTimeouts,
+			"expected aws_vpn_gateway_route_propagation's schema to declare a timeouts block")
+
+		attrs := []byte(`{
+			"id": "vgw-0cdee3deb918b1983_rtb-0e370d1fdde0890b3",
+			"route_table_id": "rtb-0e370d1fdde0890b3",
+			"vpn_gateway_id": "vgw-0cdee3deb918b1983"
+		}`)
+
+		outputs, delta, deltaReason, version, err := ComputeInjectionState(
+			ctx, prov, "aws_vpn_gateway_route_propagation", attrs, schemaMap, schemaInfos)
+
+		// Not fatal: outputs and a schema version are still produced, so the
+		// resource can still be injected without a delta.
+		require.NoError(t, err)
+		assert.Equal(t, "rtb-0e370d1fdde0890b3", outputs["routeTableId"])
+		assert.GreaterOrEqual(t, version, int64(0))
+
+		// The delta itself is unavailable, and the reason is no longer
+		// discarded: it names the turnaround-check failure caused by the
+		// "timeouts" mismatch described above.
+		assert.Nil(t, delta)
+		assert.Contains(t, deltaReason, "aws_vpn_gateway_route_propagation")
+		assert.Contains(t, deltaReason, "turnaround check")
+	})
+
+	t.Run("aws_vpn_connection_route: no timeouts block, delta available", func(t *testing.T) {
+		schemaMap, schemaInfos := schemaFor("aws_vpn_connection_route")
+
+		schemas := prov.GetProviderSchema(ctx)
+		sch, ok := schemas.ResourceTypes["aws_vpn_connection_route"]
+		require.True(t, ok)
+		_, hasTimeouts := sch.Block.ImpliedType().AttributeTypes()["timeouts"]
+		require.False(t, hasTimeouts,
+			"expected aws_vpn_connection_route's schema to declare no timeouts block")
+
+		attrs := []byte(`{
+			"destination_cidr_block": "10.99.0.0/16",
+			"id": "cgw-example:vgw-example",
+			"vpn_connection_id": "vpn-0abc123def456"
+		}`)
+
+		outputs, delta, deltaReason, _, err := ComputeInjectionState(
+			ctx, prov, "aws_vpn_connection_route", attrs, schemaMap, schemaInfos)
+
+		require.NoError(t, err)
+		assert.Equal(t, "10.99.0.0/16", outputs["destinationCidrBlock"])
+		assert.NotNil(t, delta, "with no timeouts block in the schema, a delta should be produced")
+		assert.Empty(t, deltaReason)
+	})
 }

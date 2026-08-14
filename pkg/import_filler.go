@@ -78,7 +78,19 @@ type NonImportableResource struct {
 	PulumiOutputs map[string]interface{} `json:"pulumiOutputs,omitempty"`
 	// RawStateDelta is the bridge's __pulumi_raw_state_delta for those outputs.
 	// Computed from redacted attributes, so it never contains a secret.
+	//
+	// Kept omitempty: see the identical field on ModuleResource
+	// (pkg/module_map.go) for why a whole-resource delta is never both
+	// present-and-empty — an absent RawStateDelta always pairs with either
+	// nothing (injection state wasn't computed at all) or a
+	// RawStateDeltaReason (it was attempted and failed).
 	RawStateDelta map[string]interface{} `json:"rawStateDelta,omitempty"`
+	// RawStateDeltaReason explains why RawStateDelta is absent, when computing
+	// one was attempted but did not succeed. See the identical field on
+	// ModuleResource (pkg/module_map.go) for the full contract. Carried
+	// through to this sidecar entry so "patch-state" can report the reason
+	// downstream instead of only "digest tf" ever seeing it.
+	RawStateDeltaReason string `json:"rawStateDeltaReason,omitempty"`
 	// SchemaVersion is the Terraform resource type's schema version, read from
 	// the live provider. Written into state as __meta so that a later provider
 	// upgrade runs the right state upgraders.
@@ -263,16 +275,17 @@ func (s *fillState) assign(entry *ImportEntry, tfRes *ModuleResource) {
 	}
 	if tfRes.NonImportable {
 		s.result.NonImportable = append(s.result.NonImportable, NonImportableResource{
-			Type:               entry.Type,
-			Name:               entry.Name,
-			Parent:             entry.Parent,
-			TerraformAddress:   tfRes.TerraformAddress,
-			ID:                 tfRes.ImportID,
-			Attributes:         tfRes.Attributes,
-			RedactedAttributes: redactedAttributeKeys(tfRes.TerraformAddress, tfRes.Attributes),
-			PulumiOutputs:      tfRes.PulumiOutputs,
-			RawStateDelta:      tfRes.RawStateDelta,
-			SchemaVersion:      tfRes.SchemaVersion,
+			Type:                entry.Type,
+			Name:                entry.Name,
+			Parent:              entry.Parent,
+			TerraformAddress:    tfRes.TerraformAddress,
+			ID:                  tfRes.ImportID,
+			Attributes:          tfRes.Attributes,
+			RedactedAttributes:  redactedAttributeKeys(tfRes.TerraformAddress, tfRes.Attributes),
+			PulumiOutputs:       tfRes.PulumiOutputs,
+			RawStateDelta:       tfRes.RawStateDelta,
+			RawStateDeltaReason: tfRes.RawStateDeltaReason,
+			SchemaVersion:       tfRes.SchemaVersion,
 		})
 		s.dropped[entry] = true
 		return

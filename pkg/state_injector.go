@@ -419,6 +419,11 @@ func attachRawStateDelta(r *NonImportableResource, obj, outputs map[string]inter
 	}
 
 	if r.RawStateDelta == nil {
+		if r.RawStateDeltaReason != "" {
+			return deltaAbsent, fmt.Sprintf(
+				"%s (%s %q): sidecar carried no raw-state delta: %s",
+				r.TerraformAddress, r.Type, r.Name, r.RawStateDeltaReason)
+		}
 		return deltaAbsent, fmt.Sprintf(
 			"%s (%s %q): sidecar carried no raw-state delta; check whether \"digest tf\" produced one",
 			r.TerraformAddress, r.Type, r.Name)

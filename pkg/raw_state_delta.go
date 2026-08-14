@@ -40,6 +40,19 @@ import (
 //
 // attrsJSON must be the redacted attributes. The delta can embed raw JSON, so
 // computing it from real secret values would put them in the sidecar.
+//
+// The returned deltaUnavailableReason is non-empty exactly when delta is nil
+// but err is nil: RawStateComputeDelta was reached and ran, but could not
+// produce a delta for this value. That is not fatal — the caller still gets
+// outputs and a schema version, and injects the resource without a delta,
+// falling back to the bridge's pre-delta reconstruction — but the reason is
+// worth keeping rather than discarding, since "no delta" and "no delta and we
+// don't know why" look identical to everything downstream unless the reason
+// is threaded through.
+//
+// err, by contrast, means nothing here could be computed at all (no schema
+// for tfType, attrsJSON does not decode, or the attributes could not convert
+// to Pulumi outputs) — the caller gets no outputs, no delta, and no version.
 func ComputeInjectionState(
 	ctx context.Context,
 	prov tfprovider.Provider,
@@ -47,41 +60,58 @@ func ComputeInjectionState(
 	attrsJSON []byte,
 	schemaMap shim.SchemaMap,
 	schemaInfos map[string]*tfbridge.SchemaInfo,
-) (map[string]interface{}, map[string]interface{}, int64, error) {
+) (outputs map[string]interface{}, delta map[string]interface{}, deltaUnavailableReason string, version int64, err error) { //nolint:lll
 	schemas := prov.GetProviderSchema(ctx)
 	sch, ok := schemas.ResourceTypes[tfType]
 	if !ok {
-		return nil, nil, 0, fmt.Errorf("provider has no schema for %s", tfType)
+		return nil, nil, "", 0, fmt.Errorf("provider has no schema for %s", tfType)
 	}
 
 	ty := sch.Block.ImpliedType()
 	value, err := ctyjson.Unmarshal(attrsJSON, ty)
 	if err != nil {
-		return nil, nil, 0, fmt.Errorf("decoding %s attributes: %w", tfType, err)
+		return nil, nil, "", 0, fmt.Errorf("decoding %s attributes: %w", tfType, err)
 	}
 
 	props, err := pulumiOutputsFromCty(ctx, value, schemaMap, schemaInfos)
 	if err != nil {
-		return nil, nil, 0, fmt.Errorf("converting %s attributes to Pulumi outputs: %w", tfType, err)
+		return nil, nil, "", 0, fmt.Errorf("converting %s attributes to Pulumi outputs: %w", tfType, err)
 	}
-	outputs := props.Mappable()
+	outputs = props.Mappable()
 
-	delta, err := tfbridge.RawStateComputeDelta(ctx, schemaMap, schemaInfos,
+	rawDelta, deltaErr := tfbridge.RawStateComputeDelta(ctx, schemaMap, schemaInfos,
 		props,
 		valueshim.FromCtyType(stripTimeouts(ty)),
 		valueshim.FromCtyValue(value))
-	if err != nil {
+	if deltaErr != nil {
 		// A delta that cannot be computed is not fatal: the resource is injected
 		// without one and falls back to the bridge's pre-delta reconstruction.
-		return outputs, nil, sch.Version, nil
+		// Confirmed against a live aws_vpn_gateway_route_propagation schema
+		// (TestComputeInjectionState_TimeoutsOnlyTypeHasNoDelta) that this is
+		// the path actually taken for that type: its schema declares a
+		// "timeouts" block, and the bridge's delta computation always treats a
+		// present-but-null "timeouts" property as though it were an object,
+		// which then fails RawStateComputeDelta's own turnaround self-check.
+		return outputs, nil, fmt.Sprintf("computing raw state delta for %s: %v", tfType, deltaErr), sch.Version, nil
 	}
 
-	marshalled, ok := delta.Marshal().Mappable().(map[string]interface{})
+	marshalled, ok := rawDelta.Marshal().Mappable().(map[string]interface{})
 	if !ok {
-		return outputs, nil, sch.Version, nil
+		// Believed unreachable for a whole-resource delta: the top-level
+		// PropertyValue handed to RawStateComputeDelta is always an Object (a
+		// resource's outputs are always a property map), and
+		// rawStateRecoverNatural — the only path that produces an empty delta —
+		// refuses Object values outright (pulumi-terraform-bridge's
+		// rawstate.go). So a top-level delta is always either non-empty or the
+		// turnaround check catches the mismatch first and RawStateComputeDelta
+		// returns an error instead, which is handled above. Kept as a
+		// defensive fallback rather than a panic, in case a future bridge
+		// version changes that behaviour.
+		return outputs, nil, fmt.Sprintf("raw state delta for %s computed empty despite no error", tfType),
+			sch.Version, nil
 	}
 
-	return outputs, marshalled, sch.Version, nil
+	return outputs, marshalled, "", sch.Version, nil
 }
 
 // pulumiOutputsFromCty converts a cty value into the Pulumi property map the

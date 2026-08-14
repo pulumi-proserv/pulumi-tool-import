@@ -68,7 +68,25 @@ type ModuleResource struct {
 	PulumiOutputs map[string]interface{} `json:"pulumiOutputs,omitempty"`
 	// RawStateDelta is the bridge's __pulumi_raw_state_delta for those outputs.
 	// Computed from redacted attributes, so it never contains a secret.
+	//
+	// Kept omitempty: RawStateComputeDelta cannot produce a genuinely empty
+	// delta for a whole resource (its PropertyValue is always an Object, and
+	// the bridge's empty-delta recovery path refuses Object values outright —
+	// see ComputeInjectionState in raw_state_delta.go). What look like "empty"
+	// deltas are actually the RawStateDeltaReason case below: a delta was
+	// attempted and failed, not one that succeeded and came back empty.
 	RawStateDelta map[string]interface{} `json:"rawStateDelta,omitempty"`
+	// RawStateDeltaReason explains why RawStateDelta is absent, for a resource
+	// where computing one was attempted (schemaMap was available and
+	// ComputeInjectionState ran) but did not succeed. Empty whenever
+	// RawStateDelta is present, and also empty when injection-state
+	// computation was skipped entirely (no provider, no bridged schema) —
+	// this field only covers the "we tried and it didn't work" case, so a
+	// later reader (e.g. patch-state) can tell that apart from "nobody
+	// looked." Derived from the bridge's own error text, which is safe to
+	// carry: it never echoes attribute values, only structural detail (see
+	// ComputeInjectionState).
+	RawStateDeltaReason string `json:"rawStateDeltaReason,omitempty"`
 	// SchemaVersion is the Terraform resource type's schema version, read from
 	// the live provider. Written into state as __meta so that a later provider
 	// upgrade runs the right state upgraders.
@@ -507,13 +525,19 @@ func populateInjectionState(
 		return
 	}
 
-	outputs, delta, version, ok := safeComputeInjectionState(ctx, prov, resourceType, attrsJSON, schemaMap, schemaInfos)
+	outputs, delta, deltaReason, version, ok := safeComputeInjectionState(
+		ctx, prov, resourceType, attrsJSON, schemaMap, schemaInfos)
 	if !ok {
 		return
 	}
 	mr.PulumiOutputs = outputs
 	mr.RawStateDelta = delta
 	mr.SchemaVersion = version
+	if delta == nil && deltaReason != "" {
+		fmt.Fprintf(os.Stderr, "Warning: no raw state delta for %s (%s): %s\n",
+			mr.TerraformAddress, resourceType, deltaReason)
+		mr.RawStateDeltaReason = deltaReason
+	}
 }
 
 // safeComputeInjectionState calls ComputeInjectionState and converts any
@@ -531,19 +555,20 @@ func safeComputeInjectionState(
 	attrsJSON []byte,
 	schemaMap shim.SchemaMap,
 	schemaInfos map[string]*tfbridge.SchemaInfo,
-) (outputs map[string]interface{}, delta map[string]interface{}, version int64, ok bool) {
+) (outputs map[string]interface{}, delta map[string]interface{}, deltaReason string, version int64, ok bool) {
 	defer func() {
 		if r := recover(); r != nil {
 			fmt.Fprintf(os.Stderr, "Warning: computing injection state for %s panicked: %v\n", tfType, r)
-			outputs, delta, version, ok = nil, nil, 0, false
+			outputs, delta, deltaReason, version, ok = nil, nil, "", 0, false
 		}
 	}()
 
-	o, d, v, err := ComputeInjectionState(ctx, prov, tfType, attrsJSON, schemaMap, schemaInfos)
+	o, d, reason, v, err := ComputeInjectionState(ctx, prov, tfType, attrsJSON, schemaMap, schemaInfos)
 	if err != nil {
-		return nil, nil, 0, false
+		fmt.Fprintf(os.Stderr, "Warning: computing injection state for %s failed: %v\n", tfType, err)
+		return nil, nil, "", 0, false
 	}
-	return o, d, v, true
+	return o, d, reason, v, true
 }
 
 // buildResourceURN constructs a Pulumi URN for a Terraform resource, or falls back
