@@ -546,6 +546,87 @@ func TestDiscoverSensitiveSecrets_MarksEntriesAsSecret(t *testing.T) {
 	assert.True(t, entries[0].Secret, "entries from DiscoverSensitiveSecrets should have Secret=true")
 }
 
+// TestDiscoverSensitiveSecrets_NullAttributeNotRedacted reproduces the
+// aws_iot_certificate.ca_pem bug: a resource with one sensitive attribute
+// AWS populated (certificate_pem) and one it left null (ca_pem), both marked
+// sensitive by the provider schema and recorded in AttrSensitivePaths.
+//
+// Before the fix, redactSensitivePaths turned the null ca_pem into the
+// literal "(sensitive)" placeholder even though DiscoverSensitiveSecrets —
+// walking the very same AttrsJSON — skips nil values and never writes a
+// stack config entry for it. redactedAttributeKeys then recorded a
+// redactedAttributes entry pointing at that never-written config key, which
+// is exactly what makes "patch-state --non-importable" hard-fail: it tries
+// to resolve a config key that does not exist. This test asserts both
+// halves of that failure mode are gone: no placeholder for the null
+// attribute, and no dangling redactedAttributes entry for it.
+func TestDiscoverSensitiveSecrets_NullAttributeNotRedacted(t *testing.T) {
+	t.Parallel()
+
+	const address = "aws_iot_certificate.cert"
+	attrsJSON := []byte(`{"id":"cert-1","ca_pem":null,"certificate_pem":"-----BEGIN CERTIFICATE-----real-pem-value"}`)
+
+	sensitivePaths := []cty.PathValueMarks{
+		{Path: cty.GetAttrPath("ca_pem"), Marks: cty.NewValueMarks("sensitive")},
+		{Path: cty.GetAttrPath("certificate_pem"), Marks: cty.NewValueMarks("sensitive")},
+	}
+
+	// Build the config side of the pipeline exactly as generate_module_map.go
+	// does: DiscoverSensitiveSecrets walks state and decides what actually
+	// gets written to stack config.
+	state := states.NewState()
+	rootModule := state.RootModule()
+	rootModule.SetResourceInstanceCurrent(
+		addrs.ResourceInstance{
+			Resource: addrs.Resource{
+				Mode: addrs.ManagedResourceMode,
+				Type: "aws_iot_certificate",
+				Name: "cert",
+			},
+			Key: addrs.NoKey,
+		},
+		&states.ResourceInstanceObjectSrc{
+			AttrsJSON:          attrsJSON,
+			AttrSensitivePaths: sensitivePaths,
+		},
+		addrs.AbsProviderConfig{
+			Provider: addrs.MustParseProviderSourceString("registry.opentofu.org/hashicorp/aws"),
+		},
+		nil,
+	)
+
+	configEntries, err := DiscoverSensitiveSecrets(state, "test-project")
+	require.NoError(t, err)
+	require.Len(t, configEntries, 1, "only the populated attribute should produce a config entry")
+	assert.Equal(t, "cert_certificate_pem", configEntries[0].ConfigKey)
+
+	// Build the digest side exactly as BuildModuleMap does: decode the same
+	// AttrsJSON, then redact using the same AttrSensitivePaths.
+	attrs, err := decodeAttrs(attrsJSON)
+	require.NoError(t, err)
+	redactSensitivePaths(attrs, sensitivePaths)
+
+	// Half 1: no "(sensitive)" placeholder for the null attribute.
+	assert.Nil(t, attrs["ca_pem"], "null sensitive attribute must remain null in the digest, not become the redaction placeholder")
+	assert.Equal(t, "(sensitive)", attrs["certificate_pem"], "populated sensitive attribute must still be redacted")
+
+	// Half 2: no redactedAttributes entry pointing at a config key that was
+	// never written.
+	redacted := redactedAttributeKeys(address, attrs)
+	assert.NotContains(t, redacted, "ca_pem",
+		"must not record a redactedAttributes entry for a null attribute; DiscoverSensitiveSecrets never wrote a config key for it")
+	require.Contains(t, redacted, "certificate_pem")
+
+	// The redactedAttributes entry that does exist must point at a config
+	// key DiscoverSensitiveSecrets actually created.
+	configKeys := make(map[string]bool, len(configEntries))
+	for _, e := range configEntries {
+		configKeys[e.ConfigKey] = true
+	}
+	assert.True(t, configKeys[redacted["certificate_pem"]],
+		"redactedAttributes must point at a config key DiscoverSensitiveSecrets wrote")
+}
+
 func TestConfigEntry_WorkspaceVarsSensitivity(t *testing.T) {
 	t.Parallel()
 

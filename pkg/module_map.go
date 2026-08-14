@@ -1088,8 +1088,29 @@ func redactSensitivePaths(attrs map[string]interface{}, paths []cty.PathValueMar
 		if !ok {
 			continue
 		}
-		if _, exists := attrs[step.Name]; exists {
+		if value, exists := attrs[step.Name]; exists {
 			if len(pvm.Path) == 1 {
+				// A null value has nothing to hide: it is not a secret, and
+				// redacting it would manufacture a reference to a stack
+				// config entry that is never created. DiscoverSensitiveSecrets
+				// (`:804-806` above) already agrees — it skips nil values when
+				// deciding what to write into config — so this keeps the
+				// digest's redaction and the config-writing loop in sync. Left
+				// unfixed, the digest would claim a secret exists
+				// (redactedAttributes would record a config key for it) that
+				// config never got, and patch-state/injection would hard-fail
+				// trying to resolve it.
+				//
+				// Empty string is treated differently: DiscoverSensitiveSecrets
+				// does NOT skip "" (only `value == nil` is excluded there; an
+				// empty string is stringified via fmt.Sprintf("%v", value) and
+				// written to config like any other value), so redacting an
+				// empty-string attribute here does not create a dangling
+				// reference — config already has a (empty) entry for it. So
+				// empty string keeps the normal redaction behavior below.
+				if value == nil {
+					continue
+				}
 				// Top-level attribute is sensitive — redact it.
 				attrs[step.Name] = "(sensitive)"
 			}

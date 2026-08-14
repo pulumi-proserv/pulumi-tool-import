@@ -85,18 +85,15 @@ resource "aws_vpn_connection_route" "route" {
 # create time, so private_key exists only in Terraform state and (via
 # "digest tf") Pulumi stack config -- never in this repo.
 #
-# ca_pem is given a harmless, fabricated value rather than left unset: that
-# branch selection only checks certificate_pem, so AWS never reads ca_pem
-# here -- but Terraform Core marks a Sensitive attribute's value redacted
-# based on the schema alone, independent of whether it is null, and an
-# unset (null) Sensitive attribute currently makes injection hard-fail
-# trying to resolve a stack config key that digest tf never had a real
-# value to write (DiscoverSensitiveSecrets skips null values). Giving ca_pem
-# a real, non-secret string sidesteps that unrelated edge case while still
-# exercising redaction and resolution for it like the other three fields.
+# ca_pem is deliberately left unset. That branch selection only checks
+# certificate_pem, so AWS never reads ca_pem here -- it stays null in state,
+# a Sensitive attribute with nothing to redact. This is the shape real
+# operators hit: a resource with some sensitive attributes populated by AWS
+# (private_key, certificate_pem, public_key) and others left unset. See
+# redactSensitivePaths in pkg/module_map.go for the null-value handling this
+# exercises.
 resource "aws_iot_certificate" "cert" {
   active = true
-  ca_pem = "not a real certificate authority -- placeholder value only, see comment above"
 }
 
 # aws_vpclattice_target_group is importable (declares Importer) and attaches
