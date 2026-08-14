@@ -245,3 +245,15 @@ to the curated list in `pkg/importsupport/fallback.json` and warns. Every entry
 there was confirmed by probing a real provider. The list is a floor, not an
 inventory: a type it doesn't cover is treated as unknown rather than guessed
 either way.
+
+## End-to-end test
+
+`test/e2e/e2e_test.go` (build tag `e2e`) drives a real AWS fixture — a VPN
+gateway with three `aws_vpn_gateway_route_propagation` and a
+`aws_vpn_connection_route`, both non-importable — through digest → resolve →
+`pulumi import` → `patch-state tf --non-importable`, and asserts those
+resources preview as `create` before injection and `same` after, which is the
+only check that validates injected values (see
+["Verify with preview, not refresh"](#verify-with-preview-not-refresh) above).
+Run it with `make test-e2e`; it creates and destroys real infrastructure, so it
+needs AWS credentials and skips cleanly without them.

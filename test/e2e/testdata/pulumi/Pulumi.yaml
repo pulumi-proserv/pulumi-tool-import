@@ -1,0 +1,135 @@
+name: tool-import-e2e
+runtime: yaml
+description: >
+  Pulumi program mirroring test/e2e/testdata/tf/main.tf, for the
+  patch-state-tf-non-importable end-to-end test (test/e2e/e2e_test.go).
+
+  Resource logical (URN) names below match what "resolve tf" derives from
+  the Terraform addresses in that fixture: for a resource with no parent
+  component, matchChildren (pkg/import_filler.go) matches on
+  extractResourceName(terraformAddress), which is the last dot-separated
+  segment of the address kept as-is -- brackets included for a
+  count-indexed resource, e.g. "aws_route_table.rt[0]" -> "rt[0]"
+  (see pkg/import_filler_test.go:TestExtractResourceName).
+
+  Pulumi YAML cannot reference a resource through interpolation syntax
+  if its logical name contains brackets -- the expression parser reads
+  "[0]" as indexing a list-valued variable named "rt", and there is no
+  variable named "rt" (only individually named resources), so
+  interpolating "rt[0].id" directly fails with 'resource, variable, or
+  config value "rt" not found'. Each bracket-named resource below
+  therefore uses an
+  interpolation-safe map key (rt0, prop0, ...) and sets its real,
+  bracket-bearing logical name through the resource's own "name:" field --
+  which is what ends up in the generated import file and what "resolve tf"
+  matches against. This was verified locally with
+  "pulumi preview --import-file" against this exact file (no AWS
+  credentials needed for that -- aws:skipCredentialsValidation) before
+  ever running it against real infrastructure.
+
+resources:
+  main:
+    type: aws:ec2:Vpc
+    name: main
+    properties:
+      cidrBlock: 10.42.0.0/16
+      enableDnsHostnames: true
+      tags:
+        Name: tool-import-e2e
+        ManagedBy: pulumi-tool-import-e2e
+        Purpose: issue-22-non-importable-injection
+
+  rt0:
+    type: aws:ec2:RouteTable
+    name: "rt[0]"
+    properties:
+      vpcId: ${main.id}
+      tags:
+        Name: tool-import-e2e-rt-0
+        ManagedBy: pulumi-tool-import-e2e
+        Purpose: issue-22-non-importable-injection
+  rt1:
+    type: aws:ec2:RouteTable
+    name: "rt[1]"
+    properties:
+      vpcId: ${main.id}
+      tags:
+        Name: tool-import-e2e-rt-1
+        ManagedBy: pulumi-tool-import-e2e
+        Purpose: issue-22-non-importable-injection
+  rt2:
+    type: aws:ec2:RouteTable
+    name: "rt[2]"
+    properties:
+      vpcId: ${main.id}
+      tags:
+        Name: tool-import-e2e-rt-2
+        ManagedBy: pulumi-tool-import-e2e
+        Purpose: issue-22-non-importable-injection
+
+  vgw:
+    type: aws:ec2:VpnGateway
+    name: vgw
+    properties:
+      vpcId: ${main.id}
+      amazonSideAsn: 64512
+      tags:
+        Name: tool-import-e2e
+        ManagedBy: pulumi-tool-import-e2e
+        Purpose: issue-22-non-importable-injection
+
+  # Non-importable: "resolve tf" drops these three from the generated
+  # import file and writes them to the *.non-importable.json sidecar
+  # instead. Before injection they must preview as "create"; after
+  # "patch-state tf --non-importable" they must preview as "same".
+  prop0:
+    type: aws:ec2:VpnGatewayRoutePropagation
+    name: "prop[0]"
+    properties:
+      vpnGatewayId: ${vgw.id}
+      routeTableId: ${rt0.id}
+  prop1:
+    type: aws:ec2:VpnGatewayRoutePropagation
+    name: "prop[1]"
+    properties:
+      vpnGatewayId: ${vgw.id}
+      routeTableId: ${rt1.id}
+  prop2:
+    type: aws:ec2:VpnGatewayRoutePropagation
+    name: "prop[2]"
+    properties:
+      vpnGatewayId: ${vgw.id}
+      routeTableId: ${rt2.id}
+
+  cgw:
+    type: aws:ec2:CustomerGateway
+    name: cgw
+    properties:
+      bgpAsn: 65000
+      ipAddress: 203.0.113.1
+      type: ipsec.1
+      tags:
+        Name: tool-import-e2e
+        ManagedBy: pulumi-tool-import-e2e
+        Purpose: issue-22-non-importable-injection
+
+  vpn:
+    type: aws:ec2:VpnConnection
+    name: vpn
+    properties:
+      vpnGatewayId: ${vgw.id}
+      customerGatewayId: ${cgw.id}
+      type: ipsec.1
+      staticRoutesOnly: true
+      tags:
+        Name: tool-import-e2e
+        ManagedBy: pulumi-tool-import-e2e
+        Purpose: issue-22-non-importable-injection
+
+  # Non-importable: the second sidecar entry (see prop0/1/2 above).
+  route:
+    type: aws:ec2:VpnConnectionRoute
+    name: route
+    properties:
+      destinationCidrBlock: 10.99.0.0/16
+      vpnConnectionId: ${vpn.id}
