@@ -47,9 +47,10 @@ func newPatchStateTfCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "tf",
-		Short: "Patch imported state with not_read field values from TF digest",
-		Long: `Patch a Pulumi stack state (from pulumi stack export) with field values
-from a TF digest that the cloud API import doesn't return.
+		Short: "Patch imported state with not_read field values from TF digest, in a file or directly on a stack",
+		Long: `Patch a Pulumi stack state with field values from a TF digest that the
+cloud API import doesn't return, and optionally inject resources the API
+can't import at all.
 
 Uses a curated fields file (--fields) that lists which fields per resource type
 are not returned by the cloud API on import and need patching. For each matching
@@ -57,9 +58,11 @@ resource, if the state input is nil:
   1. Use the digest value if available (from TF state)
   2. Fall back to the default from the fields file
 
-After patching, re-import the state with: pulumi stack import --file <output>
+This command runs in one of two modes, chosen by which flags are set:
 
-Example:
+File mode (--state and --out): reads an exported state file, writes a
+patched copy, and touches nothing live. Re-import the result yourself with:
+pulumi stack import --file <output>.
 
   pulumi stack export > state.json
   pulumi plugin run import -- patch-state \
@@ -69,6 +72,17 @@ Example:
     --mapping-file mappings.yaml \
     --out patched-state.json
   pulumi stack import --file patched-state.json
+
+Stack mode (--project-dir and --stack, omit --state and --out): exports the
+live stack, patches it, and imports the result straight back into that
+stack — it mutates a live stack. A pre-mutation backup is written first and
+the command prints the exact "pulumi stack import" command to restore it.
+After importing, the command runs "pulumi preview" itself to verify the
+change and, if verification fails or finds regressions, automatically
+reverts the stack to the backup. Stack mode is also required for
+--non-importable, since injected resources take their URN, parent, provider
+and dependencies from a preview of the program, and for resolving secret
+values out of stack config.
 `,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			stackMode := statePath == "" && outPath == ""
@@ -277,6 +291,20 @@ Example:
 				}
 			}
 
+			// InjectNonImportable already verifies the bytes it produces
+			// (VerifyDeploymentIntegrity, called at the end of
+			// pkg.InjectNonImportable); this only needs to run for a
+			// patch-only pass, in either mode, which never went through
+			// injection. The design's Verification section requires both
+			// modes verify before writing or importing, and patch-only stack
+			// mode previously skipped this check entirely — it only ran
+			// inside injection.
+			if injectResult == nil {
+				if err := pkg.VerifyDeploymentIntegrity(patched); err != nil {
+					return err
+				}
+			}
+
 			if stackMode && baseline == nil {
 				// Patch-only stack run: nothing above has previewed the stack
 				// yet, so take the baseline now — still before Import.
@@ -393,8 +421,12 @@ Example:
 	cmd.Flags().StringVar(&fieldsPath, "fields", "", "Curated fields file (aws-import-diff-fields.json)")
 	cmd.Flags().StringVar(&mappingFile, "mapping-file", "", "Path to YAML mapping file")
 	cmd.Flags().StringVarP(&outPath, "out", "o", "", "Output path for patched state")
-	cmd.Flags().StringVar(&projectDir, "project-dir", "", "Pulumi project directory (for reading stack config secrets)")
-	cmd.Flags().StringVar(&stack, "stack", "", "Pulumi stack name (for reading stack config secrets)")
+	cmd.Flags().StringVar(&projectDir, "project-dir", "", "Pulumi project directory. Selects stack mode "+
+		"(mutates the live stack: export, patch, import, verify with preview, auto-revert on failure) "+
+		"when --state/--out are omitted; also used to read stack config secrets in either mode")
+	cmd.Flags().StringVar(&stack, "stack", "", "Pulumi stack name. Selects stack mode (mutates the live "+
+		"stack: export, patch, import, verify with preview, auto-revert on failure) when --state/--out "+
+		"are omitted; also used to read stack config secrets in either mode")
 	cmd.Flags().StringVar(&configDir, "config-dir", "", "TF config directory (for resolving asset file paths)")
 	cmd.Flags().StringVar(&nonImportablePath, "non-importable", "",
 		"Sidecar from \"resolve tf\" whose resources should be written into state")

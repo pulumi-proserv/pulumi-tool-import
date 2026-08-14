@@ -658,16 +658,16 @@ func patchAndValidateResource(
 	}
 
 	// Update __pulumi_raw_state_delta for patched asset fields.
-	if deltaRaw, hasDelta := outputsRaw["__pulumi_raw_state_delta"]; hasDelta {
+	if deltaRaw, hasDelta := outputsRaw[rawStateDeltaKey]; hasDelta {
 		if len(res.patchedAssetFields) > 0 {
-			outputsRaw["__pulumi_raw_state_delta"] = injectAssetDeltas(deltaRaw, res.patchedAssetFields)
+			outputsRaw[rawStateDeltaKey] = injectAssetDeltas(deltaRaw, res.patchedAssetFields)
 		}
 	}
 
 	// Validate patched outputs against delta using bridge's Recover.
 	// If Recover fails, revert both inputs and outputs to pre-patch state
 	// to avoid panics and keep inputs/outputs consistent.
-	if _, hasDelta := outputsRaw["__pulumi_raw_state_delta"]; hasDelta && res.patched {
+	if _, hasDelta := outputsRaw[rawStateDeltaKey]; hasDelta && res.patched {
 		if recoverErr := validateRecover(urn, outputsRaw); recoverErr != nil {
 			fmt.Fprintf(os.Stderr, "  WARNING: Recover failed for %s: %v — reverting all patches\n", name, recoverErr)
 			inputsRaw = inputsSnapshot
@@ -1377,7 +1377,7 @@ func numericValue(v interface{}) (float64, bool) {
 // array (TF representation), we need to flatten it to match the bridge's
 // object representation so Recover can correctly reverse the transformation.
 func conformToDelta(val interface{}, field string, outputsRaw map[string]interface{}) interface{} {
-	deltaRaw, ok := outputsRaw["__pulumi_raw_state_delta"]
+	deltaRaw, ok := outputsRaw[rawStateDeltaKey]
 	if !ok {
 		return val
 	}
@@ -1421,7 +1421,7 @@ func conformToDelta(val interface{}, field string, outputsRaw map[string]interfa
 										if nestedVal, exists := resultMap[nestedField]; exists {
 											// Build a synthetic outputsRaw with just the delta for recursion.
 											synth := map[string]interface{}{
-												"__pulumi_raw_state_delta": map[string]interface{}{
+												rawStateDeltaKey: map[string]interface{}{
 													"obj": map[string]interface{}{
 														"ps": map[string]interface{}{
 															nestedField: nestedDelta,
@@ -1465,6 +1465,21 @@ func isSimpleValue(v interface{}) bool {
 // the engine deserializes state for the bridge's Diff/Recover path.
 func propertyValueFromState(v interface{}) resource.PropertyValue {
 	replv := func(v interface{}) (resource.PropertyValue, bool) {
+		// json.Number must be handled explicitly: resource.NewPropertyValueRepl
+		// has no case for it (only float64/int/etc, produced by a plain
+		// encoding/json decode), and reflection sees json.Number's underlying
+		// Kind as String — so without this case, every sidecar output number
+		// (LoadNonImportableFile decodes with UseNumber to keep large integers
+		// exact) would silently recover as a *string* PropertyValue instead of
+		// a number. validateRecover would then pass on a Recover that
+		// reconstructed the wrong type.
+		if n, ok := v.(json.Number); ok {
+			f, err := n.Float64()
+			if err != nil {
+				return resource.PropertyValue{}, false
+			}
+			return resource.NewNumberProperty(f), true
+		}
 		m, ok := v.(map[string]interface{})
 		if !ok {
 			return resource.PropertyValue{}, false
@@ -1475,8 +1490,29 @@ func propertyValueFromState(v interface{}) resource.PropertyValue {
 		}
 		switch s {
 		case "1b47061264138c4ac30d75fd1eb44270": // secret
-			elem := propertyValueFromState(m["value"])
-			return resource.MakeSecret(elem), true
+			// Two on-disk shapes carry this sig in this codebase: the engine's
+			// own state-serialization form, {sig, "value": <PropertyValue>},
+			// and the "plaintext" form this package writes when it resolves a
+			// secret from stack config (resolveSecretInputs and
+			// resolveOutputSecrets in state_injector.go; digVal in
+			// patchAndValidateResource above) — a JSON-encoded string under
+			// "plaintext", matching Automation API's ConfigValue convention.
+			// Both must recover as an actual Secret PropertyValue: falling
+			// through to the generic map case below would recover it as a
+			// nested Object instead, which is the same "Recover succeeds but
+			// reconstructs the wrong type" bug this function exists to avoid.
+			if _, hasValue := m["value"]; hasValue {
+				elem := propertyValueFromState(m["value"])
+				return resource.MakeSecret(elem), true
+			}
+			if plaintext, ok := m["plaintext"].(string); ok {
+				var raw interface{}
+				if err := json.Unmarshal([]byte(plaintext), &raw); err == nil {
+					elem := propertyValueFromState(raw)
+					return resource.MakeSecret(elem), true
+				}
+			}
+			return resource.PropertyValue{}, false
 		default:
 			if a, isAsset, err := resource.DeserializeAsset(m); err == nil && isAsset {
 				return resource.NewAssetProperty(a), true
@@ -1494,7 +1530,7 @@ func propertyValueFromState(v interface{}) resource.PropertyValue {
 // __pulumi_raw_state_delta by running the bridge's Recover function.
 // Returns nil if valid, or the Recover error if not.
 func validateRecover(urn string, outputsRaw map[string]interface{}) error {
-	deltaRaw, ok := outputsRaw["__pulumi_raw_state_delta"]
+	deltaRaw, ok := outputsRaw[rawStateDeltaKey]
 	if !ok {
 		return nil
 	}

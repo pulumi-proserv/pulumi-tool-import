@@ -49,7 +49,6 @@ type InjectResult struct {
 	// resource's outputs after secret substitution.
 	NoDelta int
 	URNs    []string
-	Skipped []string
 }
 
 // InjectNonImportable appends the sidecar's resources to an exported deployment.
@@ -403,7 +402,25 @@ func resolveOutputSecrets(
 					"pass --project-dir and --stack so it can be read",
 				r.Type, r.Name, pulumiName, configKey)
 		}
-		outputs[pulumiName] = value
+
+		// Wrapped in Pulumi's secret envelope, the same as resolveSecretInputs
+		// does for inputs: the design's Sensitive values section says outputs
+		// get the envelope too. This is a known secret being deliberately
+		// reintroduced (a value redacted by "digest tf" and resolved back out
+		// of stack config), unlike patch-state's own outputsRaw assignment
+		// (state_patcher.go, patchAndValidateResource) which unwraps to a bare
+		// value — that path is patching an incidental output the API already
+		// returned, not reinstating a secret on purpose. Leaving this one bare
+		// would write a VPN pre-shared key, or similar, into the deployment's
+		// outputs in plaintext and unmarked in the state backend.
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return 0, fmt.Errorf("encoding secret for %s: %w", configKey, err)
+		}
+		outputs[pulumiName] = map[string]interface{}{
+			sigKey:      "1b47061264138c4ac30d75fd1eb44270",
+			"plaintext": string(encoded),
+		}
 		resolved++
 	}
 	return resolved, nil
@@ -476,6 +493,19 @@ func resolveSecretInputs(
 // Only edges between two resources in this same batch matter: a reference to
 // a resource already in the deployment is necessarily earlier in the array
 // already, and needs no reordering here.
+//
+// Only "dependencies" and "parent" are consulted — not "propertyDependencies"
+// or "deletedWith", which the same create step can also carry. This is safe
+// so long as "dependencies" is a superset of them, which it normally is: the
+// engine populates "dependencies" as the union of every edge a resource
+// carries (parent, property-level, and deletedWith all get folded into it),
+// so a missed propertyDependencies-only or deletedWith-only edge that is not
+// already covered by "dependencies" would be unusual. If a batch ever
+// contains an edge that "dependencies" misses, this function will not
+// reorder for it — but that does not fail silently: VerifyIntegrity
+// (VerifyDeploymentIntegrity, called at the end of InjectNonImportable)
+// rejects a forward reference loudly, so an ordering gap surfaces as a hard
+// error here rather than as corrupted state discovered later.
 func orderInjected(objs []map[string]interface{}) {
 	n := len(objs)
 	index := make(map[string]int, n)

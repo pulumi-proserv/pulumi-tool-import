@@ -87,12 +87,26 @@ func (s *StackSession) Import(ctx context.Context, state []byte) error {
 // binary, working directory, and environment the Automation API resolved.
 func (s *StackSession) PreviewJSON(ctx context.Context) (*PreviewDigest, error) {
 	stdout, stderr, code, err := s.stack.Workspace().PulumiCommand().Run(
-		ctx, s.projectDir, nil, nil, nil, nil,
-		"preview", "--json", "--stack", s.stackName)
+		ctx, s.projectDir, nil, nil, nil, nil, previewJSONArgs(s.stackName)...)
 	if err != nil {
 		return nil, fmt.Errorf("running preview (exit %d): %w\n%s", code, err, stderr)
 	}
 	return ParsePreviewJSON([]byte(stdout))
+}
+
+// previewJSONArgs builds the CLI args for "pulumi preview --json".
+//
+// --show-sames is required, not cosmetic: shouldShow (pulumi/pkg/v3's
+// backend/display/display.go) returns opts.ShowSameResources for OpSame, and
+// cmd/pulumi's preview command (operations/preview.go) defaults
+// --show-sames to false with nothing forcing it under --json. Without this
+// flag "same" steps are absent from preview.json entirely — every URN
+// CheckInjectedOps looks up then misses, and a correct injection is reported
+// as unverified and reverted. Do not remove this flag as "redundant": it is
+// the only thing making "same" steps appear at all. Split out as its own
+// function so a test can assert on it without shelling out to the real CLI.
+func previewJSONArgs(stackName string) []string {
+	return []string{"preview", "--json", "--show-sames", "--stack", stackName}
 }
 
 // CheckInjectedOps reports every injected resource the preview does not show as

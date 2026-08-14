@@ -23,11 +23,68 @@ import (
 	"testing"
 
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/providermap"
+	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge/info"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// TestPropertyValueFromState_JSONNumberBecomesNumberProperty is the
+// regression test for the whole-branch finding that propertyValueFromState
+// silently recovered a sidecar's numeric outputs as strings.
+// LoadNonImportableFile decodes sidecars with json.Decoder.UseNumber, so
+// every numeric output arrives as json.Number, whose reflect.Kind is String
+// — resource.NewPropertyValueRepl has no case for json.Number, so before the
+// fix this fell through to the string branch. Before the fix this test
+// fails (pv.IsString() is true, pv.IsNumber() is false); after it passes.
+func TestPropertyValueFromState_JSONNumberBecomesNumberProperty(t *testing.T) {
+	t.Parallel()
+	pv := propertyValueFromState(json.Number("5"))
+	require.True(t, pv.IsNumber(), "a json.Number must recover as a Number PropertyValue, got %#v", pv)
+	assert.Equal(t, float64(5), pv.NumberValue())
+	assert.False(t, pv.IsString())
+}
+
+// TestValidateRecover_NumberOutputRecoversAsNumberNotString exercises the
+// same bug through the actual path validateRecover uses: an empty
+// ("obj":{}) raw state delta, which falls back to rawStateRecoverNatural.
+// That function branches on the PropertyValue's *kind* (pv.IsNumber() vs
+// pv.IsString()) to decide whether the recovered raw JSON is a bare number
+// or a quoted string. Before the fix, a json.Number output recovered as a
+// String PropertyValue, so validateRecover's guard passed (Recover reported
+// no error) while silently reconstructing the wrong Terraform raw-state
+// type — a quoted "5" instead of the number 5. This test fails before the
+// fix (recovered is `"5"`) and passes after (recovered is `5`).
+func TestValidateRecover_NumberOutputRecoversAsNumberNotString(t *testing.T) {
+	t.Parallel()
+
+	outputs := map[string]interface{}{
+		"count": json.Number("5"),
+	}
+	outputsPV := propertyValueFromState(outputs)
+
+	deltaMap := map[string]interface{}{"obj": map[string]interface{}{}}
+	deltaPV := resource.NewPropertyValue(deltaMap)
+	rsd, err := tfbridge.UnmarshalRawStateDelta(deltaPV)
+	require.NoError(t, err)
+
+	recovered, err := rsd.Recover(outputsPV)
+	require.NoError(t, err, "Recover reporting no error is exactly the vacuous-guard bug: "+
+		"it must still reconstruct the correct raw JSON type")
+
+	recoveredJSON, err := json.Marshal(recovered)
+	require.NoError(t, err)
+
+	var back map[string]interface{}
+	require.NoError(t, json.Unmarshal(recoveredJSON, &back))
+
+	// The recovered raw state must carry a JSON number, not a JSON string
+	// containing digits.
+	_, isNumber := back["count"].(float64)
+	assert.True(t, isNumber, "count must recover as a raw JSON number, got %#v (%T)", back["count"], back["count"])
+}
 
 func TestNormalizeTFName(t *testing.T) {
 	t.Parallel()

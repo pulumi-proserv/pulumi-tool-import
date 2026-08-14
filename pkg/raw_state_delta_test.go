@@ -17,6 +17,7 @@ package pkg
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"testing"
 
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/providermap"
@@ -26,6 +27,31 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// skipOrFailUnavailable reports a provider-unavailable condition for
+// TestComputeInjectionState_NestedBlockDeltaRecovers. It skips on a
+// developer machine, where the aws 5.100.0 provider cache is best-effort
+// (see the comment on nestedBlockTestAWSProviderAddr — it depends on a
+// prior, unrelated e2e run having populated the local plugin cache), but
+// fails outright in CI: a cold CI cache silently skipping this test would
+// yield a green build having proved nothing about the riskiest computation
+// on this branch (nested-block raw state delta recovery). GitHub Actions
+// (and most other CI systems) set CI=true unconditionally, so this needs no
+// workflow change to take effect.
+//
+// Warming this provider unconditionally in TestMain, the way
+// pkg/importsupport warms "random", was considered and rejected: unlike
+// random, the aws provider is a large network fetch, and forcing every run
+// of this package's tests — most of which have nothing to do with AWS or
+// nested blocks — to download and cache it would slow down and could break
+// sandboxed or offline test runs that never exercise this path.
+func skipOrFailUnavailable(t *testing.T, err error, what string) {
+	t.Helper()
+	if os.Getenv("CI") != "" {
+		t.Fatalf("%s: %v (CI must not silently skip the nested-block delta test)", what, err)
+	}
+	t.Skipf("%s: %v", what, err)
+}
 
 func TestComputeInjectionState_RandomPet(t *testing.T) {
 	t.Parallel()
@@ -170,7 +196,8 @@ func TestComputeInjectionState_NestedBlockDeltaRecovers(t *testing.T) {
 
 	prov, err := tfprovider.LoadProvider(ctx, nestedBlockTestAWSProviderAddr, nestedBlockTestAWSProviderVersion)
 	if err != nil {
-		t.Skipf("aws provider unavailable: %v", err)
+		skipOrFailUnavailable(t, err, "aws provider unavailable")
+		return
 	}
 	defer prov.Close(ctx)
 
@@ -186,7 +213,8 @@ func TestComputeInjectionState_NestedBlockDeltaRecovers(t *testing.T) {
 		map[string]string{nestedBlockTestAWSProviderAddr: nestedBlockTestAWSProviderVersion},
 	)
 	if err != nil {
-		t.Skipf("could not bridge aws provider schema: %v", err)
+		skipOrFailUnavailable(t, err, "could not bridge aws provider schema")
+		return
 	}
 	pwm := pulumiProviders[providermap.TerraformProviderName(nestedBlockTestAWSProviderAddr)]
 	require.NotNil(t, pwm, "expected a bridged provider for %s", nestedBlockTestAWSProviderAddr)

@@ -22,6 +22,30 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestPreviewJSONArgs_IncludesShowSames is the regression test for the
+// whole-branch finding that "pulumi preview --json" silently omits "same"
+// steps without --show-sames (shouldShow in pulumi/pkg/v3's
+// backend/display/display.go defaults opts.ShowSameResources to false, and
+// nothing forces it under --json). Before the fix, previewJSONArgs did not
+// include the flag — this test fails against that version and passes now.
+func TestPreviewJSONArgs_IncludesShowSames(t *testing.T) {
+	t.Parallel()
+	args := previewJSONArgs("my-stack")
+	assert.Contains(t, args, "--show-sames")
+	assert.Contains(t, args, "--json")
+	assert.Contains(t, args, "my-stack")
+}
+
+// These fixtures hand-write {"op":"same",...} steps to exercise
+// CheckInjectedOps/CheckPreviewClean/CheckInjectionVerification in isolation.
+// That is a deliberate simplification, not a claim about what real "pulumi
+// preview --json" output looks like: without --show-sames, the real CLI
+// omits "same" steps from the JSON entirely (see the comment on
+// StackSession.PreviewJSON in state_stack.go, and shouldShow in
+// pulumi/pkg/v3's backend/display/display.go). PreviewJSON always passes
+// --show-sames, so these fixtures are a faithful stand-in for its actual
+// output — they would NOT be faithful to what "pulumi preview --json" prints
+// on its own.
 func TestCheckInjectedOps_AllSame(t *testing.T) {
 	t.Parallel()
 	preview, err := ParsePreviewJSON([]byte(`{"steps": [
@@ -94,6 +118,11 @@ func TestCheckPreviewClean_NonSameStepIsAProblem(t *testing.T) {
 	assert.Contains(t, problems[0], "X::a")
 }
 
+// The CheckInjectionVerification fixtures below also hand-write "same" steps
+// for the same reason noted above TestCheckInjectedOps_AllSame: they test the
+// comparison logic in isolation, and are only a faithful stand-in for real
+// "pulumi preview --json" output because PreviewJSON always passes
+// --show-sames (see previewJSONArgs and TestPreviewJSONArgs_IncludesShowSames).
 func TestCheckInjectionVerification_BaselineDirtyPostIdentical(t *testing.T) {
 	t.Parallel()
 	baseline, err := ParsePreviewJSON([]byte(`{"steps": [

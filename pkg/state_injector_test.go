@@ -248,6 +248,41 @@ func TestInjectNonImportable_ResolvesSecretFromConfig(t *testing.T) {
 	assert.Equal(t, `"hunter2"`, envelope["plaintext"])
 }
 
+// TestInjectNonImportable_ResolvedOutputSecretIsWrapped is the regression
+// test for the whole-branch finding that resolveOutputSecrets wrote a
+// resolved output secret bare, while resolveSecretInputs correctly wrapped
+// the same kind of value for inputs. A VPN pre-shared key (or similar)
+// resolved from stack config must land in the deployment's outputs inside
+// Pulumi's secret envelope, not in plaintext.
+func TestInjectNonImportable_ResolvedOutputSecretIsWrapped(t *testing.T) {
+	t.Parallel()
+	sidecar := propagationSidecar()
+	sidecar.Resources[0].RedactedAttributes = map[string]string{"shared_key": "route_shared_key"}
+	sidecar.Resources[0].PulumiOutputs = map[string]interface{}{
+		"routeTableId": "rtb-0e370d1fdde0890b3",
+		"vpnGatewayId": "vgw-0cdee3deb918b1983",
+		"sharedKey":    "(sensitive)",
+	}
+
+	out, result, err := InjectNonImportable(
+		minimalState(goodProviderRef), sidecar, propagationPreview(t), nil,
+		map[string]string{"route_shared_key": "hunter2"})
+	require.NoError(t, err)
+	assert.Equal(t, 1, result.SecretsResolved)
+
+	outputs := injected(t, out)["outputs"].(map[string]interface{})
+	envelope, ok := outputs["sharedKey"].(map[string]interface{})
+	require.True(t, ok, "resolved output secret must be written inside Pulumi's secret envelope, "+
+		"not as a bare string")
+	assert.Equal(t, "1b47061264138c4ac30d75fd1eb44270", envelope["4dabf18193072939515e22adb298388d"])
+	assert.Equal(t, `"hunter2"`, envelope["plaintext"])
+
+	// The backstop placeholder sweep must still pass: the envelope's own
+	// values ("plaintext"'s JSON-encoded content, the sig) are not
+	// themselves "(sensitive)" or "[secret]".
+	require.NoError(t, VerifyDeploymentIntegrity(out))
+}
+
 func TestInjectNonImportable_OutputPassesIntegrityCheck(t *testing.T) {
 	t.Parallel()
 	out, _, err := InjectNonImportable(
