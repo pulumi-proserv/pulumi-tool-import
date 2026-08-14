@@ -41,10 +41,8 @@ In scope: injection of sidecar resources into an exported deployment; stack mode
 export/import/preview so no hand-run `pulumi` steps remain; structural verification via the
 engine's own integrity check; preview-based value verification with revert on disagreement.
 
-Also in scope: a new `Dependencies` field on the digest, since dependency edges have to be
-captured at digest time to be available at injection time.
-
-Out of scope: synthesizing `__pulumi_raw_state_delta` (see Findings); CFN support — this is the
+Out of scope: any change to `digest tf` — dependency edges come from the preview, not the
+digest; synthesizing `__pulumi_raw_state_delta` (see Findings); CFN support — this is the
 `tf` subcommand only.
 
 ## Findings that shaped the design
@@ -141,13 +139,13 @@ program metadata does not exist anywhere else, and guessing it is what this desi
 the CLI so the pipeline is entirely tool commands:
 
 ```
-Export()                        via Automation API
+auto.Stack.Export()
   → write backup to disk, print its path        ← before anything else touches the stack
-  → Preview()                                   ← skeleton source, see below
+  → preview --json                              ← skeleton source, see below
   → patch + inject
   → VerifyIntegrity()                           ← in-process, offline
-  → Import(injected)
-  → Preview()                                   ← verification
+  → auto.Stack.Import(injected)
+  → preview --json                              ← verification
   → any injected URN not "same" → Import(backup), report resource and operation
 ```
 
@@ -164,12 +162,36 @@ resources — they simply cannot be imported. So a preview run before injection 
 **creates**, and the engine's view of each create is authoritative for everything the sidecar
 cannot carry.
 
-`StepEventStateMetadata` (`pulumi/sdk/v3@v3.222.0/go/common/apitype/events.go:219`) carries
-`urn`, `parent`, `provider`, `protect`, and the program's `inputs`.
+**The source is `pulumi preview --json`, not the engine event stream.** Its output is a
+`previewDigest` (`pulumi/pkg/v3@v3.222.0/display/json.go`) whose `steps[].newState` is a full
+`apitype.ResourceV3`, built by `stateForJSONOutput` (`backend/display/json.go:74`) from the
+engine's real `*resource.State`. It carries `parent`, `provider`, `protect`, `inputs`,
+`dependencies` and `propertyDependencies` as exact URNs, `retainOnDelete`, `customTimeouts`,
+`aliases`, and `additionalSecretOutputs`.
+
+The alternative — `optpreview.EventStreams`, which yields `StepEventStateMetadata`
+(`sdk/v3/go/common/apitype/events.go:219`) — is strictly weaker: no dependency edges, no
+property dependencies. It is not used.
+
+Injection therefore does not assemble a state object field by field. It takes `newState`
+wholesale and fills in what only the sidecar knows.
+
+**Obtaining it.** `auto.Stack.Preview()` shells out to `pulumi preview --event-log <file>` and
+never passes `--json`, and `optpreview` exposes no JSON option. The Automation API's own command
+runner provides it without dropping to `os/exec`:
+
+```go
+stdout, _, _, err := ws.PulumiCommand().Run(ctx, projectDir, nil, nil, nil, nil,
+    "preview", "--json", "--stack", stackName)
+```
+
+That reuses the CLI binary, working directory, and environment the Automation API already
+resolved. Export and import continue to use `auto.Stack`. Both previews — skeleton and
+verifying — go through this one path, which also yields `previewDigest.ChangeSummary` directly.
 
 Procedure:
 
-1. Run `Preview()` with `optpreview.EventStreams`; collect every `create` step.
+1. Run `preview --json`; collect every step whose `op` is `create`.
 2. Match each sidecar entry to exactly one create, on Pulumi type plus resource name.
 3. **On no match, or more than one match, fail** — printing the unmatched sidecar entries and
    the candidate creates. There is no fallback heuristic.
@@ -180,21 +202,24 @@ only in the target stack — is read from the engine rather than inferred by sca
 deployment for a provider of the right package. Stacks with several provider instances
 (multiple regions or accounts) resolve correctly with no ambiguity to break.
 
+**Secrets in `newState.Inputs` are masked and must never be injected verbatim.**
+`stateForJSONOutput` calls `MassageSecrets`, which replaces every secret property with the
+literal string `[secret]`. That is the same hazard as the digest's `(sensitive)` placeholder,
+arriving by a second route. Any input equal to `[secret]` is resolved from stack config via
+`redactedAttributes`; if it cannot be resolved, the command fails.
+
 ### The injected state object
 
 Per matched sidecar entry, one `custom: true` object appended to `deployment.resources`:
 
 | Field | Source |
 |---|---|
-| `urn` | preview create step |
-| `parent` | preview create step |
-| `provider` | preview create step |
-| `protect` | preview create step (the program's own setting) |
+| `urn`, `parent`, `provider`, `protect`, `dependencies`, `propertyDependencies`, `retainOnDelete`, `customTimeouts`, `aliases`, `additionalSecretOutputs` | `newState`, verbatim |
+| `custom` | `true` |
 | `id` | sidecar, verbatim — already the provider's ID format |
-| `inputs` | the program's inputs from the preview step, plus `__defaults: []` |
+| `inputs` | `newState.Inputs`, with `[secret]` values resolved from config, plus `__defaults: []` |
 | `outputs` | every sidecar attribute, TF name → Pulumi name |
 | `__pulumi_raw_state_delta` | omitted — see Findings |
-| `dependencies` | digest, translated to URNs — see below |
 
 **Property name mapping is reuse, not new code.** `GetSchemaFieldInfo` (`pkg/schema_fields.go:72`)
 gives `TFName → PulumiName`, and `LookupProviderForPulumiType` (`:125`) finds the provider for a
@@ -213,29 +238,13 @@ config and written inside Pulumi's secret envelope, reusing the `configSecrets` 
 and `--stack`, or the key is absent from config — the command **fails**. Injecting the
 placeholder would write a known-wrong value into state, which is worse than refusing.
 
-**Dependencies come from the digest.** Terraform records each instance's dependency edges at
-apply time, from real config references. They are available as
-`ResourceInstanceObjectSrc.Dependencies` (`opentofu/states/instance_object_src.go:65`) on
-`inst.Current`, exactly where `digest tf` builds each `ModuleResource`
-(`pkg/module_map.go:355`). So they are read, not inferred:
-
-1. `ModuleResource` gains a `Dependencies []string` field holding Terraform config addresses.
-   `digest tf` populates it. A digest produced before this change simply lacks the field, and
-   injection then omits dependency edges — graceful degradation, no error.
-2. At injection, each address is resolved to the URN of the corresponding resource in the
-   deployment, through the same digest↔state correspondence `BuildDigestNameMap`
-   (`pkg/state_patcher.go:307`) already computes for the patch half. Injection needs the
-   inverse direction of that map.
-3. An edge that does not resolve is dropped, with a warning naming the address. A missing edge
-   costs delete ordering; a fabricated one breaks `VerifyIntegrity`.
-
-Two properties of this data to keep in mind. Terraform stores **config** addresses
-(`aws_route_table.rt`), not instance addresses (`aws_route_table.rt[0]`), so for counted and
-`for_each` resources one recorded edge expands to every instance of that address. The result is
-a superset of the true edges — conservative in the safe direction for delete ordering, but it
-is an over-approximation and should not be described as exact. And edges pointing at data
-sources or at resources outside the migrated scope will not resolve, which is what step 3 is
-for.
+**Dependencies need no translation.** `newState.dependencies` and
+`newState.propertyDependencies` are already Pulumi URNs, computed by the engine from the
+program's own resource graph. An earlier draft of this design derived them instead from
+Terraform's recorded `ResourceInstanceObjectSrc.Dependencies`, which would have required a new
+digest field, address-to-URN translation, and an over-approximation for counted resources
+(Terraform records config addresses, not instance addresses). `newState` makes all of that
+unnecessary, so `digest tf` is unchanged by this work.
 
 **Ordering.** Injected entries are inserted so that each appears after its parent and after any
 injected resource it depends on, because `VerifyIntegrity` rejects forward references. With
@@ -250,8 +259,9 @@ each close off a candidate. Preview is the only real check, so stack mode runs i
 leaving it as a documented step.
 
 - Injected URNs must all report `same`. Any other operation triggers the revert.
-- The overall `ChangeSummary` is compared before and after, so an injection that perturbs a
+- `previewDigest.ChangeSummary` is compared before and after, so an injection that perturbs a
   neighbouring resource — a route table's `propagatingVgws`, for instance — is also caught.
+  Both previews already produce this field, so it costs nothing extra.
 
 ### Code layout
 
@@ -267,14 +277,10 @@ leaving it as a documented step.
 
 ## Known gaps
 
-**Dependency edges are an over-approximation, and only as good as the digest.**
-`StepEventStateMetadata` carries no dependency edges, so they come from the digest instead.
-Terraform's config-level granularity means counted resources get a superset of their true
-edges, and a digest predating the new field yields none at all. Neither case affects
-verification — the engine diffs inputs, not dependency metadata — and the first `pulumi up`
-re-registers each resource from the program and rewrites its dependencies from the source of
-truth. The residual exposure is a `destroy` run *before* any `up`, where delete ordering would
-rest on whatever edges resolved.
+**Injection requires a preview, so it requires a runnable program.** Every field beyond `id`
+and `outputs` comes from `newState`, so there is no degraded mode that injects without one.
+This is a deliberate trade: the alternative is inferring provider references, parents, and
+dependency edges from the deployment, which is the brittleness this design exists to avoid.
 
 **Stack mode requires a runnable program and credentials.** Unavoidable — preview executes the
 program. File mode covers the air-gapped case.
@@ -292,9 +298,9 @@ Unit tests over fixture deployments in `pkg/testdata`:
 - TF → Pulumi property name mapping, and the input/output split;
 - secret resolution from config, and the failure when a redacted attribute cannot be resolved;
 - `__defaults: []` present, delta absent;
-- dependency translation: a resolving edge, an unresolvable one (dropped with a warning), a
-  counted resource whose config address fans out to several instances, and a digest with no
-  `Dependencies` field at all;
+- `previewDigest` parsing: create steps collected, non-create steps ignored, `dependencies` and
+  `propertyDependencies` carried through verbatim;
+- a `[secret]` input resolved from config, and the failure when it cannot be;
 - ordering, including a topological case where one injected resource depends on another, with a
   `VerifyIntegrity` pass over the output.
 
