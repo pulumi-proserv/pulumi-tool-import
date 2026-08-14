@@ -1510,6 +1510,106 @@ git commit -m "feat(inject): build injected state from preview create steps"
 
 ---
 
+### Task 4c: Preserve number precision on the paths that feed injected state
+
+**Files:**
+- Modify: `pkg/module_map.go:366-372` (digest attribute decode, and the `ImportID` it derives)
+- Modify: `cmd/import_id_match.go:78-86` (digest decode on the sidecar-producing path)
+- Modify: `cmd/patch_state_tf.go:74-82` (digest decode on the state-patching path)
+- Create: `pkg/module_map_number_test.go`
+
+**Interfaces:** none new. Behaviour-only change.
+
+**Why.** The tool decodes with `json.Decoder` + `UseNumber()` everywhere it *reads* a document it did not write, so large integers do not become `float64` and re-serialize as scientific notation — which Pulumi's state parser rejects. But it decodes plainly everywhere it *produces* one, so the precision is gone before the careful reader sees it. Verified: `1234567890123456789` becomes `...800`, and `fmt.Sprintf("%v", …)` renders it `1.2345678901234568e+18`.
+
+Three sites feed values that end up written into Pulumi state by this feature, which is why they are in scope here rather than in the general audit (#27):
+
+- `pkg/module_map.go:368` is the **origin** — it decodes `inst.Current.AttrsJSON` into the digest's `Attributes`, which become the sidecar's attributes, the input to `ComputeInjectionState`, and the values `patch-state` writes. Fixing only the readers would not help.
+- `cmd/import_id_match.go:84` decodes the digest when producing the sidecar, defeating `LoadNonImportableFile`'s `UseNumber`.
+- `cmd/patch_state_tf.go:78` decodes the digest whose values `patch-state` writes into a deployment it deliberately read with `UseNumber`.
+
+`ImportID` needs no separate fix: `fmt.Sprintf("%v", …)` on a `json.Number` prints the original text, because `json.Number` is a string type. Confirm that with a test rather than assuming it.
+
+**The risk to check before you finish:** switching to `json.Number` breaks any code that type-asserts these values as `float64`. Search for such assertions on digest attributes and on anything derived from them, and fix or report what you find. This is the main reason this task is separate.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `pkg/module_map_number_test.go` (with the licence header):
+
+```go
+package pkg
+
+import (
+	"encoding/json"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// TestDigestPreservesLargeIntegers guards the whole chain that ends in Pulumi
+// state. A float64 round trip turns an AWS account ID or a snapshot ID into
+// scientific notation, which Pulumi's state parser rejects.
+func TestDigestPreservesLargeIntegers(t *testing.T) {
+	t.Parallel()
+
+	// A 19-digit ID, beyond float64's exact integer range.
+	attrsJSON := []byte(`{"id":1234567890123456789,"owner_id":52848974346}`)
+
+	attrs, err := decodeAttrs(attrsJSON)
+	require.NoError(t, err)
+
+	id, ok := attrs["id"].(json.Number)
+	require.True(t, ok, "numbers must decode as json.Number, got %T", attrs["id"])
+	assert.Equal(t, "1234567890123456789", id.String())
+
+	// ImportID is built with %v; json.Number is a string type, so this must
+	// print the original digits rather than 1.2345678901234568e+18.
+	assert.Equal(t, "1234567890123456789", formatImportID(attrs["id"]))
+}
+```
+
+Name the two helpers to match whatever you extract in Step 3; if you inline the decode instead, adjust the test to call the real entry point rather than inventing a helper that exists only for the test.
+
+- [ ] **Step 2: Run it and confirm it fails**
+
+Run: `go test ./pkg/ -run TestDigestPreservesLargeIntegers -v`
+Expected: FAIL — either undefined helpers, or a `float64` type assertion failure showing the precision loss.
+
+- [ ] **Step 3: Fix the three decode sites**
+
+At each site, replace `json.Unmarshal(data, &v)` with a decoder that has `UseNumber()` set:
+
+```go
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	if err := dec.Decode(&v); err != nil {
+		return fmt.Errorf("…: %w", err)
+	}
+```
+
+Keep each site's existing error message and wrapping. `pkg/module_map.go:368` decodes into `attrs`; the other two decode into a `pkg.ModuleMap`.
+
+- [ ] **Step 4: Find what breaks**
+
+Run: `go build ./... && go test ./... 2>&1 | tail -30`
+
+Then search for float64 assertions on this data — `grep -rn '\.(float64)' pkg cmd` — and check each hit against whether its value can come from digest attributes. Fix the ones that can. If you find a hit you are unsure about, report it rather than guessing.
+
+- [ ] **Step 5: Confirm the tests pass**
+
+Run: `go test ./... 2>&1 | tail -20`
+Expected: PASS, including the existing digest and patch-state suites. A pre-existing test that now fails because it asserted `float64` is a real signal — fix the test to expect `json.Number`, and say so in your report.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add pkg/module_map.go cmd/import_id_match.go cmd/patch_state_tf.go pkg/module_map_number_test.go
+git commit -m "fix(digest): preserve integer precision on the paths that feed state"
+```
+
+---
+
 ### Task 5: Wire `--non-importable` into `patch-state tf` (file mode)
 
 **Files:**
