@@ -267,10 +267,10 @@ func TestComputeInjectionState_NestedBlockDeltaRecovers(t *testing.T) {
 	assert.Equal(t, want, got, "recovered raw state must match the original attributes exactly")
 }
 
-// TestComputeInjectionState_TimeoutsOnlyTypeHasNoDelta reproduces, without
-// AWS, why aws_vpn_gateway_route_propagation gets no raw state delta while
-// aws_vpn_connection_route — structurally similar, also a flat pair of string
-// attributes — does.
+// TestComputeInjectionState_TimeoutsDeltaRecovers reproduces, without AWS
+// credentials, why aws_vpn_gateway_route_propagation used to get no raw state
+// delta while aws_vpn_connection_route — structurally similar, also a flat
+// pair of string attributes — always did, and confirms the fix.
 //
 // aws_vpn_gateway_route_propagation's live schema (confirmed via
 // sch.Block.ImpliedType() against the same 5.100.0 provider as
@@ -278,23 +278,25 @@ func TestComputeInjectionState_NestedBlockDeltaRecovers(t *testing.T) {
 // block (create/delete), even though the resource itself never sets one.
 // aws_vpn_connection_route's schema has no such block.
 //
-// The bridge's RawStateComputeDelta has an unconditional early return for any
-// path exactly equal to the top-level "timeouts" attribute: it always
-// produces a non-empty, Object-shaped delta node for it, regardless of the
-// actual Pulumi property value there. When that property is present but null
-// — which it is here, since MakeTerraformOutputs converts the schema's
-// always-present, never-set "timeouts" attribute into an explicit null output
-// — the delta's own turnaround self-check (Recover applied to Marshal, before
-// RawStateComputeDelta returns) fails: it demands an Object PropertyValue at
-// "timeouts" and gets Null. That failure is what makes RawStateComputeDelta
-// return an error for this type, which is what ComputeInjectionState reports
-// as deltaUnavailableReason.
+// The bridge's RawStateComputeDelta (tfbridge/rawstate.go) has an
+// unconditional special case for any top-level path exactly equal to
+// "timeouts": it always produces an empty, Object-shaped delta node for it,
+// which requires an Object PropertyValue at "timeouts" when Recover is later
+// applied. ComputeInjectionState used to strip "timeouts" from the cty.Type
+// handed to RawStateComputeDelta (mirroring the bridge's own
+// valueshim.FromHctyResourceType) without also stripping it from the cty.Value
+// or from the Pulumi outputs derived from that value — so the value (and
+// outputs) still carried "timeouts: null" even though the type declared no
+// such attribute. That null tripped the Object-shaped special case above and
+// failed RawStateComputeDelta's own turnaround self-check, which is why
+// aws_vpn_gateway_route_propagation got no delta at all.
 //
-// This is why the resource genuinely never reaches the "empty but present
-// delta" case that pkg/module_map.go's RawStateDelta doc comment argues is
-// impossible: RawStateComputeDelta either succeeds with a non-empty delta or
-// fails outright before returning one.
-func TestComputeInjectionState_TimeoutsOnlyTypeHasNoDelta(t *testing.T) {
+// The fix (stripTimeoutsValue) removes "timeouts" from the value the same way
+// stripTimeouts removes it from the type, and the outputs are derived from
+// that stripped value, so all three inputs to RawStateComputeDelta agree that
+// "timeouts" does not exist — the walk never visits it, and the special case
+// above is never reached.
+func TestComputeInjectionState_TimeoutsDeltaRecovers(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
@@ -326,7 +328,7 @@ func TestComputeInjectionState_TimeoutsOnlyTypeHasNoDelta(t *testing.T) {
 		return shimResource.Schema(), schemaInfos
 	}
 
-	t.Run("aws_vpn_gateway_route_propagation: schema declares timeouts, delta unavailable", func(t *testing.T) {
+	t.Run("aws_vpn_gateway_route_propagation: schema declares timeouts, delta still produced and recovers", func(t *testing.T) {
 		schemaMap, schemaInfos := schemaFor("aws_vpn_gateway_route_propagation")
 
 		// Confirm the root cause directly against the live schema: a
@@ -348,18 +350,39 @@ func TestComputeInjectionState_TimeoutsOnlyTypeHasNoDelta(t *testing.T) {
 		outputs, delta, deltaReason, version, err := ComputeInjectionState(
 			ctx, prov, "aws_vpn_gateway_route_propagation", attrs, schemaMap, schemaInfos)
 
-		// Not fatal: outputs and a schema version are still produced, so the
-		// resource can still be injected without a delta.
 		require.NoError(t, err)
 		assert.Equal(t, "rtb-0e370d1fdde0890b3", outputs["routeTableId"])
 		assert.GreaterOrEqual(t, version, int64(0))
 
-		// The delta itself is unavailable, and the reason is no longer
-		// discarded: it names the turnaround-check failure caused by the
-		// "timeouts" mismatch described above.
-		assert.Nil(t, delta)
-		assert.Contains(t, deltaReason, "aws_vpn_gateway_route_propagation")
-		assert.Contains(t, deltaReason, "turnaround check")
+		// The "timeouts" mismatch no longer defeats delta computation: a
+		// delta is produced despite the schema declaring an unused
+		// "timeouts" block.
+		require.NotNil(t, delta, "a timeouts-only-mismatch type should now produce a delta")
+		assert.Empty(t, deltaReason, "a produced delta must not also carry a reason it is missing")
+
+		// A delta that is produced but wrong is worse than none: confirm it
+		// actually recovers the original attributes, the same way
+		// TestComputeInjectionState_NestedBlockDeltaRecovers does.
+		outputsJSON, err := json.Marshal(outputs)
+		require.NoError(t, err)
+		deltaJSON, err := json.Marshal(delta)
+		require.NoError(t, err)
+
+		var outputsFromSidecar map[string]interface{}
+		require.NoError(t, json.Unmarshal(outputsJSON, &outputsFromSidecar))
+		var deltaFromSidecar map[string]interface{}
+		require.NoError(t, json.Unmarshal(deltaJSON, &deltaFromSidecar))
+
+		props := resource.NewPropertyMapFromMap(outputsFromSidecar)
+		rsd, err := tfbridge.UnmarshalRawStateDelta(resource.NewPropertyValue(deltaFromSidecar))
+		require.NoError(t, err)
+		recovered, err := rsd.Recover(resource.NewObjectProperty(props))
+		require.NoError(t, err, "delta must apply cleanly to the outputs")
+
+		var want, got interface{}
+		require.NoError(t, json.Unmarshal(attrs, &want))
+		require.NoError(t, json.Unmarshal(recovered, &got))
+		assert.Equal(t, want, got, "recovered raw state must match the original attributes exactly")
 	})
 
 	t.Run("aws_vpn_connection_route: no timeouts block, delta available", func(t *testing.T) {

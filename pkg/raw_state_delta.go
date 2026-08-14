@@ -73,7 +73,22 @@ func ComputeInjectionState(
 		return nil, nil, "", 0, fmt.Errorf("decoding %s attributes: %w", tfType, err)
 	}
 
-	props, err := pulumiOutputsFromCty(ctx, value, schemaMap, schemaInfos)
+	// RawStateComputeDelta's own "timeouts" handling (tfbridge/rawstate.go)
+	// only works when the type, the value, and the Pulumi outputs it is
+	// handed all agree about whether a "timeouts" attribute exists.
+	// stripTimeouts removes it from the type, mirroring what the bridge's
+	// own valueshim.FromHctyResourceType does. Left unpaired, that used to
+	// leave a value (and outputs derived from it) still carrying
+	// "timeouts: null" against a type that declared no such attribute,
+	// which is why aws_vpn_gateway_route_propagation's turnaround check
+	// failed (see TestComputeInjectionState_TimeoutsDeltaRecovers).
+	// stripTimeoutsValue removes it from the value too, and the outputs
+	// (props) are derived from the stripped value below, so all three
+	// inputs to RawStateComputeDelta now agree.
+	strippedType := stripTimeouts(ty)
+	strippedValue := stripTimeoutsValue(value)
+
+	props, err := pulumiOutputsFromCty(ctx, strippedValue, schemaMap, schemaInfos)
 	if err != nil {
 		return nil, nil, "", 0, fmt.Errorf("converting %s attributes to Pulumi outputs: %w", tfType, err)
 	}
@@ -81,17 +96,11 @@ func ComputeInjectionState(
 
 	rawDelta, deltaErr := tfbridge.RawStateComputeDelta(ctx, schemaMap, schemaInfos,
 		props,
-		valueshim.FromCtyType(stripTimeouts(ty)),
-		valueshim.FromCtyValue(value))
+		valueshim.FromCtyType(strippedType),
+		valueshim.FromCtyValue(strippedValue))
 	if deltaErr != nil {
 		// A delta that cannot be computed is not fatal: the resource is injected
 		// without one and falls back to the bridge's pre-delta reconstruction.
-		// Confirmed against a live aws_vpn_gateway_route_propagation schema
-		// (TestComputeInjectionState_TimeoutsOnlyTypeHasNoDelta) that this is
-		// the path actually taken for that type: its schema declares a
-		// "timeouts" block, and the bridge's delta computation always treats a
-		// present-but-null "timeouts" property as though it were an object,
-		// which then fails RawStateComputeDelta's own turnaround self-check.
 		return outputs, nil, fmt.Sprintf("computing raw state delta for %s: %v", tfType, deltaErr), sch.Version, nil
 	}
 
@@ -163,4 +172,23 @@ func stripTimeouts(t cty.Type) cty.Type {
 	}
 	delete(attrs, "timeouts")
 	return cty.Object(attrs)
+}
+
+// stripTimeoutsValue removes the timeouts attribute from an object value, the
+// value-side counterpart to stripTimeouts. See the comment in
+// ComputeInjectionState for why the type and the value must agree about
+// "timeouts".
+func stripTimeoutsValue(v cty.Value) cty.Value {
+	if v.IsNull() || !v.Type().IsObjectType() {
+		return v
+	}
+	attrs := v.AsValueMap()
+	if _, ok := attrs["timeouts"]; !ok {
+		return v
+	}
+	delete(attrs, "timeouts")
+	if len(attrs) == 0 {
+		return cty.EmptyObjectVal
+	}
+	return cty.ObjectVal(attrs)
 }

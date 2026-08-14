@@ -75,6 +75,15 @@ type ModuleResource struct {
 	// see ComputeInjectionState in raw_state_delta.go). What look like "empty"
 	// deltas are actually the RawStateDeltaReason case below: a delta was
 	// attempted and failed, not one that succeeded and came back empty.
+	//
+	// Reconfirmed after fixing the "timeouts" type/value mismatch (see
+	// stripTimeoutsValue and TestComputeInjectionState_TimeoutsDeltaRecovers
+	// in raw_state_delta.go / raw_state_delta_test.go): a whole-resource delta
+	// is always Obj-shaped at the top level, and even when every field
+	// matches exactly (so objDelta's own fields are all empty and omitted),
+	// the marshalled map still carries the "obj" key itself — e.g.
+	// {"obj":{}} — which is a non-empty map[string]interface{}. omitempty
+	// only drops a literal empty map, so this case still marshals through.
 	RawStateDelta map[string]interface{} `json:"rawStateDelta,omitempty"`
 	// RawStateDeltaReason explains why RawStateDelta is absent, for a resource
 	// where computing one was attempted (schemaMap was available and

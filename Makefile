@@ -50,7 +50,12 @@ test:
 # creates, and logs the account it is using. Choosing the right account is
 # yours to get right.
 test-e2e:
-	$(GO) test -tags e2e ./test/e2e/ -v -timeout $(E2E_TIMEOUT)
+	# -count=1 defeats the test cache. Without it, a second invocation with an
+	# unchanged tree replays the previous run's stored output and prints
+	# "ok ... (cached)" without touching AWS at all — a stale pass that reads
+	# exactly like a fresh one, for a test whose entire purpose is to exercise
+	# real infrastructure.
+	$(GO) test -count=1 -tags e2e ./test/e2e/ -v -timeout $(E2E_TIMEOUT)
 
 lint:
 	golangci-lint run
