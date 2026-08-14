@@ -206,8 +206,6 @@ func buildInjectedResource(
 		return nil, 0, false, err
 	}
 
-	noDelta := attachRawStateDelta(r, obj, outputs)
-
 	inputs := map[string]interface{}{}
 	if raw, ok := newState["inputs"].(map[string]interface{}); ok {
 		for k, v := range raw {
@@ -227,6 +225,37 @@ func buildInjectedResource(
 	if _, ok := inputs[reservedDefaultsKey]; !ok {
 		inputs[reservedDefaultsKey] = []interface{}{}
 	}
+
+	// A successfully created or imported resource's outputs are normally a
+	// superset of its inputs. Injection builds outputs purely from Terraform
+	// state (above), so any property the Pulumi provider models but
+	// Terraform does not — "region" on the AWS provider is the case that
+	// surfaced this: per-resource in the Pulumi provider (v7+, bridging
+	// terraform-provider-aws v6+), but provider-level configuration in
+	// Terraform AWS 5.x, so it never appears in the sidecar's attributes —
+	// ends up missing from outputs. A missing output that the program's
+	// inputs do carry is exactly what the next preview diffs against,
+	// reporting a spurious "update". Fill any such gap from inputs, now that
+	// inputs are fully built and its secrets are resolved and enveloped
+	// (this must run after resolveSecretInputs so a copied secret carries
+	// the envelope, never a bare placeholder or bare plaintext).
+	fillOutputsFromInputs(inputs, outputs)
+
+	// Run after the fill, not before: the delta was computed by "digest tf"
+	// against the Terraform-derived outputs, and adding properties here
+	// could in principle invalidate it. In practice Recover
+	// (tfbridge.RawStateDelta.Recover, confirmed by reading
+	// pkg/tfbridge/rawstate.go's Obj case) walks the *outputs* object and
+	// looks up each key's delta by name, defaulting to the zero
+	// RawStateDelta{} for any key it has never seen — which recovers via
+	// the natural encoding rather than failing — so a plain scalar like
+	// "region" does not by itself break recovery. But that is not a
+	// guarantee for every possible filled value, so the fill still runs
+	// before this validation rather than after: if some future case does
+	// break Recover, the existing drop-the-delta path below (validateRecover
+	// fails -> delete the delta, report NoDelta) is what catches it, instead
+	// of writing a delta that only fails at the next preview.
+	noDelta := attachRawStateDelta(r, obj, outputs)
 
 	// Backstop: the targeted resolution above only catches a placeholder where
 	// it can correctly map a property name back to a redactedAttributes entry.
@@ -288,6 +317,35 @@ func checkNoPlaceholders(r *NonImportableResource, kind string, v interface{}, p
 }
 
 const reservedDefaultsKey = "__defaults"
+
+// fillOutputsFromInputs copies any property present in inputs but absent from
+// outputs, taking the value from inputs. It never overwrites a property
+// outputs already has — the Terraform-derived value is authoritative for
+// anything Terraform has an opinion on; this only fills in what Terraform has
+// no opinion on at all.
+//
+// Skips the bridge's three reserved keys (mirroring
+// reservedkeys.IsBridgeReservedKey): __defaults belongs to inputs only (it
+// records which inputs came from schema defaults, meaningless as an output),
+// while __meta and __pulumi_raw_state_delta are outputs-only bookkeeping that
+// attachRawStateDelta owns and that inputs never legitimately carries anyway.
+//
+// A value copied from inputs is copied as-is, including a resolved secret's
+// envelope map ({sig, "plaintext": ...}, see resolveSecretInputs): by the
+// time this runs, resolveSecretInputs has already replaced every "[secret]"
+// placeholder in inputs with that envelope, so there is nothing left to
+// unwrap or re-wrap here — copying the map verbatim keeps it wrapped.
+func fillOutputsFromInputs(inputs, outputs map[string]interface{}) {
+	for k, v := range inputs {
+		if k == reservedDefaultsKey || k == metaKey || k == rawStateDeltaKey {
+			continue
+		}
+		if _, exists := outputs[k]; exists {
+			continue
+		}
+		outputs[k] = v
+	}
+}
 
 // attachRawStateDelta adds the sidecar's raw state delta and __meta to outputs
 // when they are usable, and reports whether the resource ends up without one.

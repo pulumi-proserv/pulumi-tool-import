@@ -200,6 +200,110 @@ func TestInjectNonImportable_DropsDeltaThatNoLongerRecovers(t *testing.T) {
 	assert.NotContains(t, outputs, "__pulumi_raw_state_delta")
 }
 
+// TestInjectNonImportable_FillsOutputsMissingFromTerraform is the regression
+// test for the whole-branch finding: "region" is per-resource in the Pulumi
+// AWS provider (v7+, bridging terraform-provider-aws v6+) but provider-level
+// configuration in Terraform AWS 5.x, so it never appears in a Terraform
+// resource's state attributes and so never reaches the sidecar. The program's
+// inputs do carry it (the preview create step reflects what the program
+// declared), and a successfully created resource's outputs are normally a
+// superset of its inputs — so a property Terraform has no opinion on must
+// still be filled into outputs from inputs, or the next preview reports a
+// spurious "update".
+func TestInjectNonImportable_FillsOutputsMissingFromTerraform(t *testing.T) {
+	t.Parallel()
+	preview := propagationPreview(t)
+	preview.Steps[0].NewState["inputs"].(map[string]interface{})["region"] = "us-west-2"
+
+	sidecar := propagationSidecar()
+	// The sidecar's Terraform attributes carry no "region": Terraform AWS 5.x
+	// models it as provider config, not a resource attribute.
+
+	out, _, err := InjectNonImportable(
+		minimalState(goodProviderRef), sidecar, preview, nil, nil)
+	require.NoError(t, err)
+
+	r := injected(t, out)
+	outputs := r["outputs"].(map[string]interface{})
+	// Filled from inputs, since Terraform never reported it.
+	assert.Equal(t, "us-west-2", outputs["region"])
+	// Terraform-derived outputs are untouched.
+	assert.Equal(t, "rtb-0e370d1fdde0890b3", outputs["routeTableId"])
+
+	inputs := r["inputs"].(map[string]interface{})
+	assert.Equal(t, "us-west-2", inputs["region"])
+
+	require.NoError(t, VerifyDeploymentIntegrity(out))
+}
+
+// TestInjectNonImportable_FillDoesNotOverwriteTerraformOutput asserts the
+// fill is one-directional: a property Terraform *did* report is never
+// clobbered by the program's input, even when the two disagree (which can
+// happen legitimately, e.g. a value Terraform computed differently than what
+// was requested).
+func TestInjectNonImportable_FillDoesNotOverwriteTerraformOutput(t *testing.T) {
+	t.Parallel()
+	preview := propagationPreview(t)
+	// Disagrees with the sidecar's Attributes value for the same property.
+	preview.Steps[0].NewState["inputs"].(map[string]interface{})["routeTableId"] = "rtb-DIFFERENT"
+
+	out, _, err := InjectNonImportable(
+		minimalState(goodProviderRef), propagationSidecar(), preview, nil, nil)
+	require.NoError(t, err)
+
+	outputs := injected(t, out)["outputs"].(map[string]interface{})
+	// The Terraform-derived value wins; the input never overwrites it.
+	assert.Equal(t, "rtb-0e370d1fdde0890b3", outputs["routeTableId"])
+}
+
+// TestInjectNonImportable_FillSkipsReservedKeys asserts the reserved bridge
+// keys are handled the way the fill decided: __defaults is input-only
+// bookkeeping and must never reach outputs, even though it is always present
+// in inputs by the time the fill runs.
+func TestInjectNonImportable_FillSkipsReservedKeys(t *testing.T) {
+	t.Parallel()
+	out, _, err := InjectNonImportable(
+		minimalState(goodProviderRef), propagationSidecar(), propagationPreview(t), nil, nil)
+	require.NoError(t, err)
+
+	r := injected(t, out)
+	inputs := r["inputs"].(map[string]interface{})
+	require.Contains(t, inputs, "__defaults", "precondition: inputs must carry __defaults for this test to mean anything")
+
+	outputs := r["outputs"].(map[string]interface{})
+	assert.NotContains(t, outputs, "__defaults", "__defaults must never leak into outputs")
+}
+
+// TestInjectNonImportable_FillWrapsSecretInput is the regression test for the
+// leak this fix could introduce: a secret input missing from outputs must be
+// filled in still wrapped in Pulumi's secret envelope, never as a bare
+// plaintext value.
+func TestInjectNonImportable_FillWrapsSecretInput(t *testing.T) {
+	t.Parallel()
+	preview := propagationPreview(t)
+	// A property the sidecar's Attributes never carries (like "region"), but
+	// this time a masked secret in the program's inputs.
+	preview.Steps[0].NewState["inputs"].(map[string]interface{})["presharedKey"] = "[secret]"
+
+	sidecar := propagationSidecar()
+	sidecar.Resources[0].RedactedAttributes = map[string]string{"preshared_key": "route_preshared_key"}
+
+	out, result, err := InjectNonImportable(
+		minimalState(goodProviderRef), sidecar, preview, nil,
+		map[string]string{"route_preshared_key": "hunter2"})
+	require.NoError(t, err)
+	assert.Equal(t, 1, result.SecretsResolved)
+
+	outputs := injected(t, out)["outputs"].(map[string]interface{})
+	envelope, ok := outputs["presharedKey"].(map[string]interface{})
+	require.True(t, ok, "a filled secret input must land in outputs still wrapped in the secret envelope")
+	assert.Equal(t, "1b47061264138c4ac30d75fd1eb44270", envelope["4dabf18193072939515e22adb298388d"])
+	assert.Equal(t, `"hunter2"`, envelope["plaintext"])
+
+	// The backstop placeholder sweep must still pass on the filled value.
+	require.NoError(t, VerifyDeploymentIntegrity(out))
+}
+
 func TestInjectNonImportable_NoMatchingCreateFails(t *testing.T) {
 	t.Parallel()
 	sidecar := propagationSidecar()
