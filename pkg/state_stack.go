@@ -117,3 +117,21 @@ func CheckInjectedOps(preview *PreviewDigest, injectedURNs []string) []string {
 	}
 	return problems
 }
+
+// CheckPreviewClean reports every step of the preview whose operation is not
+// "same". It is the verification rule for stack mode when no resources were
+// injected — a plain patch run with no injected URNs to check individually.
+// Patching is supposed to eliminate diffs, so a preview with zero remaining
+// operations is the bar the mutated state must clear before the tool can call
+// it verified; anything else means the mutation should be reverted just as it
+// would be for a failed injection.
+func CheckPreviewClean(preview *PreviewDigest) []string {
+	var problems []string
+	for _, step := range preview.Steps {
+		if step.Op != "same" {
+			problems = append(problems, fmt.Sprintf(
+				"%s: preview reports %q, expected \"same\"", step.URN, step.Op))
+		}
+	}
+	return problems
+}

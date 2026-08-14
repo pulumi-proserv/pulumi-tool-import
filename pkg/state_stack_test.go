@@ -60,3 +60,35 @@ func TestCheckInjectedOps_MissingFromPreviewIsAProblem(t *testing.T) {
 	require.Len(t, problems, 1)
 	assert.Contains(t, problems[0], "no step")
 }
+
+func TestCheckPreviewClean_AllSame(t *testing.T) {
+	t.Parallel()
+	preview, err := ParsePreviewJSON([]byte(`{"steps": [
+		{"op": "same", "urn": "urn:pulumi:dev::proj::aws:ec2/x:X::a"},
+		{"op": "same", "urn": "urn:pulumi:dev::proj::aws:ec2/y:Y::b"}
+	]}`))
+	require.NoError(t, err)
+
+	assert.Empty(t, CheckPreviewClean(preview))
+}
+
+func TestCheckPreviewClean_NoSteps(t *testing.T) {
+	t.Parallel()
+	preview, err := ParsePreviewJSON([]byte(`{"steps": []}`))
+	require.NoError(t, err)
+
+	assert.Empty(t, CheckPreviewClean(preview))
+}
+
+func TestCheckPreviewClean_NonSameStepIsAProblem(t *testing.T) {
+	t.Parallel()
+	preview, err := ParsePreviewJSON([]byte(`{"steps": [
+		{"op": "update", "urn": "urn:pulumi:dev::proj::aws:ec2/x:X::a"}
+	]}`))
+	require.NoError(t, err)
+
+	problems := CheckPreviewClean(preview)
+	require.Len(t, problems, 1)
+	assert.Contains(t, problems[0], "update")
+	assert.Contains(t, problems[0], "X::a")
+}

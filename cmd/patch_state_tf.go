@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -42,6 +43,7 @@ func newPatchStateTfCmd() *cobra.Command {
 	var configDir string
 	var nonImportablePath string
 	var previewJSONPath string
+	var backupDir string
 
 	cmd := &cobra.Command{
 		Use:   "tf",
@@ -89,6 +91,7 @@ Example:
 
 			var session *pkg.StackSession
 			var backupPath string
+			var recoverCmd string
 			var stateData []byte
 
 			if stackMode {
@@ -106,12 +109,44 @@ Example:
 				// Write the backup before anything mutates the stack, so an
 				// interrupted run leaves a one-line recovery rather than a
 				// reconstruction job.
-				backupPath = fmt.Sprintf("%s-%s.backup.json", stack, time.Now().UTC().Format("20060102-150405"))
+				//
+				// The stack name is sanitized for use in a filename: --stack
+				// commonly takes a fully qualified "org/project/stack" form,
+				// whose slashes would otherwise break the write.
+				safeStackName := strings.ReplaceAll(stack, "/", "_")
+				backupFile := fmt.Sprintf("%s-%s.backup.json", safeStackName, time.Now().UTC().Format("20060102-150405"))
+				backupPath = backupFile
+				if backupDir != "" {
+					if err := os.MkdirAll(backupDir, 0o700); err != nil {
+						return fmt.Errorf("creating backup directory: %w", err)
+					}
+					backupPath = filepath.Join(backupDir, backupFile)
+				}
 				if err := os.WriteFile(backupPath, stateData, 0o600); err != nil {
 					return fmt.Errorf("writing backup: %w", err)
 				}
-				fmt.Fprintf(os.Stderr, "Stack state backed up to %s\n", backupPath)
-				fmt.Fprintf(os.Stderr, "  Recover with: pulumi stack import --file %s\n", backupPath)
+
+				// The recovery command is printed in full — with --cwd, --stack
+				// and an absolute --file path — because it is the instruction an
+				// operator follows from an arbitrary directory when they are
+				// already in trouble; a bare "pulumi stack import --file
+				// <relative path>" silently targets the wrong stack, or fails,
+				// if run from anywhere but this process's CWD.
+				absBackupPath, absErr := filepath.Abs(backupPath)
+				if absErr != nil {
+					absBackupPath = backupPath
+				}
+				absProjectDir, absErr := filepath.Abs(projectDir)
+				if absErr != nil {
+					absProjectDir = projectDir
+				}
+				recoverCmd = fmt.Sprintf("pulumi stack import --cwd %s --stack %s --file %s",
+					absProjectDir, stack, absBackupPath)
+
+				fmt.Fprintf(os.Stderr, "Stack state backed up to %s\n", absBackupPath)
+				fmt.Fprintf(os.Stderr, "  This file contains decrypted secrets (stack export --show-secrets). "+
+					"Delete it once the change is confirmed.\n")
+				fmt.Fprintf(os.Stderr, "  Recover with: %s\n", recoverCmd)
 			} else {
 				var err error
 				stateData, err = os.ReadFile(statePath)
@@ -238,32 +273,62 @@ Example:
 					return err
 				}
 
+				// revertOrExplain reverts to the pre-mutation export and returns
+				// the caller's error, or — if the revert itself fails — a
+				// hand-restore instruction that still points at the backup on
+				// disk. It is used both when the verifying preview fails
+				// outright and when it succeeds but reports problems: either way
+				// the tool's whole thesis is that only a clean preview validates
+				// a mutation, so an operator who cannot verify should never be
+				// left holding mutated, unverified state.
+				revertOrExplain := func(cause error) error {
+					fmt.Fprintf(os.Stderr, "Restoring %s\n", backupPath)
+					if err := session.Import(ctx, stateData); err != nil {
+						return fmt.Errorf("restoring backup failed; restore by hand with: %s\n"+
+							"original error: %v\nrestore error: %w", recoverCmd, cause, err)
+					}
+					return fmt.Errorf("injection reverted: %w", cause)
+				}
+
 				verify, err := session.PreviewJSON(ctx)
 				if err != nil {
-					return fmt.Errorf("verifying preview failed; state is imported but unverified. "+
-						"Restore with: pulumi stack import --file %s\n%w", backupPath, err)
+					fmt.Fprintf(os.Stderr, "\nVerifying preview failed: %v\n", err)
+					return revertOrExplain(fmt.Errorf("verifying preview failed: %w", err))
 				}
 
 				var injectedURNs []string
 				if injectResult != nil {
 					injectedURNs = injectResult.URNs
 				}
-				problems := pkg.CheckInjectedOps(verify, injectedURNs)
+
+				// When nothing was injected, there are no per-resource URNs to
+				// check individually — this is a plain patch run. Patching is
+				// supposed to eliminate diffs, so the bar is the same one used
+				// for injected resources: a clean preview. Falling through to
+				// "zero injected URNs means zero problems by construction" would
+				// mutate the stack and then report success without having
+				// checked anything.
+				var problems []string
+				if len(injectedURNs) > 0 {
+					problems = pkg.CheckInjectedOps(verify, injectedURNs)
+				} else {
+					problems = pkg.CheckPreviewClean(verify)
+				}
+
 				if len(problems) > 0 {
 					fmt.Fprintf(os.Stderr, "\nInjection did not verify:\n")
 					for _, p := range problems {
 						fmt.Fprintf(os.Stderr, "  %s\n", p)
 					}
-					fmt.Fprintf(os.Stderr, "Restoring %s\n", backupPath)
-					if err := session.Import(ctx, stateData); err != nil {
-						return fmt.Errorf("restoring backup failed; restore by hand with: "+
-							"pulumi stack import --file %s\n%w", backupPath, err)
-					}
-					return fmt.Errorf("injection reverted: %d resource(s) did not preview as unchanged",
-						len(problems))
+					return revertOrExplain(fmt.Errorf("%d resource(s) did not preview as unchanged", len(problems)))
 				}
-				fmt.Fprintf(os.Stderr, "\nVerified: all %d injected resource(s) preview as unchanged.\n",
-					len(injectedURNs))
+
+				if len(injectedURNs) > 0 {
+					fmt.Fprintf(os.Stderr, "\nVerified: all %d injected resource(s) preview as unchanged.\n",
+						len(injectedURNs))
+				} else {
+					fmt.Fprintf(os.Stderr, "\nVerified: preview reports no changes; patched state is clean.\n")
+				}
 			} else {
 				// Write output.
 				if err := os.WriteFile(outPath, patched, 0o600); err != nil {
@@ -318,6 +383,9 @@ Example:
 		"Sidecar from \"resolve tf\" whose resources should be written into state")
 	cmd.Flags().StringVar(&previewJSONPath, "preview-json", "",
 		"Output of \"pulumi preview --json\", the source of injected resource metadata")
+	cmd.Flags().StringVar(&backupDir, "backup-dir", "",
+		"Directory to write the pre-mutation stack backup to (stack mode only; default: current directory). "+
+			"The backup contains decrypted secrets — place it somewhere appropriate.")
 
 	cmd.MarkFlagRequired("digest")
 	cmd.MarkFlagRequired("fields")
