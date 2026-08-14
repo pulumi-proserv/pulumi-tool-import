@@ -18,6 +18,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/pulumi/pulumi/sdk/v3/go/auto"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
@@ -119,12 +121,11 @@ func CheckInjectedOps(preview *PreviewDigest, injectedURNs []string) []string {
 }
 
 // CheckPreviewClean reports every step of the preview whose operation is not
-// "same". It is the verification rule for stack mode when no resources were
-// injected — a plain patch run with no injected URNs to check individually.
-// Patching is supposed to eliminate diffs, so a preview with zero remaining
-// operations is the bar the mutated state must clear before the tool can call
-// it verified; anything else means the mutation should be reverted just as it
-// would be for a failed injection.
+// "same". It is a diagnostic — how many operations remain outstanding — not a
+// pass/fail gate: patch-state runs iteratively against a stack mid-migration,
+// which nearly always still has diffs after a single patch pass, so demanding
+// zero remaining operations would revert almost every legitimate run. Gating
+// is CheckInjectionVerification's job.
 func CheckPreviewClean(preview *PreviewDigest) []string {
 	var problems []string
 	for _, step := range preview.Steps {
@@ -133,5 +134,66 @@ func CheckPreviewClean(preview *PreviewDigest) []string {
 				"%s: preview reports %q, expected \"same\"", step.URN, step.Op))
 		}
 	}
+	return problems
+}
+
+// CheckInjectionVerification is the verification gate for a stack-mode run.
+// It compares the preview taken before any mutation (baseline) against the
+// preview taken after import (verify), per the design's Verification section:
+// injected URNs must all settle to "same", and the mutation must not make
+// anything else worse.
+//
+// "Worse" is judged by comparison, not an absolute bar, because patch-state is
+// run iteratively against a stack mid-migration — that is why the operator is
+// running it — so the preview taken before a patch-only run almost always has
+// outstanding diffs already. Requiring a perfectly clean preview after every
+// pass would revert nearly every legitimate run. What must not happen is
+// regression: a resource that reported "same" (or was entirely absent) in the
+// baseline must not turn non-"same" afterward, and the total count of
+// non-"same" steps outside the injected set must not increase.
+//
+// An empty result means the mutation verified and should be kept.
+func CheckInjectionVerification(baseline, verify *PreviewDigest, injectedURNs []string) []string {
+	problems := CheckInjectedOps(verify, injectedURNs)
+
+	injected := make(map[string]bool, len(injectedURNs))
+	for _, urn := range injectedURNs {
+		injected[urn] = true
+	}
+
+	baseOps := baseline.OpsByURN()
+	verifyOps := verify.OpsByURN()
+
+	baseNonSame := 0
+	for urn, op := range baseOps {
+		if !injected[urn] && op != "same" {
+			baseNonSame++
+		}
+	}
+
+	verifyNonSame := 0
+	var newlyDirty []string
+	for urn, op := range verifyOps {
+		if injected[urn] || op == "same" {
+			continue
+		}
+		verifyNonSame++
+		if baseOp, ok := baseOps[urn]; !ok || baseOp == "same" {
+			newlyDirty = append(newlyDirty, urn)
+		}
+	}
+
+	if len(newlyDirty) > 0 {
+		sort.Strings(newlyDirty)
+		problems = append(problems, fmt.Sprintf(
+			"%d resource(s) newly report changes that were unchanged (or absent) before this run: %s",
+			len(newlyDirty), strings.Join(newlyDirty, ", ")))
+	}
+	if verifyNonSame > baseNonSame {
+		problems = append(problems, fmt.Sprintf(
+			"preview shows more outstanding changes after the patch than before: %d before, %d after",
+			baseNonSame, verifyNonSame))
+	}
+
 	return problems
 }

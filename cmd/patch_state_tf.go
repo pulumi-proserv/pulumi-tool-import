@@ -232,6 +232,15 @@ Example:
 				return err
 			}
 
+			// baseline is the preview taken before any stack mutation, used to
+			// judge the verifying preview by comparison rather than an absolute
+			// bar (see the design's Verification section). It is only needed in
+			// stack mode. An injection run already previews the stack to build
+			// the skeleton for the resources it injects — that preview is taken
+			// before Import too, so it is reused as the baseline rather than
+			// running preview a second time.
+			var baseline *pkg.PreviewDigest
+
 			var injectResult *pkg.InjectResult
 			if nonImportablePath != "" {
 				sidecar, err := pkg.LoadNonImportableFile(nonImportablePath)
@@ -242,6 +251,7 @@ Example:
 				var preview *pkg.PreviewDigest
 				if stackMode {
 					preview, err = session.PreviewJSON(cmd.Context())
+					baseline = preview
 				} else {
 					var previewData []byte
 					previewData, err = os.ReadFile(previewJSONPath)
@@ -264,6 +274,16 @@ Example:
 					patched, sidecar, preview, providers, configSecrets)
 				if err != nil {
 					return err
+				}
+			}
+
+			if stackMode && baseline == nil {
+				// Patch-only stack run: nothing above has previewed the stack
+				// yet, so take the baseline now — still before Import.
+				var err error
+				baseline, err = session.PreviewJSON(cmd.Context())
+				if err != nil {
+					return fmt.Errorf("running baseline preview: %w", err)
 				}
 			}
 
@@ -301,33 +321,30 @@ Example:
 					injectedURNs = injectResult.URNs
 				}
 
-				// When nothing was injected, there are no per-resource URNs to
-				// check individually — this is a plain patch run. Patching is
-				// supposed to eliminate diffs, so the bar is the same one used
-				// for injected resources: a clean preview. Falling through to
-				// "zero injected URNs means zero problems by construction" would
-				// mutate the stack and then report success without having
-				// checked anything.
-				var problems []string
-				if len(injectedURNs) > 0 {
-					problems = pkg.CheckInjectedOps(verify, injectedURNs)
-				} else {
-					problems = pkg.CheckPreviewClean(verify)
-				}
+				// Verification is by comparison against the baseline, not an
+				// absolute "zero operations" bar: patch-state runs iteratively
+				// against a stack mid-migration, which nearly always has
+				// outstanding diffs before the tool ever runs, so requiring a
+				// perfectly clean preview would revert almost every legitimate
+				// patch-only pass. What must not happen is regression.
+				problems := pkg.CheckInjectionVerification(baseline, verify, injectedURNs)
 
 				if len(problems) > 0 {
-					fmt.Fprintf(os.Stderr, "\nInjection did not verify:\n")
+					fmt.Fprintf(os.Stderr, "\nVerification failed:\n")
 					for _, p := range problems {
 						fmt.Fprintf(os.Stderr, "  %s\n", p)
 					}
-					return revertOrExplain(fmt.Errorf("%d resource(s) did not preview as unchanged", len(problems)))
+					return revertOrExplain(fmt.Errorf("%d problem(s) found comparing the preview "+
+						"before and after the mutation", len(problems)))
 				}
 
 				if len(injectedURNs) > 0 {
 					fmt.Fprintf(os.Stderr, "\nVerified: all %d injected resource(s) preview as unchanged.\n",
 						len(injectedURNs))
 				} else {
-					fmt.Fprintf(os.Stderr, "\nVerified: preview reports no changes; patched state is clean.\n")
+					outstanding := len(pkg.CheckPreviewClean(verify))
+					fmt.Fprintf(os.Stderr, "\nVerified: the patch introduced no new operations "+
+						"(%d outstanding change(s) remain in the preview).\n", outstanding)
 				}
 			} else {
 				// Write output.

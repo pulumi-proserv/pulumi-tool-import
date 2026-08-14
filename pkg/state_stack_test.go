@@ -15,6 +15,7 @@
 package pkg
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -91,4 +92,90 @@ func TestCheckPreviewClean_NonSameStepIsAProblem(t *testing.T) {
 	require.Len(t, problems, 1)
 	assert.Contains(t, problems[0], "update")
 	assert.Contains(t, problems[0], "X::a")
+}
+
+func TestCheckInjectionVerification_BaselineDirtyPostIdentical(t *testing.T) {
+	t.Parallel()
+	baseline, err := ParsePreviewJSON([]byte(`{"steps": [
+		{"op": "update", "urn": "urn:pulumi:dev::proj::aws:ec2/x:X::a"}
+	]}`))
+	require.NoError(t, err)
+	verify, err := ParsePreviewJSON([]byte(`{"steps": [
+		{"op": "update", "urn": "urn:pulumi:dev::proj::aws:ec2/x:X::a"}
+	]}`))
+	require.NoError(t, err)
+
+	problems := CheckInjectionVerification(baseline, verify, nil)
+	assert.Empty(t, problems)
+}
+
+func TestCheckInjectionVerification_BaselineDirtyPostCleaner(t *testing.T) {
+	t.Parallel()
+	baseline, err := ParsePreviewJSON([]byte(`{"steps": [
+		{"op": "update", "urn": "urn:pulumi:dev::proj::aws:ec2/x:X::a"},
+		{"op": "update", "urn": "urn:pulumi:dev::proj::aws:ec2/y:Y::b"}
+	]}`))
+	require.NoError(t, err)
+	verify, err := ParsePreviewJSON([]byte(`{"steps": [
+		{"op": "same", "urn": "urn:pulumi:dev::proj::aws:ec2/x:X::a"},
+		{"op": "update", "urn": "urn:pulumi:dev::proj::aws:ec2/y:Y::b"}
+	]}`))
+	require.NoError(t, err)
+
+	problems := CheckInjectionVerification(baseline, verify, nil)
+	assert.Empty(t, problems)
+}
+
+func TestCheckInjectionVerification_BaselineCleanPostDirtyIsAProblem(t *testing.T) {
+	t.Parallel()
+	baseline, err := ParsePreviewJSON([]byte(`{"steps": [
+		{"op": "same", "urn": "urn:pulumi:dev::proj::aws:ec2/x:X::a"}
+	]}`))
+	require.NoError(t, err)
+	verify, err := ParsePreviewJSON([]byte(`{"steps": [
+		{"op": "update", "urn": "urn:pulumi:dev::proj::aws:ec2/x:X::a"}
+	]}`))
+	require.NoError(t, err)
+
+	problems := CheckInjectionVerification(baseline, verify, nil)
+	require.NotEmpty(t, problems)
+	joined := strings.Join(problems, "\n")
+	assert.Contains(t, joined, "X::a")
+}
+
+func TestCheckInjectionVerification_NewlyDirtyURNIsNamedInMessage(t *testing.T) {
+	t.Parallel()
+	// Net count of non-"same" steps stays the same (one resource improves,
+	// another regresses), but the specific regression must still be caught
+	// and named — a stable total is not enough if it hides a real regression.
+	baseline, err := ParsePreviewJSON([]byte(`{"steps": [
+		{"op": "same", "urn": "urn:pulumi:dev::proj::aws:ec2/x:X::a"},
+		{"op": "update", "urn": "urn:pulumi:dev::proj::aws:ec2/y:Y::b"}
+	]}`))
+	require.NoError(t, err)
+	verify, err := ParsePreviewJSON([]byte(`{"steps": [
+		{"op": "update", "urn": "urn:pulumi:dev::proj::aws:ec2/x:X::a"},
+		{"op": "same", "urn": "urn:pulumi:dev::proj::aws:ec2/y:Y::b"}
+	]}`))
+	require.NoError(t, err)
+
+	problems := CheckInjectionVerification(baseline, verify, nil)
+	require.NotEmpty(t, problems)
+	joined := strings.Join(problems, "\n")
+	assert.Contains(t, joined, "urn:pulumi:dev::proj::aws:ec2/x:X::a")
+}
+
+func TestCheckInjectionVerification_InjectedURNMustBeSame(t *testing.T) {
+	t.Parallel()
+	baseline, err := ParsePreviewJSON([]byte(`{"steps": []}`))
+	require.NoError(t, err)
+	verify, err := ParsePreviewJSON([]byte(`{"steps": [
+		{"op": "replace", "urn": "urn:pulumi:dev::proj::aws:ec2/x:X::a"}
+	]}`))
+	require.NoError(t, err)
+
+	problems := CheckInjectionVerification(baseline, verify, []string{"urn:pulumi:dev::proj::aws:ec2/x:X::a"})
+	require.NotEmpty(t, problems)
+	joined := strings.Join(problems, "\n")
+	assert.Contains(t, joined, "replace")
 }
