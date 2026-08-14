@@ -43,12 +43,29 @@ const (
 type InjectResult struct {
 	Injected        int
 	SecretsResolved int
-	// NoDelta counts resources injected without a raw state delta, either
-	// because the sidecar carried none, because it embedded an unresolvable
-	// "(sensitive)" placeholder, or because it no longer validated against the
-	// resource's outputs after secret substitution.
-	NoDelta int
-	URNs    []string
+	// DeltaAbsentFromSidecar counts resources injected without a raw state
+	// delta because the sidecar carried none in the first place — "digest tf"
+	// never produced one. There is nothing here for patch-state to repair;
+	// this points at "digest tf" itself.
+	DeltaAbsentFromSidecar int
+	// DeltaDroppedSensitive counts resources whose sidecar delta was dropped
+	// because it embedded an unresolvable "(sensitive)" placeholder that
+	// substituting the real secret into outputs would not fix.
+	DeltaDroppedSensitive int
+	// DeltaDroppedUnrecoverable counts resources whose sidecar delta was
+	// dropped because it no longer validated (bridge Recover) against the
+	// resource's outputs. DeltaDroppedNotes carries the Recover error for
+	// each one.
+	DeltaDroppedUnrecoverable int
+	// DeltaAbsentNotes and DeltaDroppedNotes name, one line each, the
+	// resources counted in DeltaAbsentFromSidecar and
+	// DeltaDroppedUnrecoverable respectively — the former naming the
+	// resource, the latter also carrying the Recover error, since that error
+	// is the single most useful fact for deciding whether the delta could be
+	// repaired.
+	DeltaAbsentNotes  []string
+	DeltaDroppedNotes []string
+	URNs              []string
 }
 
 // InjectNonImportable appends the sidecar's resources to an exported deployment.
@@ -125,13 +142,20 @@ func InjectNonImportable(
 				r.Type, r.Name, r.TerraformAddress)
 		}
 
-		obj, secrets, noDelta, err := buildInjectedResource(r, newState, typeMap, providers, configSecrets)
+		obj, secrets, outcome, note, err := buildInjectedResource(r, newState, typeMap, providers, configSecrets)
 		if err != nil {
 			return nil, nil, err
 		}
 		result.SecretsResolved += secrets
-		if noDelta {
-			result.NoDelta++
+		switch outcome {
+		case deltaAbsent:
+			result.DeltaAbsentFromSidecar++
+			result.DeltaAbsentNotes = append(result.DeltaAbsentNotes, note)
+		case deltaDroppedSensitive:
+			result.DeltaDroppedSensitive++
+		case deltaDroppedUnrecoverable:
+			result.DeltaDroppedUnrecoverable++
+			result.DeltaDroppedNotes = append(result.DeltaDroppedNotes, note)
 		}
 		built = append(built, obj)
 	}
@@ -156,17 +180,36 @@ func InjectNonImportable(
 	return out, result, nil
 }
 
+// deltaOutcome distinguishes why a resource ends up without a usable raw
+// state delta (or that it has one) — see InjectResult's per-cause counters.
+type deltaOutcome int
+
+const (
+	// deltaOK means the resource has a usable raw state delta attached.
+	deltaOK deltaOutcome = iota
+	// deltaAbsent means the sidecar carried no delta at all: "digest tf"
+	// never produced one for this resource.
+	deltaAbsent
+	// deltaDroppedSensitive means the sidecar's delta embedded an
+	// unresolvable "(sensitive)" placeholder and was dropped.
+	deltaDroppedSensitive
+	// deltaDroppedUnrecoverable means the sidecar's delta failed
+	// validateRecover against the resource's outputs and was dropped.
+	deltaDroppedUnrecoverable
+)
+
 // buildInjectedResource copies the preview's newState and fills in the parts
 // only the sidecar knows. It returns the number of secret placeholders it
-// resolved (across inputs and outputs) and whether the resource ends up
-// without a usable raw state delta.
+// resolved (across inputs and outputs), the raw-state-delta outcome, and — for
+// deltaAbsent and deltaDroppedUnrecoverable — a one-line, resource-naming note
+// explaining it (carrying the Recover error for the latter).
 func buildInjectedResource(
 	r *NonImportableResource,
 	newState map[string]interface{},
 	typeMap map[string]string,
 	providers map[providermap.TerraformProviderName]*ProviderWithMetadata,
 	configSecrets map[string]string,
-) (map[string]interface{}, int, bool, error) {
+) (map[string]interface{}, int, deltaOutcome, string, error) {
 	obj := make(map[string]interface{}, len(newState)+3)
 	for k, v := range newState {
 		// The delta belongs to the sidecar, not the program's preview; a create
@@ -203,7 +246,7 @@ func buildInjectedResource(
 
 	secretsResolved, err := resolveOutputSecrets(r, outputs, fields, configSecrets)
 	if err != nil {
-		return nil, 0, false, err
+		return nil, 0, deltaOK, "", err
 	}
 
 	inputs := map[string]interface{}{}
@@ -215,7 +258,7 @@ func buildInjectedResource(
 
 	inputSecrets, err := resolveSecretInputs(r, inputs, fields, configSecrets)
 	if err != nil {
-		return nil, 0, false, err
+		return nil, 0, deltaOK, "", err
 	}
 	secretsResolved += inputSecrets
 
@@ -253,9 +296,10 @@ func buildInjectedResource(
 	// guarantee for every possible filled value, so the fill still runs
 	// before this validation rather than after: if some future case does
 	// break Recover, the existing drop-the-delta path below (validateRecover
-	// fails -> delete the delta, report NoDelta) is what catches it, instead
-	// of writing a delta that only fails at the next preview.
-	noDelta := attachRawStateDelta(r, obj, outputs)
+	// fails -> delete the delta, report deltaDroppedUnrecoverable) is what
+	// catches it, instead of writing a delta that only fails at the next
+	// preview.
+	outcome, note := attachRawStateDelta(r, obj, outputs)
 
 	// Backstop: the targeted resolution above only catches a placeholder where
 	// it can correctly map a property name back to a redactedAttributes entry.
@@ -268,16 +312,16 @@ func buildInjectedResource(
 	// both property bags after every targeted fix has had its chance and
 	// hard-errors on anything left.
 	if err := checkNoPlaceholders(r, "input", inputs, "inputs"); err != nil {
-		return nil, 0, false, err
+		return nil, 0, deltaOK, "", err
 	}
 	if err := checkNoPlaceholders(r, "output", outputs, "outputs"); err != nil {
-		return nil, 0, false, err
+		return nil, 0, deltaOK, "", err
 	}
 
 	obj["inputs"] = inputs
 	obj["outputs"] = outputs
 
-	return obj, secretsResolved, noDelta, nil
+	return obj, secretsResolved, outcome, note, nil
 }
 
 // checkNoPlaceholders recursively walks a property value — including nested
@@ -348,7 +392,7 @@ func fillOutputsFromInputs(inputs, outputs map[string]interface{}) {
 }
 
 // attachRawStateDelta adds the sidecar's raw state delta and __meta to outputs
-// when they are usable, and reports whether the resource ends up without one.
+// when they are usable.
 //
 // A delta computed from redacted attributes can embed the literal string
 // "(sensitive)" in its raw JSON, where the bridge fell back to a Replace node.
@@ -358,7 +402,11 @@ func fillOutputsFromInputs(inputs, outputs map[string]interface{}) {
 // survives that check is then validated with the bridge's own Recover, which
 // catches a delta that no longer applies to these outputs for any other
 // reason (validateRecover, pkg/state_patcher.go).
-func attachRawStateDelta(r *NonImportableResource, obj, outputs map[string]interface{}) bool {
+// attachRawStateDelta returns the resulting deltaOutcome and, for deltaAbsent
+// and deltaDroppedUnrecoverable, a one-line note identifying the resource
+// (and, for the latter, carrying the Recover error) for the command's
+// per-resource summary output.
+func attachRawStateDelta(r *NonImportableResource, obj, outputs map[string]interface{}) (deltaOutcome, string) {
 	// __meta records the provider's schema version independently of whether a
 	// raw state delta exists: ComputeInjectionState (pkg/raw_state_delta.go)
 	// can report a schema version even when it could not compute a delta at
@@ -371,7 +419,9 @@ func attachRawStateDelta(r *NonImportableResource, obj, outputs map[string]inter
 	}
 
 	if r.RawStateDelta == nil {
-		return true
+		return deltaAbsent, fmt.Sprintf(
+			"%s (%s %q): sidecar carried no raw-state delta; check whether \"digest tf\" produced one",
+			r.TerraformAddress, r.Type, r.Name)
 	}
 
 	// Checked unconditionally, not just when redactedAttributes is non-empty:
@@ -380,7 +430,7 @@ func attachRawStateDelta(r *NonImportableResource, obj, outputs map[string]inter
 	// and the placeholder must never survive by any route.
 	deltaJSON, err := json.Marshal(r.RawStateDelta)
 	if err == nil && bytes.Contains(deltaJSON, []byte(redactedPlaceholder)) {
-		return true
+		return deltaDroppedSensitive, ""
 	}
 
 	outputs[rawStateDeltaKey] = r.RawStateDelta
@@ -388,9 +438,11 @@ func attachRawStateDelta(r *NonImportableResource, obj, outputs map[string]inter
 	urn, _ := obj["urn"].(string)
 	if err := validateRecover(urn, outputs); err != nil {
 		delete(outputs, rawStateDeltaKey)
-		return true
+		return deltaDroppedUnrecoverable, fmt.Sprintf(
+			"%s (%s %q): raw-state delta dropped, failed validation: %v",
+			r.TerraformAddress, r.Type, r.Name, err)
 	}
-	return false
+	return deltaOK, ""
 }
 
 // metaPayload builds the bridge's __meta JSON string from a schema version,

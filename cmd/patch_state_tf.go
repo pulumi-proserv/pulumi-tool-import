@@ -400,9 +400,29 @@ values out of stack config.
 			if injectResult != nil {
 				fmt.Fprintf(os.Stderr, "  Injected:           %d resources\n", injectResult.Injected)
 				fmt.Fprintf(os.Stderr, "  Secrets resolved:   %d\n", injectResult.SecretsResolved)
-				if injectResult.NoDelta > 0 {
-					fmt.Fprintf(os.Stderr, "  %d resource(s) injected without Terraform raw-state metadata\n",
-						injectResult.NoDelta)
+				if injectResult.DeltaAbsentFromSidecar > 0 {
+					fmt.Fprintf(os.Stderr,
+						"  %d resource(s) injected without Terraform raw-state metadata "+
+							"(sidecar carried no delta; check \"digest tf\"):\n",
+						injectResult.DeltaAbsentFromSidecar)
+					for _, note := range injectResult.DeltaAbsentNotes {
+						fmt.Fprintf(os.Stderr, "    %s\n", note)
+					}
+				}
+				if injectResult.DeltaDroppedSensitive > 0 {
+					fmt.Fprintf(os.Stderr,
+						"  %d resource(s) injected without Terraform raw-state metadata "+
+							"(delta dropped: embedded an unresolvable secret placeholder)\n",
+						injectResult.DeltaDroppedSensitive)
+				}
+				if injectResult.DeltaDroppedUnrecoverable > 0 {
+					fmt.Fprintf(os.Stderr,
+						"  %d resource(s) injected without Terraform raw-state metadata "+
+							"(delta dropped: failed validation against outputs):\n",
+						injectResult.DeltaDroppedUnrecoverable)
+					for _, note := range injectResult.DeltaDroppedNotes {
+						fmt.Fprintf(os.Stderr, "    %s\n", note)
+					}
 				}
 				if !stackMode {
 					fmt.Fprintf(os.Stderr, "\nVerify with: pulumi stack import --file %s && pulumi preview\n"+

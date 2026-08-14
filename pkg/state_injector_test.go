@@ -163,7 +163,12 @@ func TestInjectNonImportable_MetaWithoutDelta(t *testing.T) {
 	out, result, err := InjectNonImportable(
 		minimalState(goodProviderRef), sidecar, propagationPreview(t), nil, nil)
 	require.NoError(t, err)
-	assert.Equal(t, 1, result.NoDelta)
+	assert.Equal(t, 1, result.DeltaAbsentFromSidecar)
+	assert.Equal(t, 0, result.DeltaDroppedSensitive)
+	assert.Equal(t, 0, result.DeltaDroppedUnrecoverable)
+	require.Len(t, result.DeltaAbsentNotes, 1)
+	assert.Contains(t, result.DeltaAbsentNotes[0], "aws_vpn_gateway_route_propagation.prop[0]")
+	assert.Contains(t, result.DeltaAbsentNotes[0], "sidecar carried no raw-state delta")
 
 	outputs := injected(t, out)["outputs"].(map[string]interface{})
 	assert.NotContains(t, outputs, "__pulumi_raw_state_delta")
@@ -194,7 +199,14 @@ func TestInjectNonImportable_DropsDeltaThatNoLongerRecovers(t *testing.T) {
 	out, result, err := InjectNonImportable(
 		minimalState(goodProviderRef), sidecar, propagationPreview(t), nil, nil)
 	require.NoError(t, err, "an unusable delta must not fail the injection")
-	assert.Equal(t, 1, result.NoDelta)
+	assert.Equal(t, 1, result.DeltaDroppedUnrecoverable)
+	assert.Equal(t, 0, result.DeltaAbsentFromSidecar)
+	assert.Equal(t, 0, result.DeltaDroppedSensitive)
+	require.Len(t, result.DeltaDroppedNotes, 1)
+	assert.Contains(t, result.DeltaDroppedNotes[0], "aws_vpn_gateway_route_propagation.prop[0]")
+	// The Recover error itself must survive into the note: it is the single
+	// most useful fact for deciding whether the delta could be repaired.
+	assert.Contains(t, result.DeltaDroppedNotes[0], "recover:")
 
 	outputs := injected(t, out)["outputs"].(map[string]interface{})
 	assert.NotContains(t, outputs, "__pulumi_raw_state_delta")
