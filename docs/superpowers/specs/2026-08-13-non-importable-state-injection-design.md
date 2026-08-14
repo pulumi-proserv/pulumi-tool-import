@@ -111,11 +111,30 @@ viable, and it is the graceful fallback here — but it reconstructs through the
 schema, so it cannot serve a future provider upgrade, and it cannot round-trip anything the
 schema does not describe.
 
-**The bridge will compute a delta for us.** `RawStateInjectDelta` and `RawStateComputeDelta`
-are exported (`rawstate.go:457`, `:485`), and every argument is an ordinary exported call. So
-injection produces a delta rather than omitting one, with the bridge's own turnaround check
-deciding whether it is correct — a much better failure mode than discovering a lossy
-reconstruction at preview time.
+**The bridge could compute a delta, but not from this tool.** `RawStateInjectDelta` and
+`RawStateComputeDelta` are exported (`rawstate.go:457`, `:485`), and mirroring the provider's
+own create path (`provider.go:1360-1375`) would produce a turnaround-checked delta. Every
+argument, however, depends on a live Terraform provider, and this tool has none: it launches
+the *Pulumi* provider binary over gRPC only to call `GetMapping`
+(`pkg/bridgedproviders/mapping.go:84`) and reconstructs a `tfshim/schema` mock from the
+marshalled `ProviderInfo`. Probed directly against the AWS provider as this tool loads it:
+
+```
+aws_vpn_gateway_route_propagation  InstanceState → "mock schema does not support instance
+                                                    states";  SchemaType → nil
+```
+
+`ResourceShim.InstanceState` is a hard error (`pkg/tfshim/schema/resource.go:56`) and
+`SchemaType` returns an unpopulated field. The Terraform provider's Go code is not linked into
+this binary, so there is no `v2Resource2` to obtain. **Injection therefore writes no delta**,
+placing injected resources on the pre-delta reconstruction path described above. Whether that
+reconstruction is faithful for a given type is decided per run by the verifying preview, which
+is the design's answer to this whole class of risk.
+
+The same probe makes `__meta` unwritable for the right reason: the mock reports
+`SchemaVersion=0` for every type probed, including `aws_instance`, whose upstream schema
+version is non-zero. That number is an artifact of the marshalled info, so recording it would
+write a *wrong* schema version, which is worse than recording none.
 
 ### Existing Recover validation does not apply
 
@@ -240,63 +259,18 @@ Per matched sidecar entry, one `custom: true` object appended to `deployment.res
 | `custom` | `true` |
 | `id` | sidecar, verbatim — already the provider's ID format |
 | `inputs` | `newState.Inputs`, with `[secret]` values resolved from config, plus `__defaults: []` |
-| `outputs` | built by the bridge from the sidecar attributes — see below |
-| `__pulumi_raw_state_delta` | computed by the bridge, inside `outputs` — see below |
-| `__meta` | `{"schema_version": "<the type's current SchemaVersion>"}` — see below |
+| `outputs` | every sidecar attribute, TF name → Pulumi name |
+| `__pulumi_raw_state_delta` | omitted — unreachable from this tool, see Findings |
+| `__meta` | omitted — the loaded schema cannot report a trustworthy version, see Findings |
 
-**Outputs and the delta are built by the bridge, not by this tool.** The provider's own
-create path (`pkg/tfbridge/provider.go:1360-1375`) turns a Terraform instance state into Pulumi
-outputs and then attaches a delta. Injection does the same, substituting the sidecar's recorded
-attributes for the provider's response:
+**No delta and no `__meta` are written**, for the reasons established in Findings: the schema
+mock this tool loads exposes neither an instance state nor a trustworthy schema version, so
+both would have to be fabricated. Injected resources therefore sit on the bridge's pre-delta
+reconstruction path, and the verifying preview decides per run whether that reconstruction is
+faithful for the types at hand. Closing this gap needs a live Terraform provider handle; tracked in
+[#25](https://github.com/pulumi-proserv/pulumi-tool-import/issues/25).
 
-```go
-res := prov.P.ResourcesMap().Get(tfType)                       // shim.Resource
-istate, err := res.InstanceState(id, attrs, nil)               // TF attributes → typed cty state
-props, err := tfbridge.MakeTerraformResult(                    // → Pulumi outputs
-    ctx, prov.P, istate, res.Schema(), fields, nil, true)
-err = tfbridge.RawStateInjectDelta(                            // → adds the delta to props
-    ctx, res.Schema(), fields, props, res.SchemaType(), istate)
-```
-
-`InstanceState` takes a plain `map[string]interface{}` — the exact shape of the sidecar's
-`attributes` — and coerces it against the resource schema
-(`recoverAndCoerceCtyValueWithSchema`, `pkg/tfshim/sdk-v2/provider2.go:58`), so nested blocks,
-sets, maps, and numbers acquire their proper types. The result implements
-`InstanceStateWithTypedValue` (`provider2.go:96`), which is what `RawStateInjectDelta`
-requires.
-
-This replaces hand-rolled TF→Pulumi property renaming with the bridge's real conversion —
-`MaxItems=1` flattening, set handling, asset translation, and secret marking included — and
-yields the delta as part of the same operation.
-
-**Record `__meta` with the resource's schema version.** `parseMeta` (`pkg/tfbridge/schema.go:1337`)
-decides which schema version state is treated as, and it does so differently on the two paths:
-the delta path passes `defaultZeroSchemaVersion: true`, so a missing `__meta` means version 0
-and every state upgrader runs; the path without a delta defaults to the type's *current*
-version, so a missing `__meta` means the provider concludes the state needs no migration and
-runs no upgraders.
-
-For an injected resource that difference is a delayed fault. When the provider later bumps
-`SchemaVersion` from N to N+1 and ships an upgrader, normally-imported resources migrate, while
-an injected one with neither delta nor `__meta` is read as though it were already at N+1 — the
-upgrader never runs and old-shaped data is interpreted under the new schema. Writing
-`__meta` as `{"schema_version": "<res.TF.SchemaVersion()>"}` at injection time records the truth
-instead of leaving it to a default, and costs one field. It is written whether or not a delta
-was produced.
-
-**Sensitive values must be resolved before the instance state is built,** not after. The
-sidecar's `redactedAttributes` is already keyed by Terraform attribute name, so each real value
-is substituted into `attributes` first; otherwise the delta would encode `(sensitive)` and the
-turnaround check would enshrine it.
-
-**If the provider is not on the `v2Resource2` path**, `InstanceState` returns a value that does
-not implement `InstanceStateWithTypedValue`, and `RawStateInjectDelta` returns nil without
-writing anything. Injection then proceeds with no delta, which is the pre-delta behaviour
-described in Findings. This degradation is silent by design in the bridge; this tool logs it.
-
-**Property name mapping is the fallback path.** When no provider schema can be loaded for a
-type, injection falls back to renaming attributes directly, in which case there is no delta and
-no bridge-computed conversion. `GetSchemaFieldInfo` (`pkg/schema_fields.go:72`)
+**Property name mapping is reuse, not new code.** `GetSchemaFieldInfo` (`pkg/schema_fields.go:72`)
 gives `TFName → PulumiName`, and `LookupProviderForPulumiType` (`:125`) finds the provider for a
 Pulumi type token. Both are already used by `PatchStateFromSchema`.
 
