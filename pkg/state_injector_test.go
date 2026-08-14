@@ -150,6 +150,26 @@ func TestInjectNonImportable_CarriesDigestOutputsAndDelta(t *testing.T) {
 	assert.Contains(t, outputs["__meta"], "\"schema_version\":\"2\"")
 }
 
+func TestInjectNonImportable_MetaWithoutDelta(t *testing.T) {
+	t.Parallel()
+	sidecar := propagationSidecar()
+	// ComputeInjectionState (pkg/raw_state_delta.go) can report a schema
+	// version even when it could not compute a delta at all: the schema
+	// version comes straight from the provider's schema, independent of
+	// whether delta computation succeeded. __meta must not be silently
+	// dropped along with the (here, entirely absent) delta.
+	sidecar.Resources[0].SchemaVersion = 2
+
+	out, result, err := InjectNonImportable(
+		minimalState(goodProviderRef), sidecar, propagationPreview(t), nil, nil)
+	require.NoError(t, err)
+	assert.Equal(t, 1, result.NoDelta)
+
+	outputs := injected(t, out)["outputs"].(map[string]interface{})
+	assert.NotContains(t, outputs, "__pulumi_raw_state_delta")
+	assert.Contains(t, outputs["__meta"], "\"schema_version\":\"2\"")
+}
+
 func TestInjectNonImportable_DropsDeltaThatNoLongerRecovers(t *testing.T) {
 	t.Parallel()
 	sidecar := propagationSidecar()

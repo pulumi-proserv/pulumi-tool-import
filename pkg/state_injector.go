@@ -228,10 +228,64 @@ func buildInjectedResource(
 	if _, ok := inputs[reservedDefaultsKey]; !ok {
 		inputs[reservedDefaultsKey] = []interface{}{}
 	}
+
+	// Backstop: the targeted resolution above only catches a placeholder where
+	// it can correctly map a property name back to a redactedAttributes entry.
+	// "[secret]" can appear nested inside an array- or object-valued input
+	// (massagePropertyValue, pulumi/pkg/v3/backend/display/json.go, recurses
+	// into them), and "(sensitive)" can survive in outputs whenever the
+	// Pulumi name this code derives for a redacted attribute does not match
+	// the name the placeholder actually landed under. Either placeholder
+	// reaching state is worse than failing the whole injection, so this walks
+	// both property bags after every targeted fix has had its chance and
+	// hard-errors on anything left.
+	if err := checkNoPlaceholders(r, "input", inputs, "inputs"); err != nil {
+		return nil, 0, false, err
+	}
+	if err := checkNoPlaceholders(r, "output", outputs, "outputs"); err != nil {
+		return nil, 0, false, err
+	}
+
 	obj["inputs"] = inputs
 	obj["outputs"] = outputs
 
 	return obj, secretsResolved, noDelta, nil
+}
+
+// checkNoPlaceholders recursively walks a property value — including nested
+// objects and arrays, which is exactly what the targeted resolvers above do
+// not do — and returns an error naming the resource and the property path if
+// it finds the literal "[secret]" or "(sensitive)" anywhere. It is the
+// backstop for targeted resolution, not a replacement for it: it does not
+// depend on any name mapping being correct.
+func checkNoPlaceholders(r *NonImportableResource, kind string, v interface{}, path string) error {
+	switch val := v.(type) {
+	case string:
+		if val == secretPlaceholder || val == redactedPlaceholder {
+			return fmt.Errorf(
+				"%s %q %s %s still contains the placeholder %q after secret resolution; "+
+					"the sidecar or stack config is missing the real value",
+				r.Type, r.Name, kind, path, val)
+		}
+	case map[string]interface{}:
+		keys := make([]string, 0, len(val))
+		for k := range val {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			if err := checkNoPlaceholders(r, kind, val[k], path+"."+k); err != nil {
+				return err
+			}
+		}
+	case []interface{}:
+		for i, elem := range val {
+			if err := checkNoPlaceholders(r, kind, elem, fmt.Sprintf("%s[%d]", path, i)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 const reservedDefaultsKey = "__defaults"
@@ -263,11 +317,13 @@ func attachRawStateDelta(r *NonImportableResource, obj, outputs map[string]inter
 		return true
 	}
 
-	if len(r.RedactedAttributes) > 0 {
-		deltaJSON, err := json.Marshal(r.RawStateDelta)
-		if err == nil && bytes.Contains(deltaJSON, []byte(redactedPlaceholder)) {
-			return true
-		}
+	// Checked unconditionally, not just when redactedAttributes is non-empty:
+	// a delta can embed "(sensitive)" from a nested path the digest never
+	// recorded there (redactedAttributeKeys only tracks top-level attributes),
+	// and the placeholder must never survive by any route.
+	deltaJSON, err := json.Marshal(r.RawStateDelta)
+	if err == nil && bytes.Contains(deltaJSON, []byte(redactedPlaceholder)) {
+		return true
 	}
 
 	outputs[rawStateDeltaKey] = r.RawStateDelta
