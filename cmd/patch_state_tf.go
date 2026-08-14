@@ -22,6 +22,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg"
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/providermap"
@@ -68,16 +69,55 @@ Example:
   pulumi stack import --file patched-state.json
 `,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if nonImportablePath != "" && previewJSONPath == "" {
+			stackMode := statePath == "" && outPath == ""
+			if !stackMode && (statePath == "" || outPath == "") {
+				return fmt.Errorf("file mode needs both --state and --out; " +
+					"omit both to operate on the stack directly via --project-dir and --stack")
+			}
+			if stackMode && (projectDir == "" || stack == "") {
+				return fmt.Errorf("stack mode needs --project-dir and --stack")
+			}
+			if stackMode && previewJSONPath != "" {
+				return fmt.Errorf("--preview-json applies to file mode only; " +
+					"stack mode runs the preview itself")
+			}
+			if nonImportablePath != "" && !stackMode && previewJSONPath == "" {
 				return fmt.Errorf("--non-importable requires --preview-json: injected resources take " +
 					"their URN, parent, provider and dependencies from the program, so a preview is " +
 					"needed; produce one with \"pulumi preview --json > preview.json\"")
 			}
 
-			// Load state.
-			stateData, err := os.ReadFile(statePath)
-			if err != nil {
-				return fmt.Errorf("reading state file: %w", err)
+			var session *pkg.StackSession
+			var backupPath string
+			var stateData []byte
+
+			if stackMode {
+				ctx := cmd.Context()
+				var err error
+				session, err = pkg.NewStackSession(ctx, projectDir, stack)
+				if err != nil {
+					return err
+				}
+				stateData, err = session.Export(ctx)
+				if err != nil {
+					return err
+				}
+
+				// Write the backup before anything mutates the stack, so an
+				// interrupted run leaves a one-line recovery rather than a
+				// reconstruction job.
+				backupPath = fmt.Sprintf("%s-%s.backup.json", stack, time.Now().UTC().Format("20060102-150405"))
+				if err := os.WriteFile(backupPath, stateData, 0o600); err != nil {
+					return fmt.Errorf("writing backup: %w", err)
+				}
+				fmt.Fprintf(os.Stderr, "Stack state backed up to %s\n", backupPath)
+				fmt.Fprintf(os.Stderr, "  Recover with: pulumi stack import --file %s\n", backupPath)
+			} else {
+				var err error
+				stateData, err = os.ReadFile(statePath)
+				if err != nil {
+					return fmt.Errorf("reading state file: %w", err)
+				}
 			}
 
 			// Load digest.
@@ -164,11 +204,18 @@ Example:
 					return err
 				}
 
-				previewData, err := os.ReadFile(previewJSONPath)
-				if err != nil {
-					return fmt.Errorf("reading preview JSON: %w", err)
+				var preview *pkg.PreviewDigest
+				if stackMode {
+					preview, err = session.PreviewJSON(cmd.Context())
+				} else {
+					var previewData []byte
+					previewData, err = os.ReadFile(previewJSONPath)
+					if err == nil {
+						preview, err = pkg.ParsePreviewJSON(previewData)
+					} else {
+						err = fmt.Errorf("reading preview JSON: %w", err)
+					}
 				}
-				preview, err := pkg.ParsePreviewJSON(previewData)
 				if err != nil {
 					return err
 				}
@@ -185,13 +232,47 @@ Example:
 				}
 			}
 
-			// Write output.
-			if err := os.WriteFile(outPath, patched, 0o600); err != nil {
-				return fmt.Errorf("writing output: %w", err)
+			if stackMode {
+				ctx := cmd.Context()
+				if err := session.Import(ctx, patched); err != nil {
+					return err
+				}
+
+				verify, err := session.PreviewJSON(ctx)
+				if err != nil {
+					return fmt.Errorf("verifying preview failed; state is imported but unverified. "+
+						"Restore with: pulumi stack import --file %s\n%w", backupPath, err)
+				}
+
+				var injectedURNs []string
+				if injectResult != nil {
+					injectedURNs = injectResult.URNs
+				}
+				problems := pkg.CheckInjectedOps(verify, injectedURNs)
+				if len(problems) > 0 {
+					fmt.Fprintf(os.Stderr, "\nInjection did not verify:\n")
+					for _, p := range problems {
+						fmt.Fprintf(os.Stderr, "  %s\n", p)
+					}
+					fmt.Fprintf(os.Stderr, "Restoring %s\n", backupPath)
+					if err := session.Import(ctx, stateData); err != nil {
+						return fmt.Errorf("restoring backup failed; restore by hand with: "+
+							"pulumi stack import --file %s\n%w", backupPath, err)
+					}
+					return fmt.Errorf("injection reverted: %d resource(s) did not preview as unchanged",
+						len(problems))
+				}
+				fmt.Fprintf(os.Stderr, "\nVerified: all %d injected resource(s) preview as unchanged.\n",
+					len(injectedURNs))
+			} else {
+				// Write output.
+				if err := os.WriteFile(outPath, patched, 0o600); err != nil {
+					return fmt.Errorf("writing output: %w", err)
+				}
+				fmt.Fprintf(os.Stderr, "Patched state written to %s\n", outPath)
 			}
 
 			// Print stats.
-			fmt.Fprintf(os.Stderr, "Patched state written to %s\n", outPath)
 			fmt.Fprintf(os.Stderr, "  Patched:            %d resources\n", result.Patched)
 			fmt.Fprintf(os.Stderr, "  Fields from digest: %d\n", result.FieldsFromDigest)
 			fmt.Fprintf(os.Stderr, "  Fields from defaults: %d\n", result.FieldsFromDefaults)
@@ -213,10 +294,12 @@ Example:
 					fmt.Fprintf(os.Stderr, "  %d resource(s) injected without Terraform raw-state metadata\n",
 						injectResult.NoDelta)
 				}
-				fmt.Fprintf(os.Stderr, "\nVerify with: pulumi stack import --file %s && pulumi preview\n"+
-					"A correct injection previews as zero operations. Do not use \"pulumi refresh\" "+
-					"to check: it reports these resources unchanged even when their values are wrong.\n",
-					outPath)
+				if !stackMode {
+					fmt.Fprintf(os.Stderr, "\nVerify with: pulumi stack import --file %s && pulumi preview\n"+
+						"A correct injection previews as zero operations. Do not use \"pulumi refresh\" "+
+						"to check: it reports these resources unchanged even when their values are wrong.\n",
+						outPath)
+				}
 			}
 
 			return nil
@@ -236,11 +319,9 @@ Example:
 	cmd.Flags().StringVar(&previewJSONPath, "preview-json", "",
 		"Output of \"pulumi preview --json\", the source of injected resource metadata")
 
-	cmd.MarkFlagRequired("state")
 	cmd.MarkFlagRequired("digest")
 	cmd.MarkFlagRequired("fields")
 	cmd.MarkFlagRequired("config-dir")
-	cmd.MarkFlagRequired("out")
 
 	return cmd
 }
