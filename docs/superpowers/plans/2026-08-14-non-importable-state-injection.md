@@ -18,7 +18,7 @@
 - Existing behaviour of `patch-state tf` must not change when `--non-importable` is absent.
 - **`patch-state` must not load a Terraform provider.** Everything provider-derived is computed by `digest tf`, where a provider is already running, and carried in the sidecar. Adding a provider launch to `patch-state` would give it a network dependency it does not have today.
 - **Secrets must never be written into the sidecar.** It is a file people commit. The digest redacts sensitive attributes and records the stack config key holding each real value; substitution happens at injection time.
-- Licence header (Apache 2.0, "Copyright 2016-2025, Pulumi Corporation.") at the top of every new `.go` file, copied from any existing file in the package.
+- Licence header (Apache 2.0, "Copyright 2016-2025, Pulumi Corporation.") at the top of every new `.go` file, **test files included** — see `pkg/import_filler_non_importable_test.go:1-13` for the repo's convention. The test-code blocks in this plan omit it for brevity; add it anyway.
 - Package for all new library code is `pkg`; command code is `cmd`.
 
 ---
