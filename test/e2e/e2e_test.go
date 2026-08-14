@@ -77,7 +77,6 @@ const pulumiProject = "tool-import-e2e"
 func TestPatchStateTfNonImportableInjection(t *testing.T) {
 	ctx := context.Background()
 
-	requireCredentials(t)
 	logCallerIdentity(t, ctx)
 	requireBinary(t, "tofu")
 	requireBinary(t, "pulumi")
@@ -268,13 +267,13 @@ func TestPatchStateTfNonImportableInjection(t *testing.T) {
 // the ESC wrapper was actually used — this test's own Pulumi operations run
 // against a local file backend and do not consume the token directly, but
 // its absence means AWS credentials almost certainly aren't present either.
-func requireCredentials(t *testing.T) {
-	t.Helper()
-	if os.Getenv("PULUMI_ACCESS_TOKEN") == "" {
-		t.Skip("PULUMI_ACCESS_TOKEN not set; run via the ESC wrapper documented at the top of this file " +
-			"(also: make test-e2e)")
-	}
-}
+// Note on what gates this test: the only credentials it needs are AWS ones.
+// It runs against an isolated local file backend (PULUMI_BACKEND_URL plus its
+// own PULUMI_HOME), so it needs no Pulumi Cloud login and no
+// PULUMI_ACCESS_TOKEN. An earlier version gated on PULUMI_ACCESS_TOKEN, which
+// silently skipped the whole test whenever the caller brokered AWS credentials
+// without also exporting a Pulumi token — a skip that looks like a pass.
+// logCallerIdentity below is the gate: if AWS is unreachable, it skips.
 
 // logCallerIdentity records which AWS account and role this run is about to
 // create infrastructure in. It does not gate on the result — which account
