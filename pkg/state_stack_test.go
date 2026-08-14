@@ -208,3 +208,78 @@ func TestCheckInjectionVerification_InjectedURNMustBeSame(t *testing.T) {
 	joined := strings.Join(problems, "\n")
 	assert.Contains(t, joined, "replace")
 }
+
+// TestCheckInjectedOps_UpdateNamesDiffReasons is the regression test for the
+// real AWS end-to-end failure this change is meant to fix: "preview reports
+// update, expected same" with no way to tell which properties disagreed
+// without re-running by hand with --diff. diffReasons is decoded from the
+// preview JSON and folded into the message so the failure is actionable on
+// its own.
+func TestCheckInjectedOps_UpdateNamesDiffReasons(t *testing.T) {
+	t.Parallel()
+	preview, err := ParsePreviewJSON([]byte(`{"steps": [
+		{"op": "update", "urn": "urn:pulumi:dev::proj::aws:ec2/vpnConnectionRoute:VpnConnectionRoute::route",
+		 "diffReasons": ["routeTableId", "vpnGatewayId"]}
+	]}`))
+	require.NoError(t, err)
+
+	problems := CheckInjectedOps(preview, []string{
+		"urn:pulumi:dev::proj::aws:ec2/vpnConnectionRoute:VpnConnectionRoute::route",
+	})
+	require.Len(t, problems, 1)
+	assert.Contains(t, problems[0], `preview reports "update", expected "same"`)
+	assert.Contains(t, problems[0], "(differs on: routeTableId, vpnGatewayId)")
+}
+
+// TestCheckInjectedOps_UpdateWithNoDiffReasonsSaysSo covers the case that
+// prompted this test: an unexpected op with an empty diffReasons list must
+// not render as a bare, uninformative "()" — it should say plainly that no
+// property-level diff was reported, since that absence points at metadata
+// (resource options, provider version) rather than a property value.
+func TestCheckInjectedOps_UpdateWithNoDiffReasonsSaysSo(t *testing.T) {
+	t.Parallel()
+	preview, err := ParsePreviewJSON([]byte(`{"steps": [
+		{"op": "update", "urn": "urn:pulumi:dev::proj::aws:ec2/x:X::a"}
+	]}`))
+	require.NoError(t, err)
+
+	problems := CheckInjectedOps(preview, []string{"urn:pulumi:dev::proj::aws:ec2/x:X::a"})
+	require.Len(t, problems, 1)
+	assert.Contains(t, problems[0], "no property-level diff reported")
+	assert.NotContains(t, problems[0], "differs on: )")
+	assert.NotContains(t, problems[0], "()")
+}
+
+// TestCheckInjectedOps_ManyDiffReasonsAreTruncated ensures a resource with a
+// large diff produces one line with a count, not a flood of property names.
+func TestCheckInjectedOps_ManyDiffReasonsAreTruncated(t *testing.T) {
+	t.Parallel()
+	preview, err := ParsePreviewJSON([]byte(`{"steps": [
+		{"op": "update", "urn": "urn:pulumi:dev::proj::aws:ec2/x:X::a",
+		 "diffReasons": ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"]}
+	]}`))
+	require.NoError(t, err)
+
+	problems := CheckInjectedOps(preview, []string{"urn:pulumi:dev::proj::aws:ec2/x:X::a"})
+	require.Len(t, problems, 1)
+	assert.Len(t, strings.Split(problems[0], "\n"), 1, "must stay one line per resource")
+	assert.Contains(t, problems[0], "and 2 more")
+}
+
+// TestCheckInjectionVerification_SurfacesDiffReasons confirms the injected
+// verification gate — not just CheckInjectedOps in isolation — carries diff
+// reasons through, since that is the path the real failure came from.
+func TestCheckInjectionVerification_SurfacesDiffReasons(t *testing.T) {
+	t.Parallel()
+	baseline, err := ParsePreviewJSON([]byte(`{"steps": []}`))
+	require.NoError(t, err)
+	verify, err := ParsePreviewJSON([]byte(`{"steps": [
+		{"op": "update", "urn": "urn:pulumi:dev::proj::aws:ec2/x:X::a", "diffReasons": ["routeTableId"]}
+	]}`))
+	require.NoError(t, err)
+
+	problems := CheckInjectionVerification(baseline, verify, []string{"urn:pulumi:dev::proj::aws:ec2/x:X::a"})
+	require.NotEmpty(t, problems)
+	joined := strings.Join(problems, "\n")
+	assert.Contains(t, joined, "differs on: routeTableId")
+}

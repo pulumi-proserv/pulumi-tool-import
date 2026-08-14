@@ -118,6 +118,7 @@ func previewJSONArgs(stackName string) []string {
 // "unchanged" even when the values in state are wrong.
 func CheckInjectedOps(preview *PreviewDigest, injectedURNs []string) []string {
 	ops := preview.OpsByURN()
+	reasons := preview.DiffReasonsByURN()
 	var problems []string
 	for _, urn := range injectedURNs {
 		op, ok := ops[urn]
@@ -128,10 +129,34 @@ func CheckInjectedOps(preview *PreviewDigest, injectedURNs []string) []string {
 		}
 		if op != "same" {
 			problems = append(problems, fmt.Sprintf(
-				"%s: preview reports %q, expected \"same\"", urn, op))
+				"%s: preview reports %q, expected \"same\"%s", urn, op, formatDiffReasons(reasons[urn])))
 		}
 	}
 	return problems
+}
+
+// maxDiffReasonsShown caps how many property keys formatDiffReasons lists
+// inline, so one resource with a huge diff cannot flood the terminal.
+const maxDiffReasonsShown = 8
+
+// formatDiffReasons renders the property keys behind an unexpected preview
+// op as a trailing parenthetical for a one-line failure message, e.g.
+// " (differs on: routeTableId, vpnGatewayId)". When the preview reported an
+// op but no per-property reasons for it, that absence is itself a clue —
+// it points at metadata (e.g. resource options, provider version) rather
+// than a property value — so it is called out explicitly instead of being
+// rendered as an empty "()".
+func formatDiffReasons(reasons []string) string {
+	if len(reasons) == 0 {
+		return " (no property-level diff reported)"
+	}
+	shown := reasons
+	var more string
+	if len(reasons) > maxDiffReasonsShown {
+		shown = reasons[:maxDiffReasonsShown]
+		more = fmt.Sprintf(", and %d more", len(reasons)-maxDiffReasonsShown)
+	}
+	return fmt.Sprintf(" (differs on: %s%s)", strings.Join(shown, ", "), more)
 }
 
 // CheckPreviewClean reports every step of the preview whose operation is not
