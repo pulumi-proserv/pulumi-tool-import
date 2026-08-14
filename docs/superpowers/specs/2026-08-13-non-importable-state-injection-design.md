@@ -132,8 +132,13 @@ type, including `aws_instance` whose upstream version is non-zero — so it cann
 **`RawStateComputeDelta` needs no instance state**, and that is the route this design takes. It
 takes `valueshim.Type` and `valueshim.Value` (`rawstate.go:485`), and `valueshim` exports
 `FromCtyType`/`FromCtyValue` over the zclconf cty that OpenTofu uses. From a live provider,
-`providers.Schema.Block.ImpliedType()` gives the type, `ctyjson.Unmarshal` turns the digest's
-`AttrsJSON` into the value, and `providers.Schema.Version` gives the true `SchemaVersion`.
+`Schema.Block.ImpliedType()` gives the type, `ctyjson.Unmarshal` turns the digest's `AttrsJSON`
+into the value, and `Schema.Version` gives the true `SchemaVersion`.
+
+Note which `providers` package: `pkg/tfprovider` is built on the bridge's **vendored** OpenTofu
+(`pulumi-terraform-bridge/v3/pkg/vendored/opentofu/providers`), whose
+`GetProviderSchema(context.Context)` takes a ctx — not `github.com/pulumi/opentofu/providers`,
+which this repo also depends on for state parsing and whose equivalent method takes none.
 
 **The provider is live during `digest tf`, so that is where this happens.**
 `pkg/generate_module_map.go:178` starts real provider processes for the import-support probe —
