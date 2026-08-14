@@ -37,8 +37,7 @@ the result with a preview, and leaves the stack either correct or untouched.
 
 ## Scope
 
-In scope: injection of sidecar resources into an exported deployment; outputs and
-`__pulumi_raw_state_delta` built through the bridge's own conversion; stack mode that wraps
+In scope: injection of sidecar resources into an exported deployment; stack mode that wraps
 export/import/preview so no hand-run `pulumi` steps remain; structural verification via the
 engine's own integrity check; preview-based value verification with revert on disagreement.
 
@@ -82,7 +81,7 @@ reported `+-1 to replace`. These types' `Read` either sets no attributes or re-d
 from the resource ID, so refresh only proves the ID resolves. **Zero operations on preview is
 the acceptance criterion. Refresh is never acceptable as one.**
 
-### The raw state delta: what it is for, and why injection should produce one
+### The raw state delta: what it is for, and why injection cannot produce one
 
 The delta encodes the difference between a Pulumi `PropertyMap` and the provider's raw
 Terraform state, so the latter can be reconstructed without storing it twice. Its purpose,
