@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge/info"
@@ -635,6 +636,98 @@ func TestPatchState_FalsyDefaultSuppression_DigestMatchesDefault_Skipped(t *test
 	sg := resources[1].(map[string]interface{})
 	sgInputs := sg["inputs"].(map[string]interface{})
 	assert.NotContains(t, sgInputs, "revokeRulesOnDelete", "falsy digest value should not be patched")
+}
+
+// TestPatchState_FalsyDefaultSuppression_NumericDigestMatchesDefault_Skipped
+// mirrors TestPatchState_FalsyDefaultSuppression_DigestMatchesDefault_Skipped
+// but with a numeric falsy default (0) instead of a boolean one, and with
+// the digest built by decoding JSON — exactly like the real cmd/patch_state_tf.go
+// and pkg/module_map.go paths — rather than written as a Go literal map.
+//
+// A Go literal map[string]interface{}{"recovery_window_in_days": 0} would
+// store an untyped int, and a plain json.Unmarshal of the fields file
+// default would store a float64; reflect.DeepEqual(int, float64) is always
+// false regardless of whether the digest decode preserves precision, so a
+// literal-built digest cannot catch a regression here. Decoding both sides
+// from JSON, with the digest decoded via UseNumber (as production does),
+// reproduces the actual bug: digVal arrives as json.Number while fd.Default
+// (from a plain json.Unmarshal of the fields file) arrives as float64, and
+// reflect.DeepEqual(json.Number, float64) is also always false even though
+// both represent 0.
+func TestPatchState_FalsyDefaultSuppression_NumericDigestMatchesDefault_Skipped(t *testing.T) {
+	t.Parallel()
+
+	// Field has falsy default (0) and digest also has 0 (TF SDK stored default).
+	// Both should be skipped — patching 0 would cause the same phantom diff.
+	ff := fieldsFileFromJSON(t, `{
+		"falsyDefaultSuppression": {
+			"aws": "7.27.0"
+		},
+		"fields": {
+			"aws:secretsmanager/secret:Secret": {
+				"recoveryWindowInDays": { "default": 0 }
+			}
+		}
+	}`)
+
+	stateJSON := `{
+		"version": 3,
+		"deployment": {
+			"resources": [
+				{
+					"urn": "urn:pulumi:test::proj::pulumi:providers:aws::my-aws",
+					"type": "pulumi:providers:aws",
+					"custom": true,
+					"inputs": { "version": "7.34.0" },
+					"outputs": {}
+				},
+				{
+					"urn": "urn:pulumi:test::proj::aws:secretsmanager/secret:Secret::my-secret",
+					"type": "aws:secretsmanager/secret:Secret",
+					"custom": true,
+					"provider": "urn:pulumi:test::proj::pulumi:providers:aws::my-aws::fake-uuid",
+					"inputs": {},
+					"outputs": {}
+				}
+			]
+		}
+	}`
+
+	// Digest has recovery_window_in_days=0 (TF SDK default stored in state).
+	// Decoded via UseNumber, matching cmd/patch_state_tf.go and
+	// pkg/module_map.go's real decode path, so digVal arrives as json.Number.
+	digestJSON := `{
+		"rootResources": [
+			{
+				"mode": "managed",
+				"translatedUrn": "urn:pulumi:test::proj::aws:secretsmanager/secret:Secret::my-secret",
+				"terraformAddress": "aws_secretsmanager_secret.my_secret",
+				"importId": "",
+				"attributes": { "recovery_window_in_days": 0 }
+			}
+		]
+	}`
+	var digest ModuleMap
+	dec := json.NewDecoder(strings.NewReader(digestJSON))
+	dec.UseNumber()
+	require.NoError(t, dec.Decode(&digest))
+
+	patched, result, err := PatchState([]byte(stateJSON), &digest, ff, nil,
+		map[string]string{"aws_secretsmanager_secret.my_secret": "my-secret"}, nil, "")
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, result.SkippedFalsySuppressed)
+	assert.Equal(t, 0, result.FieldsFromDigest, "digest value matching falsy default should be skipped")
+	assert.Equal(t, 0, result.FieldsFromDefaults)
+
+	var patchedState map[string]interface{}
+	require.NoError(t, json.Unmarshal(patched, &patchedState))
+	deployment := patchedState["deployment"].(map[string]interface{})
+	resources := deployment["resources"].([]interface{})
+
+	secret := resources[1].(map[string]interface{})
+	secretInputs := secret["inputs"].(map[string]interface{})
+	assert.NotContains(t, secretInputs, "recoveryWindowInDays", "falsy digest value should not be patched")
 }
 
 func TestPatchState_FalsyDefaultSuppression_NoDigest_NoFallback(t *testing.T) {

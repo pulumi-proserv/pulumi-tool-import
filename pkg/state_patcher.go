@@ -579,7 +579,7 @@ func patchResourceFields(
 			// field is always the default itself. Patching it would cause the same
 			// phantom diff the suppression is meant to prevent.
 			digestIsSuppressedDefault := fd.SuppressDefaultFallback && !digEmpty && fd.Default != nil &&
-				reflect.DeepEqual(digVal, fd.Default)
+				equalValues(digVal, fd.Default)
 			if !digEmpty && !digestIsSuppressedDefault {
 				inputsRaw[pulumiField] = digVal
 				res.fieldsFromDigest++
@@ -1317,10 +1317,57 @@ func hashFileArchive(dirPath string) (string, error) {
 
 // isEmptyValue checks if a value is nil, empty string, or empty array/map.
 // equalValues compares two JSON-deserialized values for equality.
-// JSON numbers from different sources may be float64 vs int, so we
-// normalize numeric comparisons.
+// JSON numbers from different sources may be json.Number, float64, or (from
+// Go literals in tests) int, so numeric comparisons are normalized through
+// numericValue before falling back to reflect.DeepEqual. Without this, a
+// digest value decoded as json.Number would never equal an identical
+// fields-file or state value decoded as float64, even when the numbers
+// match exactly.
 func equalValues(a, b interface{}) bool {
-	return reflect.DeepEqual(a, b)
+	if reflect.DeepEqual(a, b) {
+		return true
+	}
+	af, aOk := numericValue(a)
+	bf, bOk := numericValue(b)
+	return aOk && bOk && af == bf
+}
+
+// numericValue reports whether v is one of the numeric types that can
+// appear in JSON-derived data — json.Number (from a UseNumber decode),
+// float64/float32 (from a plain decode), or the common Go integer types
+// (from literals built directly in Go, e.g. in tests) — and returns it as
+// a float64 for comparison.
+func numericValue(v interface{}) (float64, bool) {
+	switch n := v.(type) {
+	case json.Number:
+		f, err := n.Float64()
+		return f, err == nil
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case int8:
+		return float64(n), true
+	case int16:
+		return float64(n), true
+	case int32:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case uint:
+		return float64(n), true
+	case uint8:
+		return float64(n), true
+	case uint16:
+		return float64(n), true
+	case uint32:
+		return float64(n), true
+	case uint64:
+		return float64(n), true
+	}
+	return 0, false
 }
 
 // conformToDelta transforms a digest value to match the bridge's type mapping
