@@ -56,7 +56,7 @@ func TestNonImportableSidecarPath(t *testing.T) {
 }
 
 func TestSanitizedEnvDropsAWSProfile(t *testing.T) {
-	t.Setenv("AWS_PROFILE", "devsandbox")
+	t.Setenv("AWS_PROFILE", "some-profile")
 	t.Setenv("SOME_OTHER_VAR", "kept")
 
 	env := sanitizedEnv("EXTRA=1")

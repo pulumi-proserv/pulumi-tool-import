@@ -47,9 +47,9 @@ func nonImportableSidecarPath(importFilePath string) string {
 // sanitizedEnv returns the current process environment with AWS_PROFILE
 // removed, plus any extra "KEY=VALUE" entries appended.
 //
-// AWS_PROFILE=devsandbox is exported by the developer shell this test runs
+// AWS_PROFILE is commonly exported by a developer shell this test runs
 // in and shadows the AWS credentials the ESC wrapper injects, causing every
-// AWS call to fail with "the config profile (devsandbox) could not be
+// AWS call to fail with "the config profile (...) could not be
 // found". The wrapper documented at the top of e2e_test.go already runs the
 // test under "env -u AWS_PROFILE", which keeps it out of os.Environ() in
 // the first place; this is a second, in-process line of defense so a test

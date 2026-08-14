@@ -12,6 +12,7 @@
 GO      ?= go
 BINARY  ?= pulumi-tool-import
 PKG     ?= ./...
+E2E_TIMEOUT ?= 40m
 
 .PHONY: all build test test-e2e lint fmt fmt-check vet tidy check clean
 
@@ -29,15 +30,27 @@ test:
 # test/e2e/e2e_test.go for what it proves and why "pulumi refresh" cannot be
 # used for this.
 #
-# Credentials come from Pulumi ESC via the CE demo account, never a customer
-# account. "env -u AWS_PROFILE" is required: the developer shell exports
-# AWS_PROFILE=devsandbox, which shadows the credentials "esc run" injects.
-# Without PULUMI_ACCESS_TOKEN or AWS credentials, the test skips cleanly
-# rather than failing.
+# Runs the AWS end-to-end test for state injection. It creates real
+# infrastructure, so it is not part of "make test" and is tagged "e2e".
+#
+# This target deliberately knows nothing about credentials: supply AWS
+# credentials in the environment however you normally do, and wrap the
+# invocation if you use a credential broker. With Pulumi ESC, for example:
+#
+#   esc run <your-aws-environment> -- env -u AWS_PROFILE make test-e2e
+#
+# Two things that commonly trip this up:
+#   - "env -u AWS_PROFILE" is needed if your shell exports AWS_PROFILE, since
+#     it shadows brokered credentials.
+#   - "esc run" needs a Pulumi Cloud login; it reads the stored login rather
+#     than PULUMI_ACCESS_TOKEN or PULUMI_BACKEND_URL, so a file:// login fails
+#     with "does not support Pulumi ESC".
+#
+# The test skips cleanly when credentials are absent, always destroys what it
+# creates, and logs the account it is using. Choosing the right account is
+# yours to get right.
 test-e2e:
-	PULUMI_ACCESS_TOKEN=$$JDAVENPORT_PULUMI_CORP_PULUMI_ACCESS_TOKEN \
-		esc run team-ce/aws/pulumi-ce -- \
-		env -u AWS_PROFILE $(GO) test -tags e2e ./test/e2e/ -v -timeout 40m
+	$(GO) test -tags e2e ./test/e2e/ -v -timeout $(E2E_TIMEOUT)
 
 lint:
 	golangci-lint run

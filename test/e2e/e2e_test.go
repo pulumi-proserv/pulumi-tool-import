@@ -19,16 +19,15 @@
 // account it is pointed at — providing valid, scoped-down credentials is the
 // caller's job. Run it with:
 //
-//	PULUMI_ACCESS_TOKEN=$JDAVENPORT_PULUMI_CORP_PULUMI_ACCESS_TOKEN \
-//	  esc run team-ce/aws/pulumi-ce -- \
+//	esc run <your-aws-environment> -- \
 //	  env -u AWS_PROFILE go test -tags e2e ./test/e2e/ -v -timeout 40m
 //
-// "env -u AWS_PROFILE" is required: the developer shell exports
-// AWS_PROFILE=devsandbox, which shadows the credentials "esc run" injects
-// and makes every AWS call fail with "the config profile (devsandbox) could
-// not be found". See sanitizedEnv in helpers.go for the in-process backstop.
+// "env -u AWS_PROFILE" matters whenever the shell exports AWS_PROFILE: it
+// shadows brokered credentials and makes every AWS call fail with "the config
+// profile (...) could not be found". See sanitizedEnv in helpers.go for the
+// in-process backstop.
 //
-// See also `make test-e2e`, which runs exactly this command.
+// See also `make test-e2e`.
 package e2e
 
 import (

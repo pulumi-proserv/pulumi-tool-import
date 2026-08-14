@@ -2249,8 +2249,7 @@ make lint vet
 Then the end-to-end run, which is the acceptance criterion. Per the project's AWS testing notes, use the CE demo account and never a customer account, and note that `env -u AWS_PROFILE` is required:
 
 ```bash
-export PULUMI_ACCESS_TOKEN=$JDAVENPORT_PULUMI_CORP_PULUMI_ACCESS_TOKEN
-esc run team-ce/aws/pulumi-ce -- env -u AWS_PROFILE aws sts get-caller-identity   # confirm the target account
+<your credential wrapper> -- env -u AWS_PROFILE aws sts get-caller-identity   # confirm the target account
 ```
 
 Stand up the v0.2.0 fixture (VPC, three route tables, VPN gateway with three route propagations, customer gateway, VPN connection with a connection route), run `patch-state tf --non-importable` in stack mode, and confirm `pulumi preview` reports **zero operations**. `tofu apply`/`destroy` need the user to run them; VPN connections take 3–5 minutes each way, so run them in the background rather than in the foreground.
