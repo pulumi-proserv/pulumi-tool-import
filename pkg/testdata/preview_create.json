@@ -27,7 +27,7 @@
                 "custom": true,
                 "type": "aws:ec2/routeTable:RouteTable",
                 "id": "rtb-0e370d1fdde0890b3",
-                "inputs": { "vpcId": "vpc-01234567890abcdef", "ownerId": 52848974346 }
+                "inputs": { "vpcId": "vpc-01234567890abcdef", "ownerId": 1234567890123456789 }
             }
         }
     ],

@@ -697,9 +697,10 @@ func PatchState(
 	configDir string,
 ) ([]byte, *PatchStateResult, error) {
 	// Parse state using a decoder with UseNumber to preserve exact number
-	// representations. Without this, large integers (like AWS account IDs)
-	// become float64 and may re-serialize as scientific notation (e.g.,
-	// "5399223e-54"), which Pulumi's state parser rejects.
+	// representations. Without this, integers above 2^53 silently decode to
+	// a different integer (no error, no malformed output); scientific
+	// notation only appears once a number reaches ~1e21, which Pulumi's
+	// state parser rejects.
 	var state map[string]interface{}
 	dec := json.NewDecoder(strings.NewReader(string(stateData)))
 	dec.UseNumber()
@@ -1615,9 +1616,10 @@ func PatchStateFromSchema(
 	configDir string,
 ) ([]byte, *PatchStateResult, error) {
 	// Parse state using a decoder with UseNumber to preserve exact number
-	// representations. Without this, large integers (like AWS account IDs)
-	// become float64 and may re-serialize as scientific notation (e.g.,
-	// "5399223e-54"), which Pulumi's state parser rejects.
+	// representations. Without this, integers above 2^53 silently decode to
+	// a different integer (no error, no malformed output); scientific
+	// notation only appears once a number reaches ~1e21, which Pulumi's
+	// state parser rejects.
 	var state map[string]interface{}
 	dec := json.NewDecoder(strings.NewReader(string(stateData)))
 	dec.UseNumber()

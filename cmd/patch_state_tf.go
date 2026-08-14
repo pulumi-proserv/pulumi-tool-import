@@ -15,6 +15,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -75,7 +76,9 @@ Example:
 				return fmt.Errorf("reading digest: %w", err)
 			}
 			var digest pkg.ModuleMap
-			if err := json.Unmarshal(digestData, &digest); err != nil {
+			digestDec := json.NewDecoder(bytes.NewReader(digestData))
+			digestDec.UseNumber()
+			if err := digestDec.Decode(&digest); err != nil {
 				return fmt.Errorf("parsing digest: %w", err)
 			}
 

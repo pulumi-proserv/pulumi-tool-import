@@ -68,9 +68,9 @@ func TestParsePreviewJSON_PreservesLargeIntegers(t *testing.T) {
 	t.Parallel()
 	d := loadPreviewFixture(t)
 
-	// The "same" step carries a large integer. Decoding without UseNumber turns
-	// it into a float64 that re-serializes as scientific notation, which the
-	// Pulumi state parser rejects.
+	// The "same" step carries a 19-digit integer, beyond float64's exact
+	// integer range (2^53). Decoding without UseNumber silently turns it
+	// into a different integer with no error and no malformed output.
 	var sameState map[string]interface{}
 	for _, s := range d.Steps {
 		if s.Op == "same" {
@@ -82,7 +82,7 @@ func TestParsePreviewJSON_PreservesLargeIntegers(t *testing.T) {
 	inputs := sameState["inputs"].(map[string]interface{})
 	num, ok := inputs["ownerId"].(json.Number)
 	require.True(t, ok, "numbers must decode as json.Number, got %T", inputs["ownerId"])
-	assert.Equal(t, "52848974346", num.String())
+	assert.Equal(t, "1234567890123456789", num.String())
 }
 
 func TestPreviewDigest_OpsByURN(t *testing.T) {

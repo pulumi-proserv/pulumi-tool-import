@@ -15,6 +15,7 @@
 package pkg
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -365,9 +366,10 @@ func matchResources(
 					var attrs map[string]interface{}
 					importID := ""
 					if inst.Current.AttrsJSON != nil {
-						if err := json.Unmarshal(inst.Current.AttrsJSON, &attrs); err == nil {
+						if parsed, err := decodeAttrs(inst.Current.AttrsJSON); err == nil {
+							attrs = parsed
 							if id, ok := attrs["id"]; ok {
-								importID = fmt.Sprintf("%v", id)
+								importID = formatImportID(id)
 							}
 						}
 					}
@@ -419,6 +421,30 @@ func matchResources(
 		resources = []ModuleResource{}
 	}
 	return resources
+}
+
+// decodeAttrs decodes a Terraform instance's AttrsJSON into a generic map,
+// preserving large integer precision by decoding numbers as json.Number
+// instead of float64. Without this, integers above 2^53 silently decode to
+// a different number, and that corrupted value would flow into the digest's
+// Attributes, the sidecar, ComputeInjectionState, and ultimately into
+// Pulumi state written by patch-state.
+func decodeAttrs(data []byte) (map[string]interface{}, error) {
+	var attrs map[string]interface{}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	if err := dec.Decode(&attrs); err != nil {
+		return nil, err
+	}
+	return attrs, nil
+}
+
+// formatImportID renders a digest attribute value (typically the "id"
+// attribute) as an import ID string. json.Number is itself a string type,
+// so formatting a json.Number with %v prints the original digits rather
+// than the scientific notation fmt would produce for a float64.
+func formatImportID(v interface{}) string {
+	return fmt.Sprintf("%v", v)
 }
 
 // populateInjectionState fills mr's PulumiOutputs, RawStateDelta and
