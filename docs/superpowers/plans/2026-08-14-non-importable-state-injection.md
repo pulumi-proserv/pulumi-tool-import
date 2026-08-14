@@ -2002,6 +2002,11 @@ git commit -m "feat(patch-state): stack mode with backup, preview verification a
 - Modify: `docs/non-importable-resources.md`
 - Modify: `README.md`
 - Modify: `CHANGELOG.md`
+- Modify: `skills/pulumi-terraform-workspace-migration/SKILL.md` (Phase 4 section, ~line 294)
+- Modify: `skills/pulumi-terraform-workspace-migration/references/import-mechanics.md` (non-importable bullet ~line 89, and the blockquote ~line 117)
+- Modify: `skills/pulumi-terraform-workspace-migration/references/patch-state.md`
+
+**Why the skills matter here.** The migration skill is what drives real engagements, and in two places it currently tells the operator to "write them into state instead" without saying how — because until this change there was no supported way. Leaving those unchanged means the feature exists and nobody uses it.
 
 - [ ] **Step 1: Document the workflow**
 
@@ -2036,7 +2041,42 @@ State plainly, in prose: a correct injection previews as zero operations, and `p
 
 Add `--non-importable` and `--preview-json` to the `patch-state tf` flag list, and note that omitting `--state`/`--out` operates on the stack directly.
 
-- [ ] **Step 3: Roll the changelog**
+- [ ] **Step 3: Update the migration skill**
+
+In `skills/pulumi-terraform-workspace-migration/SKILL.md`, the Phase 4 paragraph beginning "**Resources that cannot be imported.**" ends with "Write them into state from the sidecar instead, and verify with `pulumi preview` reporting zero operations". Replace that instruction with the command that now does it:
+
+```markdown
+Write them into state with `patch-state tf --non-importable`, which takes each
+resource's URN, parent, provider and dependencies from a preview of the program
+you have already written, fills in the ID and outputs from the sidecar, and
+verifies the result with a second preview — restoring its backup if any injected
+resource does not preview as unchanged:
+
+    pulumi plugin run import -- patch-state tf \
+      --digest tf-digest.json \
+      --fields data/aws-import-diff-fields.json \
+      --config-dir ./terraform \
+      --non-importable imports-ready.non-importable.json \
+      --project-dir . --stack dev
+
+`pulumi refresh` reporting "unchanged" is never the check: it only proves the IDs
+resolve, not that the values are right.
+```
+
+Keep the surrounding sentences about why letting these resources be created is unsafe — they are still correct and are the reason the feature exists.
+
+- [ ] **Step 4: Update the import-mechanics reference**
+
+In `skills/pulumi-terraform-workspace-migration/references/import-mechanics.md`:
+
+- The **Non-importable types** bullet (~line 89) ends by describing the sidecar. Add one sentence: "`patch-state tf --non-importable <sidecar>` then writes them into state; see [docs/non-importable-resources.md](../../../docs/non-importable-resources.md)."
+- The blockquote (~line 117) ends "For resources that exist but cannot be imported, write them into state instead of letting them be created." Extend it to name the command: "…write them into state instead of letting them be created — `patch-state tf --non-importable` does this from the sidecar `resolve tf` wrote."
+
+- [ ] **Step 5: Document the flags in the patch-state reference**
+
+In `skills/pulumi-terraform-workspace-migration/references/patch-state.md`, add a section covering: the `--non-importable` and `--preview-json` flags; the two modes (file mode with `--state`/`--out`, stack mode with `--project-dir`/`--stack` and no `--state`/`--out`); that stack mode writes a timestamped backup and prints its path before touching the stack, and restores it if verification fails; and that stack mode needs a runnable program and credentials because it runs `pulumi preview`. Match the file's existing heading style and depth — read it before writing.
+
+- [ ] **Step 6: Roll the changelog**
 
 Add under `## [Unreleased]`:
 
@@ -2062,10 +2102,10 @@ Add a `digest tf` entry too — Task 2b changes it:
   consumes them, so it needs no provider of its own.
 ```
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add docs/non-importable-resources.md README.md CHANGELOG.md
+git add docs/non-importable-resources.md README.md CHANGELOG.md skills/
 git commit -m "docs: document non-importable state injection"
 ```
 
