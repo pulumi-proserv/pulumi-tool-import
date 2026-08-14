@@ -1,0 +1,86 @@
+// Copyright 2016-2025, Pulumi Corporation.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package pkg
+
+import (
+	"fmt"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// minimalState builds a stack export containing a stack resource, an aws
+// provider, and one custom resource whose provider reference is supplied by the
+// caller so tests can break it.
+func minimalState(providerRef string) []byte {
+	return []byte(fmt.Sprintf(`{
+	  "version": 3,
+	  "deployment": {
+	    "manifest": {
+	      "time": "2026-08-14T00:00:00Z",
+	      "magic": "c9163ff21f1f2b0390dc48bdda47179718f772f507a7cebceca59ce1a7129029",
+	      "version": "3.0.0"
+	    },
+	    "resources": [
+	      {
+	        "urn": "urn:pulumi:dev::proj::pulumi:pulumi:Stack::proj-dev",
+	        "type": "pulumi:pulumi:Stack"
+	      },
+	      {
+	        "urn": "urn:pulumi:dev::proj::pulumi:providers:aws::default_7_24_0",
+	        "type": "pulumi:providers:aws",
+	        "custom": true,
+	        "id": "9f4c2b1e-0000-4000-8000-000000000001"
+	      },
+	      {
+	        "urn": "urn:pulumi:dev::proj::aws:ec2/routeTable:RouteTable::rt0",
+	        "type": "aws:ec2/routeTable:RouteTable",
+	        "custom": true,
+	        "id": "rtb-1",
+	        "parent": "urn:pulumi:dev::proj::pulumi:pulumi:Stack::proj-dev",
+	        "provider": %q
+	      }
+	    ]
+	  }
+	}`, providerRef))
+}
+
+const goodProviderRef = "urn:pulumi:dev::proj::pulumi:providers:aws::default_7_24_0::" +
+	"9f4c2b1e-0000-4000-8000-000000000001"
+
+func TestVerifyDeploymentIntegrity_Valid(t *testing.T) {
+	t.Parallel()
+	require.NoError(t, VerifyDeploymentIntegrity(minimalState(goodProviderRef)))
+}
+
+func TestVerifyDeploymentIntegrity_EmptyProviderRef(t *testing.T) {
+	t.Parallel()
+	// This is the failure reported in issue #11: an injected resource whose
+	// provider reference was never filled in.
+	err := VerifyDeploymentIntegrity(minimalState(""))
+	require.Error(t, err)
+}
+
+func TestVerifyDeploymentIntegrity_UnknownProvider(t *testing.T) {
+	t.Parallel()
+	// Well-formed reference naming a provider that is not in the snapshot —
+	// what copying a provider ref from the wrong stack produces.
+	err := VerifyDeploymentIntegrity(minimalState(
+		"urn:pulumi:dev::proj::pulumi:providers:aws::default_7_24_0::" +
+			"00000000-dead-4000-8000-000000000000"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown provider")
+}
