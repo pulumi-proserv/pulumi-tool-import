@@ -20,9 +20,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg"
+	"github.com/pulumi-proserv/pulumi-tool-import/pkg/providermap"
 	"github.com/pulumi/pulumi/sdk/v3/go/auto"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -37,6 +39,8 @@ func newPatchStateTfCmd() *cobra.Command {
 	var projectDir string
 	var stack string
 	var configDir string
+	var nonImportablePath string
+	var previewJSONPath string
 
 	cmd := &cobra.Command{
 		Use:   "tf",
@@ -64,6 +68,12 @@ Example:
   pulumi stack import --file patched-state.json
 `,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if nonImportablePath != "" && previewJSONPath == "" {
+				return fmt.Errorf("--non-importable requires --preview-json: injected resources take " +
+					"their URN, parent, provider and dependencies from the program, so a preview is " +
+					"needed; produce one with \"pulumi preview --json > preview.json\"")
+			}
+
 			// Load state.
 			stateData, err := os.ReadFile(statePath)
 			if err != nil {
@@ -147,6 +157,34 @@ Example:
 				return err
 			}
 
+			var injectResult *pkg.InjectResult
+			if nonImportablePath != "" {
+				sidecar, err := pkg.LoadNonImportableFile(nonImportablePath)
+				if err != nil {
+					return err
+				}
+
+				previewData, err := os.ReadFile(previewJSONPath)
+				if err != nil {
+					return fmt.Errorf("reading preview JSON: %w", err)
+				}
+				preview, err := pkg.ParsePreviewJSON(previewData)
+				if err != nil {
+					return err
+				}
+
+				providers, err := loadProvidersForDigest(&digest)
+				if err != nil {
+					return err
+				}
+
+				patched, injectResult, err = pkg.InjectNonImportable(
+					patched, sidecar, preview, providers, configSecrets)
+				if err != nil {
+					return err
+				}
+			}
+
 			// Write output.
 			if err := os.WriteFile(outPath, patched, 0o600); err != nil {
 				return fmt.Errorf("writing output: %w", err)
@@ -168,6 +206,19 @@ Example:
 				fmt.Fprintf(os.Stderr, "  Delta FAILED:       %d (outputs reverted)\n", result.DeltaFailed)
 			}
 
+			if injectResult != nil {
+				fmt.Fprintf(os.Stderr, "  Injected:           %d resources\n", injectResult.Injected)
+				fmt.Fprintf(os.Stderr, "  Secrets resolved:   %d\n", injectResult.SecretsResolved)
+				if injectResult.NoDelta > 0 {
+					fmt.Fprintf(os.Stderr, "  %d resource(s) injected without Terraform raw-state metadata\n",
+						injectResult.NoDelta)
+				}
+				fmt.Fprintf(os.Stderr, "\nVerify with: pulumi stack import --file %s && pulumi preview\n"+
+					"A correct injection previews as zero operations. Do not use \"pulumi refresh\" "+
+					"to check: it reports these resources unchanged even when their values are wrong.\n",
+					outPath)
+			}
+
 			return nil
 		},
 	}
@@ -180,6 +231,10 @@ Example:
 	cmd.Flags().StringVar(&projectDir, "project-dir", "", "Pulumi project directory (for reading stack config secrets)")
 	cmd.Flags().StringVar(&stack, "stack", "", "Pulumi stack name (for reading stack config secrets)")
 	cmd.Flags().StringVar(&configDir, "config-dir", "", "TF config directory (for resolving asset file paths)")
+	cmd.Flags().StringVar(&nonImportablePath, "non-importable", "",
+		"Sidecar from \"resolve tf\" whose resources should be written into state")
+	cmd.Flags().StringVar(&previewJSONPath, "preview-json", "",
+		"Output of \"pulumi preview --json\", the source of injected resource metadata")
 
 	cmd.MarkFlagRequired("state")
 	cmd.MarkFlagRequired("digest")
@@ -188,4 +243,26 @@ Example:
 	cmd.MarkFlagRequired("out")
 
 	return cmd
+}
+
+// loadProvidersForDigest loads Pulumi provider schemas for the Terraform
+// providers a digest records. "digest tf" stores those addresses precisely so
+// downstream commands can do this without a Terraform state file.
+func loadProvidersForDigest(
+	digest *pkg.ModuleMap,
+) (map[providermap.TerraformProviderName]*pkg.ProviderWithMetadata, error) {
+	if len(digest.Providers) == 0 {
+		return nil, nil
+	}
+	names := make([]providermap.TerraformProviderName, 0, len(digest.Providers))
+	for addr := range digest.Providers {
+		names = append(names, providermap.TerraformProviderName(addr))
+	}
+	sort.Slice(names, func(i, j int) bool { return names[i] < names[j] })
+
+	providers, err := pkg.PulumiProvidersForTerraformProviders(names, nil)
+	if err != nil {
+		return nil, fmt.Errorf("loading provider schemas for property name mapping: %w", err)
+	}
+	return providers, nil
 }
