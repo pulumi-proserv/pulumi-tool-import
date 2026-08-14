@@ -1918,13 +1918,25 @@ func NewStackSession(ctx context.Context, projectDir, stackName string) (*StackS
 	return &StackSession{stack: s, projectDir: projectDir, stackName: stackName}, nil
 }
 
-// Export returns the stack's current deployment, as "pulumi stack export" would.
+// Export returns the stack's current deployment in the same shape
+// "pulumi stack export" writes: the full {"version":…,"deployment":{…}} envelope.
+//
+// auto.Stack.Export returns an apitype.UntypedDeployment whose Deployment field
+// is only the inner object, so it must be re-marshalled whole. Returning
+// dep.Deployment alone would fail every consumer here — PatchState,
+// InjectNonImportable and VerifyDeploymentIntegrity all read the envelope — with
+// a misleading "state missing deployment". Marshalling the struct also preserves
+// Version and Features, which Import needs back.
 func (s *StackSession) Export(ctx context.Context) ([]byte, error) {
 	dep, err := s.stack.Export(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("exporting stack: %w", err)
 	}
-	return dep.Deployment, nil
+	data, err := json.Marshal(dep)
+	if err != nil {
+		return nil, fmt.Errorf("serializing exported deployment: %w", err)
+	}
+	return data, nil
 }
 
 // Import replaces the stack's deployment.
