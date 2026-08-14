@@ -37,12 +37,14 @@ the result with a preview, and leaves the stack either correct or untouched.
 
 ## Scope
 
-In scope: injection of sidecar resources into an exported deployment; stack mode that wraps
+In scope: injection of sidecar resources into an exported deployment; computing Pulumi outputs,
+`__pulumi_raw_state_delta` and the true schema version during `digest tf`, where a provider is
+already running, and carrying them through the sidecar; stack mode that wraps
 export/import/preview so no hand-run `pulumi` steps remain; structural verification via the
 engine's own integrity check; preview-based value verification with revert on disagreement.
 
-Out of scope: any change to `digest tf` — dependency edges come from the preview, not the
-digest; CFN support — this is the `tf` subcommand only.
+Out of scope: dependency edges in the digest — those come from the preview; CFN support — this
+is the `tf` subcommand only. `patch-state` must not gain a provider dependency.
 
 ## Findings that shaped the design
 
@@ -81,7 +83,7 @@ reported `+-1 to replace`. These types' `Read` either sets no attributes or re-d
 from the resource ID, so refresh only proves the ID resolves. **Zero operations on preview is
 the acceptance criterion. Refresh is never acceptable as one.**
 
-### The raw state delta: what it is for, and why this change does not write one
+### The raw state delta: what it is for, and where it gets computed
 
 The delta encodes the difference between a Pulumi `PropertyMap` and the provider's raw
 Terraform state, so the latter can be reconstructed without storing it twice. Its purpose,
@@ -110,12 +112,10 @@ viable, and it is the graceful fallback here — but it reconstructs through the
 schema, so it cannot serve a future provider upgrade, and it cannot round-trip anything the
 schema does not describe.
 
-**The obvious way to compute one does not work here.** `RawStateInjectDelta` and
-`RawStateComputeDelta` are exported (`rawstate.go:457`, `:485`), and mirroring the provider's
-own create path (`provider.go:1360-1375`) would produce a turnaround-checked delta. That path
-needs an `InstanceState`, which requires the Terraform provider's Go code linked into the
-binary. This tool has no such thing: it launches the *Pulumi* provider binary over gRPC only to
-call `GetMapping`
+**The obvious way to compute one does not work here.** `RawStateInjectDelta` mirrors the
+provider's own create path (`provider.go:1360-1375`), but that needs an `InstanceState`, which
+requires the Terraform provider's Go code linked into the binary. This tool has no such thing:
+it launches the *Pulumi* provider binary over gRPC only to call `GetMapping`
 (`pkg/bridgedproviders/mapping.go:84`) and reconstructs a `tfshim/schema` mock from the
 marshalled `ProviderInfo`. Probed directly against the AWS provider as this tool loads it:
 
@@ -125,22 +125,22 @@ aws_vpn_gateway_route_propagation  InstanceState → "mock schema does not suppo
 ```
 
 `ResourceShim.InstanceState` is a hard error (`pkg/tfshim/schema/resource.go:56`) and
-`SchemaType` returns an unpopulated field, so the provider's create path cannot be mirrored.
+`SchemaType` returns an unpopulated field. The same mock reports `SchemaVersion=0` for every
+type, including `aws_instance` whose upstream version is non-zero — so it cannot be trusted for
+`__meta` either.
 
-**A second route exists and is not blocked.** `RawStateComputeDelta` takes `valueshim.Type` and
-`valueshim.Value` rather than an instance state, and `pkg/tfprovider/loader.go` already launches
-real Terraform provider binaries over go-plugin — `pkg/provider_schema.go:77` and the
-import-support prober behind #20 both use it. From a live provider,
-`providers.Schema.Block.ImpliedType()` gives the cty type and `ctyjson.Unmarshal` turns the
-digest's `AttrsJSON` into the value; `valueshim.FromCtyType`/`FromCtyValue` accept the zclconf
-cty that OpenTofu uses. `providers.Schema.Version` likewise gives the true `SchemaVersion`,
-making `__meta` writable.
+**`RawStateComputeDelta` needs no instance state**, and that is the route this design takes. It
+takes `valueshim.Type` and `valueshim.Value` (`rawstate.go:485`), and `valueshim` exports
+`FromCtyType`/`FromCtyValue` over the zclconf cty that OpenTofu uses. From a live provider,
+`providers.Schema.Block.ImpliedType()` gives the type, `ctyjson.Unmarshal` turns the digest's
+`AttrsJSON` into the value, and `providers.Schema.Version` gives the true `SchemaVersion`.
 
-**This design still writes neither**, to keep the first change scoped: it would add a provider
-download and launch to `patch-state`, which today needs neither, and therefore network access on
-a cold plugin cache. Injected resources sit on the pre-delta reconstruction path, and the
-verifying preview decides per run whether that reconstruction is faithful. Tracked with the full
-recipe in [#25](https://github.com/pulumi-proserv/pulumi-tool-import/issues/25).
+**The provider is live during `digest tf`, so that is where this happens.**
+`pkg/generate_module_map.go:178` starts real provider processes for the import-support probe —
+the very check that flags a resource as non-importable. So every resource that reaches the
+sidecar came from a run holding a live provider for its provider address: the delta is available
+exactly when it is needed, and never needed when it is not. Computing it there keeps
+`patch-state` free of provider downloads, launches, and network access.
 
 ### Existing Recover validation does not apply
 
@@ -265,15 +265,30 @@ Per matched sidecar entry, one `custom: true` object appended to `deployment.res
 | `custom` | `true` |
 | `id` | sidecar, verbatim — already the provider's ID format |
 | `inputs` | `newState.Inputs`, with `[secret]` values resolved from config, plus `__defaults: []` |
-| `outputs` | every sidecar attribute, TF name → Pulumi name |
-| `__pulumi_raw_state_delta` | omitted — deferred to #25, see Findings |
-| `__meta` | omitted — needs a live provider for a truthful version, deferred to #25 |
+| `outputs` | computed by `digest tf`, carried in the sidecar, secrets resolved at injection |
+| `__pulumi_raw_state_delta` | computed by `digest tf`, inside `outputs`; dropped if it fails to recover |
+| `__meta` | `{"schema_version": "<providers.Schema.Version>"}`, recorded by `digest tf` |
 
-**No delta and no `__meta` are written by this change.** Both are achievable — the route is in
-Findings and in [#25](https://github.com/pulumi-proserv/pulumi-tool-import/issues/25) — but both
-require `patch-state` to launch a Terraform provider, which it does not do today. Injected
-resources therefore sit on the bridge's pre-delta reconstruction path, and the verifying preview
-decides per run whether that reconstruction is faithful for the types at hand.
+**Outputs, delta and schema version are produced by `digest tf` and carried in the sidecar.**
+In the same loop that flags a resource non-importable, with the provider already open, the digest
+records: the Pulumi outputs, the `RawStateComputeDelta` result, and `providers.Schema.Version`.
+`resolve tf` copies them into the sidecar alongside the fields it already writes. `patch-state`
+consumes them and never loads a provider.
+
+**Secrets stay out of the sidecar, using the mechanism already there.** The digest redacts
+sensitive attributes to `(sensitive)` and records, per attribute, the stack config key holding
+the real value as a secret (`redactedAttributes`, `pkg/import_filler.go:68-75`). The delta is
+computed from the *redacted* attributes, so the sidecar — a file people commit — never holds a
+secret. At injection, `patch-state` substitutes the real value from config into the outputs
+**and** into any placeholder embedded in the delta's `Replace` blobs, which store raw JSON
+verbatim.
+
+Substitution is structurally safe only when the value's type is unchanged, which for
+string-valued secrets (pre-shared keys, passwords, tokens) it is. Rather than rely on that rule,
+the result is checked: `patch-state` runs `validateRecover` (`pkg/state_patcher.go:1448`) — the
+function it already has — on the substituted resource, and **drops the delta for that resource
+if `Recover` fails**, falling back to the pre-delta path. The guard is empirical, needs no
+provider, and degrades to previously-correct behaviour rather than writing something wrong.
 
 **Property name mapping is reuse, not new code.** `GetSchemaFieldInfo` (`pkg/schema_fields.go:72`)
 gives `TFName → PulumiName`, and `LookupProviderForPulumiType` (`:125`) finds the provider for a

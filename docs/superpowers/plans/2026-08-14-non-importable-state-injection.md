@@ -4,7 +4,7 @@
 
 **Goal:** `patch-state tf --non-importable <sidecar>` writes resources that cannot be imported into a Pulumi deployment, taking every field but `id` and `outputs` from a `pulumi preview --json` of the program, and proving the result with a second preview.
 
-**Architecture:** The program already declares these resources, so a preview reports them as creates and `steps[].newState` is a complete `apitype.ResourceV3`. Injection copies `newState` verbatim, fills in `id` and `outputs` from the sidecar, validates the result with the engine's own `Snapshot.VerifyIntegrity`, and — in stack mode — imports it and re-previews, reverting to a backup if any injected URN reports an operation other than `same`.
+**Architecture:** Two commands share the work, split by which one already has what it needs. `digest tf` holds live Terraform provider processes (for the import-support probe that flags these resources in the first place), so it computes each resource's Pulumi outputs, `__pulumi_raw_state_delta`, and true schema version, and `resolve tf` carries them into the sidecar. `patch-state tf` then needs no provider: the program already declares these resources, so a `pulumi preview --json` reports them as creates whose `steps[].newState` is a complete `apitype.ResourceV3`; injection copies `newState` verbatim, fills in `id`/`outputs`/`__meta` from the sidecar, resolves secrets from stack config, validates with the engine's `Snapshot.VerifyIntegrity`, and — in stack mode — imports and re-previews, reverting to a backup if any injected URN reports anything other than `same`.
 
 **Tech Stack:** Go 1.24, cobra, `github.com/pulumi/pulumi/pkg/v3` (engine `deploy`/`stack` packages, already a direct dependency), `github.com/pulumi/pulumi/sdk/v3/go/auto` (Automation API), `pulumi-terraform-bridge/v3` (schema field info), testify.
 
@@ -16,6 +16,8 @@
 - **Never write a placeholder value into state.** The digest writes `(sensitive)` for sensitive Terraform attributes; `preview --json` writes the literal string `[secret]` for secret inputs. Both must be resolved from stack config, or the command fails.
 - **`pulumi preview` reporting zero operations is the only acceptance signal.** `pulumi refresh` reporting "unchanged" is not, and must never be used as one.
 - Existing behaviour of `patch-state tf` must not change when `--non-importable` is absent.
+- **`patch-state` must not load a Terraform provider.** Everything provider-derived is computed by `digest tf`, where a provider is already running, and carried in the sidecar. Adding a provider launch to `patch-state` would give it a network dependency it does not have today.
+- **Secrets must never be written into the sidecar.** It is a file people commit. The digest redacts sensitive attributes and records the stack config key holding each real value; substitution happens at injection time.
 - Licence header (Apache 2.0, "Copyright 2016-2025, Pulumi Corporation.") at the top of every new `.go` file, copied from any existing file in the package.
 - Package for all new library code is `pkg`; command code is `cmd`.
 
@@ -521,6 +523,227 @@ git commit -m "feat(inject): load the non-importable sidecar and map TF names to
 
 ---
 
+### Task 2b: Compute outputs, delta and schema version during `digest tf`
+
+**Files:**
+- Modify: `pkg/import_filler.go:52-76` (add fields to `NonImportableResource`)
+- Modify: `pkg/module_map.go:355-374` (populate them where each `ModuleResource` is built)
+- Create: `pkg/raw_state_delta.go`
+- Create: `pkg/raw_state_delta_test.go`
+
+**Interfaces:**
+- Consumes: `tfprovider.Provider` (`pkg/tfprovider/loader.go:55`), already open during the import-support probe (`pkg/generate_module_map.go:178`).
+- Produces:
+  - `func ComputeInjectionState(ctx context.Context, prov tfprovider.Provider, tfType string, attrsJSON []byte, schemaMap shim.SchemaMap, schemaInfos map[string]*tfbridge.SchemaInfo) (outputs map[string]interface{}, delta map[string]interface{}, schemaVersion int64, err error)`
+  - New fields on `ModuleResource` and `NonImportableResource`:
+    ```go
+    // PulumiOutputs are the resource's Terraform attributes converted to Pulumi
+    // property names and shapes, computed while a provider was open.
+    PulumiOutputs map[string]interface{} `json:"pulumiOutputs,omitempty"`
+    // RawStateDelta is the bridge's __pulumi_raw_state_delta for those outputs.
+    // Computed from redacted attributes, so it never contains a secret.
+    RawStateDelta map[string]interface{} `json:"rawStateDelta,omitempty"`
+    // SchemaVersion is the Terraform resource type's schema version, read from
+    // the live provider. Written into state as __meta so that a later provider
+    // upgrade runs the right state upgraders.
+    SchemaVersion int64 `json:"schemaVersion,omitempty"`
+    ```
+
+**Why here.** `RawStateComputeDelta` needs a cty type and value, which only a live provider can supply. `digest tf` already starts one for the import-support probe — the same check that marks a resource non-importable — so the provider is open at exactly the moment these resources are identified. Computing here keeps `patch-state` provider-free.
+
+**Secrets.** `redactSensitivePaths` (`pkg/module_map.go:370`) has already replaced sensitive values with `(sensitive)` by the time attributes are stored. The delta is computed from those redacted attributes, so no secret enters the sidecar. `patch-state` substitutes the real values later and re-validates (Task 4).
+
+- [ ] **Step 1: Write the failing test**
+
+Create `pkg/raw_state_delta_test.go`. This needs a live provider, which `pkg/importsupport/testmain_test.go:36` already demonstrates loading via `tfprovider.LoadProvider`; use the same `random` provider it warms, so the test needs no AWS credentials and no large download:
+
+```go
+package pkg
+
+import (
+	"context"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestComputeInjectionState_RandomPet(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	prov, err := tfprovider.LoadProvider(ctx, "registry.opentofu.org/hashicorp/random", "")
+	require.NoError(t, err)
+	defer prov.Close(ctx)
+
+	attrs := []byte(`{"id":"cool-pet","keepers":null,"length":2,"prefix":null,"separator":"-"}`)
+
+	outputs, delta, version, err := ComputeInjectionState(ctx, prov, "random_pet", attrs, nil, nil)
+	require.NoError(t, err)
+
+	// Outputs carry Pulumi property names.
+	assert.Equal(t, "cool-pet", outputs["id"])
+	assert.Equal(t, "-", outputs["separator"])
+
+	// The schema version comes from the provider, not from a mock that reports 0.
+	assert.GreaterOrEqual(t, version, int64(0))
+
+	// A delta is produced and is not a secret-bearing blob.
+	assert.NotNil(t, delta)
+	_ = delta
+}
+```
+
+If `random_pet`'s delta comes back empty (`{}`), that is a valid result for a flat scalar type — assert it is non-nil rather than non-empty, and add a nested-block case in Step 5.
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `go test ./pkg/ -run TestComputeInjectionState -v`
+Expected: FAIL — `undefined: ComputeInjectionState`.
+
+- [ ] **Step 3: Write the implementation**
+
+Create `pkg/raw_state_delta.go` (with the licence header):
+
+```go
+package pkg
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/pulumi-proserv/pulumi-tool-import/pkg/tfprovider"
+	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
+	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/valueshim"
+	shim "github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfshim"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
+	ctyjson "github.com/zclconf/go-cty/cty/json"
+	"github.com/zclconf/go-cty/cty"
+)
+
+// ComputeInjectionState converts a resource's recorded Terraform attributes
+// into the Pulumi outputs, raw state delta, and schema version that injecting
+// it into state requires.
+//
+// This runs during "digest tf" because it needs a live Terraform provider: the
+// cty type comes from the provider's schema, and there is no way to get it from
+// the schema mock the rest of the tool uses. "digest tf" already starts
+// providers for the import-support probe, which is the same check that marks a
+// resource non-importable, so nothing extra is launched.
+//
+// attrsJSON must be the redacted attributes. The delta can embed raw JSON, so
+// computing it from real secret values would put them in the sidecar.
+func ComputeInjectionState(
+	ctx context.Context,
+	prov tfprovider.Provider,
+	tfType string,
+	attrsJSON []byte,
+	schemaMap shim.SchemaMap,
+	schemaInfos map[string]*tfbridge.SchemaInfo,
+) (map[string]interface{}, map[string]interface{}, int64, error) {
+	schemas := prov.GetProviderSchema(ctx)
+	sch, ok := schemas.ResourceTypes[tfType]
+	if !ok {
+		return nil, nil, 0, fmt.Errorf("provider has no schema for %s", tfType)
+	}
+
+	ty := sch.Block.ImpliedType()
+	value, err := ctyjson.Unmarshal(attrsJSON, ty)
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("decoding %s attributes: %w", tfType, err)
+	}
+
+	outputs := pulumiOutputsFromCty(value, schemaMap, schemaInfos)
+
+	delta, err := tfbridge.RawStateComputeDelta(ctx, schemaMap, schemaInfos,
+		resource.NewPropertyMapFromMap(outputs),
+		valueshim.FromCtyType(resourceType(ty)),
+		valueshim.FromCtyValue(value))
+	if err != nil {
+		// A delta that cannot be computed is not fatal: the resource is injected
+		// without one and falls back to the bridge's pre-delta reconstruction.
+		return outputs, nil, sch.Version, nil
+	}
+
+	return outputs, delta.Marshal().Mappable().(map[string]interface{}), sch.Version, nil
+}
+
+// resourceType strips the timeouts attribute, the way the bridge's own
+// FromHctyResourceType does for the hcty flavour (pkg/valueshim/hcty.go:31).
+// There is no zclconf equivalent, so it is replicated here.
+func resourceType(t cty.Type) cty.Type {
+	if !t.IsObjectType() {
+		return t
+	}
+	attrs := make(map[string]cty.Type, len(t.AttributeTypes()))
+	for k, v := range t.AttributeTypes() {
+		attrs[k] = v
+	}
+	delete(attrs, "timeouts")
+	return cty.Object(attrs)
+}
+```
+
+`pulumiOutputsFromCty` converts the cty value to a Pulumi property map using `schemaMap`/`schemaInfos` for naming. Start from the existing `MapTFAttributesToPulumi` behaviour over the JSON form of the value, and only reach for something more elaborate if the delta round-trip test in Step 5 fails — the delta's turnaround check is what tells you whether the conversion is faithful.
+
+Confirm `tfprovider.Provider`'s schema accessor name against `pkg/tfprovider/loader.go:55` before writing this; the interface embeds OpenTofu's `providers.Interface`, whose method is `GetProviderSchema(ctx)` returning `providers.GetProviderSchemaResponse`.
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+Run: `go test ./pkg/ -run TestComputeInjectionState -v`
+Expected: PASS.
+
+- [ ] **Step 5: Add a nested-block round-trip test**
+
+The whole point of the delta is types the schema-only path cannot round-trip, so test one. Using the same `random` provider is not possible (its types are flat), so use `aws_vpn_connection`, whose `tunnel1_log_options` is a nested block, guarded by a short skip when the AWS provider is not in the plugin cache:
+
+```go
+func TestComputeInjectionState_NestedBlockDeltaRecovers(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	prov, err := tfprovider.LoadProvider(ctx, "registry.opentofu.org/hashicorp/aws", "")
+	if err != nil {
+		t.Skipf("aws provider unavailable: %v", err)
+	}
+	defer prov.Close(ctx)
+
+	// Attributes including a nested block; fill from the real schema.
+	attrs := []byte(`{ ... }`)
+
+	outputs, delta, _, err := ComputeInjectionState(ctx, prov, "aws_vpn_connection", attrs, nil, nil)
+	require.NoError(t, err)
+	require.NotNil(t, delta, "a nested-block type should produce a non-empty delta")
+
+	// The delta must recover the outputs it was computed from.
+	props := resource.NewPropertyMapFromMap(outputs)
+	rsd, err := tfbridge.UnmarshalRawStateDelta(resource.NewPropertyValue(delta))
+	require.NoError(t, err)
+	_, err = rsd.Recover(resource.NewObjectProperty(props))
+	require.NoError(t, err, "delta must apply cleanly to the outputs")
+}
+```
+
+- [ ] **Step 6: Carry the fields through the digest and the sidecar**
+
+Add the three fields to `ModuleResource` (`pkg/module_map.go:50-61`) and `NonImportableResource` (`pkg/import_filler.go:52-76`), populate them in `matchResources` where `NonImportable` is set (`pkg/module_map.go:364-366`) — only for non-importable resources, since nothing else needs them — and copy them across wherever `resolve tf` builds `NonImportableResource` from `ModuleResource`.
+
+Populate them only when the import checker is present; when `digest tf` runs without the import-support probe there is no provider, no non-importable detection, and therefore no sidecar to fill.
+
+- [ ] **Step 7: Run all tests**
+
+Run: `go test ./... 2>&1 | tail -20`
+Expected: PASS, including `cmd`'s existing `non_importable_test.go` — the new sidecar fields are `omitempty`, so fixtures without them are unaffected.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add pkg/raw_state_delta.go pkg/raw_state_delta_test.go pkg/module_map.go pkg/import_filler.go
+git commit -m "feat(digest): compute Pulumi outputs, raw state delta and schema version for non-importable resources"
+```
+
+---
+
 ### Task 3: Verify a deployment with the engine's integrity check
 
 **Files:**
@@ -698,7 +921,10 @@ git commit -m "feat(inject): verify deployments with the engine's snapshot integ
 2. The injected object is `newState` copied verbatim, plus `custom: true`, `id` from the sidecar, and `outputs` from the mapped sidecar attributes.
 3. `inputs` come from `newState.inputs`. Any value equal to the literal `[secret]` is resolved from `configSecrets` via the sidecar's `redactedAttributes`; if it cannot be resolved, the whole call fails.
 4. `__defaults` is added as an empty array **only if absent** — for bridged providers the engine's `Check` has usually already put one in `newState.inputs`, and overwriting it would discard real information.
-5. `__pulumi_raw_state_delta` and `__meta` are never written — the schema mock this tool loads exposes neither an instance state nor a trustworthy schema version, so both would have to be fabricated. See the spec's Findings.
+5. `outputs` come from the sidecar's `pulumiOutputs` when present (computed by `digest tf` in Task 2b), falling back to `MapTFAttributesToPulumi` over `attributes` for sidecars written before that change.
+6. `__pulumi_raw_state_delta` comes from the sidecar's `rawStateDelta`, and `__meta` is built from `schemaVersion`, both only when present.
+7. **Secret substitution reaches into the delta.** The digest computed the delta from redacted attributes, so a `(sensitive)` placeholder may be embedded in a `Replace` blob, which stores raw JSON verbatim. Each `redactedAttributes` value is substituted into the outputs *and* anywhere it appears inside the delta.
+8. **After substitution, the delta is validated and dropped if it fails.** `validateRecover` (`pkg/state_patcher.go:1448`) already does exactly this check and needs no provider. A delta that no longer applies is removed for that resource, which falls back to the bridge's pre-delta path — previously-correct behaviour, rather than state that fails at the next preview.
 6. Injected entries are appended in dependency order: an entry that depends on another injected entry comes after it.
 7. The result is passed through `VerifyDeploymentIntegrity` before being returned.
 
@@ -809,8 +1035,52 @@ func TestInjectNonImportable_OutputsFromSidecarInputsFromProgram(t *testing.T) {
 	assert.Equal(t, "rtb-0e370d1fdde0890b3", inputs["routeTableId"])
 	assert.Equal(t, []interface{}{}, inputs["__defaults"])
 
-	// The raw state delta is never synthesized.
-	assert.NotContains(t, r, "__pulumi_raw_state_delta")
+	// No sidecar delta was supplied here, so none is written.
+	assert.NotContains(t, outputs, "__pulumi_raw_state_delta")
+}
+
+func TestInjectNonImportable_CarriesDigestOutputsAndDelta(t *testing.T) {
+	t.Parallel()
+	sidecar := propagationSidecar()
+	// What "digest tf" computed while a provider was open (Task 2b).
+	sidecar.Resources[0].PulumiOutputs = map[string]interface{}{
+		"routeTableId": "rtb-0e370d1fdde0890b3",
+		"vpnGatewayId": "vgw-0cdee3deb918b1983",
+	}
+	sidecar.Resources[0].RawStateDelta = map[string]interface{}{}
+	sidecar.Resources[0].SchemaVersion = 2
+
+	out, _, err := InjectNonImportable(
+		minimalState(goodProviderRef), sidecar, propagationPreview(t), nil, nil)
+	require.NoError(t, err)
+
+	r := injected(t, out)
+	outputs := r["outputs"].(map[string]interface{})
+	assert.Equal(t, "rtb-0e370d1fdde0890b3", outputs["routeTableId"])
+	assert.Contains(t, outputs, "__pulumi_raw_state_delta")
+
+	// __meta records the schema version the provider reported, so a later
+	// provider upgrade runs the right state upgraders.
+	assert.Contains(t, outputs["__meta"], "\"schema_version\":\"2\"")
+}
+
+func TestInjectNonImportable_DropsDeltaThatNoLongerRecovers(t *testing.T) {
+	t.Parallel()
+	sidecar := propagationSidecar()
+	sidecar.Resources[0].PulumiOutputs = map[string]interface{}{"routeTableId": "rtb-1"}
+	// A delta that cannot apply to these outputs. Rather than write state that
+	// fails at the next preview, injection drops the delta and falls back to the
+	// bridge's pre-delta reconstruction.
+	sidecar.Resources[0].RawStateDelta = map[string]interface{}{
+		"obj": map[string]interface{}{"nope": map[string]interface{}{}},
+	}
+
+	out, result, err := InjectNonImportable(
+		minimalState(goodProviderRef), sidecar, propagationPreview(t), nil, nil)
+	require.NoError(t, err, "an unusable delta must not fail the injection")
+	assert.Equal(t, 1, result.NoDelta)
+
+	outputs := injected(t, out)["outputs"].(map[string]interface{})
 	assert.NotContains(t, outputs, "__pulumi_raw_state_delta")
 }
 
@@ -902,7 +1172,12 @@ const secretPlaceholder = "[secret]"
 type InjectResult struct {
 	Injected        int
 	SecretsResolved int
-	Skipped         []string
+	// NoDelta counts resources injected without a raw state delta, either
+	// because the sidecar carried none or because the one it carried no longer
+	// recovered after secret substitution.
+	NoDelta int
+	URNs    []string
+	Skipped []string
 }
 
 // InjectNonImportable appends the sidecar's resources to an exported deployment.
