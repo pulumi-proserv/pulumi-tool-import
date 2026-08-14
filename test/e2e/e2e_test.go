@@ -27,10 +27,19 @@
 // profile (...) could not be found". See sanitizedEnv in helpers.go for the
 // in-process backstop.
 //
+// A full run takes roughly 10 minutes (the VPN connection alone is 3-5
+// minutes to create and to destroy). Start it detached — output redirected
+// to a file with "&", or under a tool like `nohup` — rather than in a
+// foreground shell with its own timeout: a shell or harness that kills the
+// process mid-run leaves t.Cleanup's "tofu destroy" without a chance to run,
+// which is exactly how a VPN connection got orphaned during an earlier
+// manual run of this pipeline.
+//
 // See also `make test-e2e`.
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -72,6 +81,7 @@ func TestPatchStateTfNonImportableInjection(t *testing.T) {
 	logCallerIdentity(t, ctx)
 	requireBinary(t, "tofu")
 	requireBinary(t, "pulumi")
+	requireGlobalLoginUntouched(t)
 
 	repoRoot := repoRoot(t)
 	binPath := buildTool(t, ctx, repoRoot)
@@ -88,14 +98,32 @@ func TestPatchStateTfNonImportableInjection(t *testing.T) {
 	// A local file backend keeps this test self-contained: it does not need
 	// a Pulumi Cloud org to exist, or credentials for one, beyond whatever
 	// "esc run" already put in the environment for AWS.
-	backendDir := t.TempDir()
+	//
+	// PULUMI_HOME is isolated alongside the backend, and there is
+	// deliberately no "pulumi login" call: login is what writes
+	// ~/.pulumi/credentials.json, and a login against this test's temporary
+	// backend directory would leave the developer's global CLI state
+	// pointing at a path that stops existing the moment the test cleans up
+	// its temp dirs — every later "pulumi"/"esc" command in that shell then
+	// fails until the developer runs "pulumi login" by hand to repair it.
+	// PULUMI_BACKEND_URL alone is sufficient to select the backend for every
+	// command below; requireGlobalLoginUntouched (via t.Cleanup) proves the
+	// global credentials file was never touched, rather than assuming it.
+	tmpRoot := t.TempDir()
+	backendDir := filepath.Join(tmpRoot, "backend")
+	pulumiHomeDir := filepath.Join(tmpRoot, "pulumi-home")
+	for _, dir := range []string{backendDir, pulumiHomeDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("creating %s: %v", dir, err)
+		}
+	}
 	env := sanitizedEnv(
 		"PULUMI_BACKEND_URL=file://"+backendDir,
 		"PULUMI_CONFIG_PASSPHRASE=",
+		"PULUMI_HOME="+pulumiHomeDir,
 	)
 	stackName := fmt.Sprintf("e2e-%d", time.Now().UnixNano())
 
-	runPulumi(t, ctx, pulumiDir, env, "login", "file://"+backendDir)
 	runPulumi(t, ctx, pulumiDir, env, "stack", "init", stackName)
 	runPulumi(t, ctx, pulumiDir, env, "config", "set", "aws:region", "us-west-2")
 
@@ -271,6 +299,60 @@ func logCallerIdentity(t *testing.T, ctx context.Context) {
 		t.Fatalf("parsing aws sts get-caller-identity output: %v\n%s", jsonErr, out)
 	}
 	t.Logf("running against AWS account %s as %s", identity.Account, identity.Arn)
+}
+
+// requireGlobalLoginUntouched snapshots the developer's global Pulumi
+// credentials file and registers a t.Cleanup that fails the test if it
+// changed. This test isolates PULUMI_HOME for every "pulumi" invocation it
+// makes precisely so this file is never touched — but a test that can
+// corrupt the developer's login should prove that it doesn't, rather than
+// assume its own isolation is airtight.
+func requireGlobalLoginUntouched(t *testing.T) {
+	t.Helper()
+	path := globalCredentialsPath()
+	before, beforeExists, err := readFileIfExists(path)
+	if err != nil {
+		t.Fatalf("reading global pulumi credentials %s: %v", path, err)
+	}
+	t.Cleanup(func() {
+		after, afterExists, err := readFileIfExists(path)
+		if err != nil {
+			t.Errorf("re-reading global pulumi credentials %s: %v", path, err)
+			return
+		}
+		if beforeExists != afterExists || !bytes.Equal(before, after) {
+			t.Errorf("global Pulumi login at %s changed during this test run "+
+				"(existed before=%v, after=%v) — every \"pulumi\" call this test makes should "+
+				"carry an isolated PULUMI_HOME, so this should be impossible; if it fired, run "+
+				"\"pulumi login\" to repair your shell", path, beforeExists, afterExists)
+		}
+	})
+}
+
+// globalCredentialsPath resolves the credentials file "pulumi login" writes
+// to in the ambient (non-test) environment, honoring an already-set
+// PULUMI_HOME the same way the pulumi CLI does.
+func globalCredentialsPath() string {
+	home := os.Getenv("PULUMI_HOME")
+	if home == "" {
+		if dir, err := os.UserHomeDir(); err == nil {
+			home = filepath.Join(dir, ".pulumi")
+		}
+	}
+	return filepath.Join(home, "credentials.json")
+}
+
+// readFileIfExists reads path, treating "does not exist" as a valid, empty
+// result rather than an error.
+func readFileIfExists(path string) (data []byte, exists bool, err error) {
+	data, err = os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return data, true, nil
 }
 
 func requireBinary(t *testing.T, name string) {
