@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- **Every JSON decode of state or preview output must use `json.Decoder` with `UseNumber()`.** Without it large integers (AWS account IDs) become `float64` and re-serialize as scientific notation, which Pulumi's state parser rejects. This is why `PatchState` decodes the way it does (`pkg/state_patcher.go:696`).
+- **Every JSON decode of state or preview output must use `json.Decoder` with `UseNumber()`.** Without it, an integer above 2^53 (`9007199254740992`) silently becomes a *different* integer — `9007199254740993` decodes and re-marshals as `9007199254740992`, and a 19-digit ID as `…800`. Measured, not assumed. Two claims repeated in this repo are wrong and should not be propagated: AWS account IDs are **not** at risk (12 digits is inside float64's exact range, and they appear in state as strings — see `pkg/testdata/tofu_state.json`), and scientific notation only appears at ≥1e21, i.e. 22 digits. The real hazard is that the corruption is **silent**: no error, no malformed output, just a changed number.
 - **Never write a placeholder value into state.** The digest writes `(sensitive)` for sensitive Terraform attributes; `preview --json` writes the literal string `[secret]` for secret inputs. Both must be resolved from stack config, or the command fails.
 - **`pulumi preview` reporting zero operations is the only acceptance signal.** `pulumi refresh` reporting "unchanged" is not, and must never be used as one.
 - Existing behaviour of `patch-state tf` must not change when `--non-importable` is absent.
@@ -1601,10 +1601,17 @@ Then search for float64 assertions on this data — `grep -rn '\.(float64)' pkg 
 Run: `go test ./... 2>&1 | tail -20`
 Expected: PASS, including the existing digest and patch-state suites. A pre-existing test that now fails because it asserted `float64` is a real signal — fix the test to expect `json.Number`, and say so in your report.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Correct the inherited claims**
+
+The justification repeated around this constraint is wrong, and it originates in the repo, not in this plan. Fix the wording wherever it appears, without changing behaviour:
+
+- `pkg/state_patcher.go:696-699` — the comment cites AWS account IDs and "scientific notation (e.g. `5399223e-54`)". Account IDs are 12 digits, inside float64's exact range, and appear in Terraform state as strings (`pkg/testdata/tofu_state.json:85`). The cited example is not a real output of this failure. Replace with: values above 2^53 silently decode to a different integer; scientific notation only appears at ≥1e21.
+- `pkg/testdata/preview_create.json:30` — `"ownerId": 52848974346` is a number-typed account ID, which does not occur in practice and is not large enough to lose precision. Change it to a value that genuinely exceeds 2^53 so the fixture matches what the test claims to prove, and update the comment in `pkg/preview_test.go` that explains it. Keep the test's assertion (`json.Number`) unchanged — it is what guards `UseNumber`.
+
+- [ ] **Step 7: Commit**
 
 ```bash
-git add pkg/module_map.go cmd/import_id_match.go cmd/patch_state_tf.go pkg/module_map_number_test.go
+git add pkg/module_map.go cmd/import_id_match.go cmd/patch_state_tf.go pkg/module_map_number_test.go pkg/state_patcher.go pkg/testdata/preview_create.json pkg/preview_test.go
 git commit -m "fix(digest): preserve integer precision on the paths that feed state"
 ```
 
