@@ -52,7 +52,8 @@ types costs 40 probes.
 later: Pulumi outputs, the raw state delta, and the Terraform schema version —
 using the same provider connection the probe already opened. For the
 line-level trace of that computation and how the pieces move between commands,
-see [docs/pipeline-schema-and-state.md](pipeline-schema-and-state.md#s2b--the-non-importable-enrichment-new-on-this-branch).
+see [docs/pipeline-schema-and-state.md](pipeline-schema-and-state.md) (the
+non-importable enrichment section).
 
 ## What each command does
 
@@ -195,9 +196,16 @@ Two consequences:
 - **`pulumi refresh --preview-only` reporting "unchanged" is weak evidence.** It
   confirms the IDs resolve to something that exists. It would report the same
   for a resource whose attributes are wrong.
-- **`pulumi preview` showing zero operations is the real check.** The program is
-  the source of truth for inputs, so preview diffs the program against the
-  injected state. If the injected values disagree, preview says so.
+- **`pulumi preview` is the real check — what counts as passing depends on the
+  workflow.** The program is the source of truth for inputs, so preview diffs
+  the program against the injected state; if the injected values disagree,
+  preview says so. In file mode, where you run this preview by hand after
+  `pulumi stack import`, "zero operations" is the bar, because nothing else
+  has verified the mutation for you. In stack mode the tool runs this same
+  preview itself and applies the baseline-comparison gate described above
+  ([How verification works](#how-verification-works)) — do not expect or
+  demand a fully clean preview there; a stack mid-migration can legitimately
+  still show diffs unrelated to the injected resources.
 
 Get the ID right and `VpnConnectionRoute`'s attributes reconcile themselves on
 the first refresh. `VpnGatewayRoutePropagation`'s attributes have to be right at

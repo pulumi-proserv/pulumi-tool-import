@@ -236,10 +236,14 @@ Where the preview comes from depends on which of two modes the command runs in:
   Verification compares the verifying preview against the baseline, not
   against an absolute "clean" bar: a stack mid-migration legitimately still has
   outstanding diffs, and `patch-state` is often run iteratively against
-  exactly that stack. The gate is that every injected resource's URN must
-  report `same`, and the count of non-`same` steps outside the injected set
-  must not increase versus the baseline — regression, not residue, is what
-  fails the run.
+  exactly that stack. Three checks must all pass: every injected resource's
+  URN must report `same`; no resource that was `same` (or absent) in the
+  baseline may turn non-`same` afterward — checked per resource, so one
+  regression fails the run even if the aggregate count doesn't move (e.g. it
+  regresses while an unrelated resource happens to improve); and the total
+  non-`same` count outside the injected set must not increase versus the
+  baseline. Any single failure reverts the run — regression, not residue, is
+  what fails it.
 
   Stack mode needs a runnable program and live credentials, since it runs
   `pulumi preview` itself.
