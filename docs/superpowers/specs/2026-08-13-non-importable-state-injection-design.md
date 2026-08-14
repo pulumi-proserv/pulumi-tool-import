@@ -110,11 +110,12 @@ viable, and it is the graceful fallback here — but it reconstructs through the
 schema, so it cannot serve a future provider upgrade, and it cannot round-trip anything the
 schema does not describe.
 
-**The bridge could compute a delta, but not from this tool.** `RawStateInjectDelta` and
+**The obvious way to compute one does not work here.** `RawStateInjectDelta` and
 `RawStateComputeDelta` are exported (`rawstate.go:457`, `:485`), and mirroring the provider's
-own create path (`provider.go:1360-1375`) would produce a turnaround-checked delta. Every
-argument, however, depends on a live Terraform provider, and this tool has none: it launches
-the *Pulumi* provider binary over gRPC only to call `GetMapping`
+own create path (`provider.go:1360-1375`) would produce a turnaround-checked delta. That path
+needs an `InstanceState`, which requires the Terraform provider's Go code linked into the
+binary. This tool has no such thing: it launches the *Pulumi* provider binary over gRPC only to
+call `GetMapping`
 (`pkg/bridgedproviders/mapping.go:84`) and reconstructs a `tfshim/schema` mock from the
 marshalled `ProviderInfo`. Probed directly against the AWS provider as this tool loads it:
 
