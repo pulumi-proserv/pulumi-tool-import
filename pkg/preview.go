@@ -28,29 +28,22 @@ type PreviewKey struct {
 	Name string
 }
 
-// PropertyDiff mirrors the PropertyDiff type in pulumi/pkg/v3/display/json.go,
-// decoding only the Kind field this tool surfaces in diagnostics.
-type PropertyDiff struct {
-	Kind string `json:"kind"`
-}
-
 // PreviewStep is one step from "pulumi preview --json". NewState is kept as a
 // raw map rather than apitype.ResourceV3 so that every field is carried through
 // verbatim — including ones this tool does not interpret — and so that numbers
 // survive as json.Number.
 //
-// DiffReasons and DetailedDiff are decoded so that a verification failure can
-// say *what* differed, not just that something did — pulumi/pkg/v3's own
-// PreviewStep carries both alongside Op and URN, but the CLI otherwise
-// discards them once printed.
+// DiffReasons is decoded so that a verification failure can say *what*
+// differed, not just that something did — pulumi/pkg/v3's own PreviewStep
+// also carries DetailedDiff alongside it, but this tool has no consumer for
+// per-property diff kinds (only the list of differing property keys, via
+// DiffReasonsByURN), so DetailedDiff is not decoded here.
 type PreviewStep struct {
 	Op       string                 `json:"op"`
 	URN      string                 `json:"urn"`
 	NewState map[string]interface{} `json:"newState"`
 	// DiffReasons lists the property keys causing a diff (update steps only).
 	DiffReasons []string `json:"diffReasons,omitempty"`
-	// DetailedDiff maps property path to the kind of difference found there.
-	DetailedDiff map[string]PropertyDiff `json:"detailedDiff,omitempty"`
 }
 
 // PreviewDigest is the "pulumi preview --json" document. It mirrors the

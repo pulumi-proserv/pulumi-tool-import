@@ -412,8 +412,11 @@ values out of stack config.
 				if injectResult.DeltaDroppedSensitive > 0 {
 					fmt.Fprintf(os.Stderr,
 						"  %d resource(s) injected without Terraform raw-state metadata "+
-							"(delta dropped: embedded an unresolvable secret placeholder)\n",
+							"(delta dropped: embedded an unresolvable secret placeholder):\n",
 						injectResult.DeltaDroppedSensitive)
+					for _, note := range injectResult.DeltaDroppedSensitiveNotes {
+						fmt.Fprintf(os.Stderr, "    %s\n", note)
+					}
 				}
 				if injectResult.DeltaDroppedUnrecoverable > 0 {
 					fmt.Fprintf(os.Stderr,

@@ -16,6 +16,7 @@ package cfn
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -164,14 +165,30 @@ func resolveValue(ctx context.Context, v interface{}, resources, resourceTypes, 
 	}
 }
 
-// toIndex parses an Fn::Select index (a JSON number arrives as float64; CFN also
-// allows a numeric string).
+// toIndex parses an Fn::Select index (a JSON number arrives as float64 from a
+// plain decode, or json.Number from a UseNumber decode; CFN also allows a
+// numeric string).
+//
+// A json.Number reaching here without this case would not "silently take the
+// wrong branch" — a commit message on this branch (6ac03f6) once claimed that,
+// which was wrong and is corrected here rather than only in a commit nobody
+// re-reads. Go type switches match concrete types, and json.Number matches
+// neither "case string" nor "case float64", so it would fall through to
+// (0, false); resolveValue's caller then emits the literal string
+// "<unresolved-intrinsic:Fn::Select>" in place of the index result, and
+// FillFromDigest (pkg/cfn/resolve.go) warns on any import ID still containing
+// "<unresolved-intrinsic:" and blanks it rather than using it — fail-loud, not
+// silent. The case below is added anyway for robustness, so a json.Number
+// index resolves correctly instead of merely failing safely.
 func toIndex(v interface{}) (int, bool) {
 	switch n := v.(type) {
 	case int:
 		return n, true
 	case float64:
 		return int(n), true
+	case json.Number:
+		i, err := n.Int64()
+		return int(i), err == nil
 	case string:
 		i, err := strconv.Atoi(n)
 		return i, err == nil

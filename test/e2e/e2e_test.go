@@ -262,18 +262,13 @@ func TestPatchStateTfNonImportableInjection(t *testing.T) {
 	}
 }
 
-// requireCredentials skips the test when the environment is not set up for
-// it, rather than failing. PULUMI_ACCESS_TOKEN is checked as a signal that
-// the ESC wrapper was actually used — this test's own Pulumi operations run
-// against a local file backend and do not consume the token directly, but
-// its absence means AWS credentials almost certainly aren't present either.
-// Note on what gates this test: the only credentials it needs are AWS ones.
-// It runs against an isolated local file backend (PULUMI_BACKEND_URL plus its
-// own PULUMI_HOME), so it needs no Pulumi Cloud login and no
+// What gates this test: the only credentials it needs are AWS ones. It runs
+// against an isolated local file backend (PULUMI_BACKEND_URL plus its own
+// PULUMI_HOME), so it needs no Pulumi Cloud login and no
 // PULUMI_ACCESS_TOKEN. An earlier version gated on PULUMI_ACCESS_TOKEN, which
 // silently skipped the whole test whenever the caller brokered AWS credentials
 // without also exporting a Pulumi token — a skip that looks like a pass.
-// logCallerIdentity below is the gate: if AWS is unreachable, it skips.
+// logCallerIdentity below is the actual gate: if AWS is unreachable, it skips.
 
 // logCallerIdentity records which AWS account and role this run is about to
 // create infrastructure in. It does not gate on the result — which account
@@ -286,7 +281,16 @@ func logCallerIdentity(t *testing.T, ctx context.Context) {
 	cmd.Env = sanitizedEnv()
 	out, err := cmd.Output()
 	if err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			t.Skipf("the aws CLI is not installed (not found in $PATH): %v\n"+
+				"install the AWS CLI, then run via the ESC wrapper documented at the top of this file "+
+				"(also: make test-e2e)", err)
+		}
 		t.Skipf("aws sts get-caller-identity failed (no AWS credentials?): %v\n"+
+			"note: sanitizedEnv (helpers.go) strips AWS_PROFILE from this call because it shadows "+
+			"brokered credentials — if your only working credential path is an SSO AWS_PROFILE "+
+			"(no static keys, no ESC-injected env vars), this call fails even though plain \"aws\" "+
+			"commands succeed in your shell; that is expected, not a bug\n"+
 			"run via the ESC wrapper documented at the top of this file (also: make test-e2e)", err)
 	}
 	var identity struct {

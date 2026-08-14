@@ -191,6 +191,92 @@ func TestPatchState_PatchesFromDigest(t *testing.T) {
 	assert.Equal(t, false, inputs["forceOverwriteReplicaSecret"]) // from default
 }
 
+// TestPatchState_NotReadNumericField_JSONNumber_PatchesInputAndOutput is the
+// regression test for isSimpleValue missing a json.Number case.
+// cmd/patch_state_cfn.go decodes the CFN digest with json.Decoder.UseNumber
+// (to preserve large integers exactly), so a numeric not-read field's digest
+// value arrives here as json.Number rather than float64. patchResourceFields
+// writes digVal into inputs unconditionally, but the matching output write
+// is gated by isSimpleValue. Before the fix, isSimpleValue(json.Number(...))
+// was false, so the output write was silently skipped: patched state ended
+// up with an input and no matching output, which is exactly the divergence
+// outputStale/outputIsBadPlain exist to prevent, and it surfaces as a
+// spurious update on the next preview. This test fails before the fix
+// (inputs["recoveryWindowInDays"] is set, outputs["recoveryWindowInDays"] is
+// absent) and passes after.
+func TestPatchState_NotReadNumericField_JSONNumber_PatchesInputAndOutput(t *testing.T) {
+	t.Parallel()
+
+	state := map[string]interface{}{
+		"version": 3,
+		"deployment": map[string]interface{}{
+			"resources": []interface{}{
+				map[string]interface{}{
+					"urn":    "urn:pulumi:dev::proj::aws:secretsmanager/secret:Secret::my-secret",
+					"type":   "aws:secretsmanager/secret:Secret",
+					"custom": true,
+					"id":     "arn:aws:secretsmanager:us-east-1:123:secret:my-secret",
+					"inputs": map[string]interface{}{
+						"name": "my-secret",
+					},
+					"outputs": map[string]interface{}{
+						"name": "my-secret",
+					},
+				},
+			},
+		},
+	}
+	stateData, _ := json.Marshal(state)
+
+	// Digest: recovery_window_in_days arrives as json.Number, as it would
+	// from a UseNumber-decoded CFN digest.
+	digest := ModuleMap{
+		RootResources: []ModuleResource{
+			{
+				Mode:             "managed",
+				TranslatedURN:    "urn:pulumi:dev::proj::aws:secretsmanager/secret:Secret::my-secret",
+				TerraformAddress: "aws_secretsmanager_secret.my_secret",
+				ImportID:         "arn:aws:secretsmanager:us-east-1:123:secret:my-secret",
+				Attributes: map[string]interface{}{
+					"recovery_window_in_days": json.Number("14"),
+					"name":                    "my-secret",
+				},
+			},
+		},
+	}
+
+	fields := &FieldsFile{
+		Fields: map[string]FieldCategory{
+			"secret:Secret": {
+				NotRead: map[string]FieldInfo{
+					"recoveryWindowInDays": {Default: float64(30)},
+				},
+			},
+		},
+	}
+
+	resourceMappings := map[string]string{
+		"aws_secretsmanager_secret.my_secret": "my-secret",
+	}
+
+	patched, result, err := PatchState(stateData, &digest, fields, nil, resourceMappings, nil, "")
+	require.NoError(t, err)
+	assert.Equal(t, 1, result.Patched)
+	assert.Equal(t, 1, result.FieldsFromDigest)
+
+	var patchedState map[string]interface{}
+	require.NoError(t, json.Unmarshal(patched, &patchedState))
+	resources := patchedState["deployment"].(map[string]interface{})["resources"].([]interface{})
+	r := resources[0].(map[string]interface{})
+	inputs := r["inputs"].(map[string]interface{})
+	outputs := r["outputs"].(map[string]interface{})
+
+	assert.Equal(t, float64(14), inputs["recoveryWindowInDays"], "input must be patched from the digest")
+	assert.Equal(t, float64(14), outputs["recoveryWindowInDays"],
+		"output must be patched to match the input; a numeric-only input with no matching "+
+			"output is the divergence outputStale/outputIsBadPlain exist to prevent")
+}
+
 func TestPatchState_OutputStaleBoolean(t *testing.T) {
 	t.Parallel()
 

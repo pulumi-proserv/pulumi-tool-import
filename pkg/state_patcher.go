@@ -1447,9 +1447,17 @@ func conformToDelta(val interface{}, field string, outputsRaw map[string]interfa
 
 // isSimpleValue returns true for primitive types (bool, number, string, nil).
 // Arrays and objects are not simple — they may have been type-mapped by the bridge.
+//
+// json.Number must be included alongside float64/int: a UseNumber decode
+// (used by both cmd/patch_state_cfn.go and cmd/patch_state_tf.go to preserve
+// large integers exactly) represents every JSON number as json.Number rather
+// than float64. Without this case, a numeric not-read field would be written
+// into inputs (patchResourceFields's input branch has no isSimpleValue gate)
+// but skipped for outputs, leaving an input with no matching output — the
+// exact divergence outputStale/outputIsBadPlain exist to prevent.
 func isSimpleValue(v interface{}) bool {
 	switch v.(type) {
-	case nil, bool, string, float64, int:
+	case nil, bool, string, float64, int, json.Number:
 		return true
 	}
 	return false

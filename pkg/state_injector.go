@@ -57,15 +57,17 @@ type InjectResult struct {
 	// resource's outputs. DeltaDroppedNotes carries the Recover error for
 	// each one.
 	DeltaDroppedUnrecoverable int
-	// DeltaAbsentNotes and DeltaDroppedNotes name, one line each, the
-	// resources counted in DeltaAbsentFromSidecar and
-	// DeltaDroppedUnrecoverable respectively — the former naming the
-	// resource, the latter also carrying the Recover error, since that error
-	// is the single most useful fact for deciding whether the delta could be
-	// repaired.
-	DeltaAbsentNotes  []string
-	DeltaDroppedNotes []string
-	URNs              []string
+	// DeltaAbsentNotes, DeltaDroppedNotes, and DeltaDroppedSensitiveNotes name,
+	// one line each, the resources counted in DeltaAbsentFromSidecar,
+	// DeltaDroppedUnrecoverable, and DeltaDroppedSensitive respectively — the
+	// first naming the resource, the second also carrying the Recover error
+	// (the single most useful fact for deciding whether the delta could be
+	// repaired), the third naming the resource so a reader can go find which
+	// field carried the unresolvable "(sensitive)" placeholder.
+	DeltaAbsentNotes           []string
+	DeltaDroppedNotes          []string
+	DeltaDroppedSensitiveNotes []string
+	URNs                       []string
 }
 
 // InjectNonImportable appends the sidecar's resources to an exported deployment.
@@ -153,6 +155,7 @@ func InjectNonImportable(
 			result.DeltaAbsentNotes = append(result.DeltaAbsentNotes, note)
 		case deltaDroppedSensitive:
 			result.DeltaDroppedSensitive++
+			result.DeltaDroppedSensitiveNotes = append(result.DeltaDroppedSensitiveNotes, note)
 		case deltaDroppedUnrecoverable:
 			result.DeltaDroppedUnrecoverable++
 			result.DeltaDroppedNotes = append(result.DeltaDroppedNotes, note)
@@ -201,8 +204,9 @@ const (
 // buildInjectedResource copies the preview's newState and fills in the parts
 // only the sidecar knows. It returns the number of secret placeholders it
 // resolved (across inputs and outputs), the raw-state-delta outcome, and — for
-// deltaAbsent and deltaDroppedUnrecoverable — a one-line, resource-naming note
-// explaining it (carrying the Recover error for the latter).
+// deltaAbsent, deltaDroppedUnrecoverable, and deltaDroppedSensitive — a
+// one-line, resource-naming note explaining it (carrying the Recover error
+// for deltaDroppedUnrecoverable).
 func buildInjectedResource(
 	r *NonImportableResource,
 	newState map[string]interface{},
@@ -379,6 +383,26 @@ const reservedDefaultsKey = "__defaults"
 // time this runs, resolveSecretInputs has already replaced every "[secret]"
 // placeholder in inputs with that envelope, so there is nothing left to
 // unwrap or re-wrap here — copying the map verbatim keeps it wrapped.
+//
+// Two things this function does not check, deliberately:
+//
+//  1. It fills unconditionally, with no check against the target provider's
+//     Terraform schema. An input with no corresponding Terraform attribute in
+//     that schema would still be copied into outputs and emitted into raw
+//     state by Recover — and only rejected later, when ctyjson.Unmarshal
+//     decodes that raw state back into a cty value. validateRecover does not
+//     catch this: Recover itself succeeds, since it does not consult the
+//     schema either; only the read path's decode would fail. The backstop
+//     for that case is the verify-and-revert preview after injection, not
+//     any local check here. This function trusts that a copied input is
+//     schema-backed.
+//  2. Copied inputs are screened for the secret placeholders ("[secret]",
+//     "(sensitive)", via checkNoPlaceholders after this runs) but not for the
+//     engine's unknown-value sentinel. That is not reachable in the current
+//     flow — non-importable resources by construction only reference
+//     resources that have already been imported, so their inputs cannot
+//     carry an unresolved unknown — but it is an assumption of this
+//     function, not something it enforces.
 func fillOutputsFromInputs(inputs, outputs map[string]interface{}) {
 	for k, v := range inputs {
 		if k == reservedDefaultsKey || k == metaKey || k == rawStateDeltaKey {
@@ -402,10 +426,10 @@ func fillOutputsFromInputs(inputs, outputs map[string]interface{}) {
 // survives that check is then validated with the bridge's own Recover, which
 // catches a delta that no longer applies to these outputs for any other
 // reason (validateRecover, pkg/state_patcher.go).
-// attachRawStateDelta returns the resulting deltaOutcome and, for deltaAbsent
-// and deltaDroppedUnrecoverable, a one-line note identifying the resource
-// (and, for the latter, carrying the Recover error) for the command's
-// per-resource summary output.
+// attachRawStateDelta returns the resulting deltaOutcome and, for deltaAbsent,
+// deltaDroppedUnrecoverable, and deltaDroppedSensitive, a one-line note
+// identifying the resource (and, for deltaDroppedUnrecoverable, also carrying
+// the Recover error) for the command's per-resource summary output.
 func attachRawStateDelta(r *NonImportableResource, obj, outputs map[string]interface{}) (deltaOutcome, string) {
 	// __meta records the provider's schema version independently of whether a
 	// raw state delta exists: ComputeInjectionState (pkg/raw_state_delta.go)
@@ -435,7 +459,9 @@ func attachRawStateDelta(r *NonImportableResource, obj, outputs map[string]inter
 	// and the placeholder must never survive by any route.
 	deltaJSON, err := json.Marshal(r.RawStateDelta)
 	if err == nil && bytes.Contains(deltaJSON, []byte(redactedPlaceholder)) {
-		return deltaDroppedSensitive, ""
+		return deltaDroppedSensitive, fmt.Sprintf(
+			"%s (%s %q): raw-state delta dropped, embedded an unresolvable %q placeholder",
+			r.TerraformAddress, r.Type, r.Name, redactedPlaceholder)
 	}
 
 	outputs[rawStateDeltaKey] = r.RawStateDelta
