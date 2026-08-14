@@ -242,6 +242,7 @@ Per matched sidecar entry, one `custom: true` object appended to `deployment.res
 | `inputs` | `newState.Inputs`, with `[secret]` values resolved from config, plus `__defaults: []` |
 | `outputs` | built by the bridge from the sidecar attributes — see below |
 | `__pulumi_raw_state_delta` | computed by the bridge, inside `outputs` — see below |
+| `__meta` | `{"schema_version": "<the type's current SchemaVersion>"}` — see below |
 
 **Outputs and the delta are built by the bridge, not by this tool.** The provider's own
 create path (`pkg/tfbridge/provider.go:1360-1375`) turns a Terraform instance state into Pulumi
@@ -267,6 +268,21 @@ requires.
 This replaces hand-rolled TF→Pulumi property renaming with the bridge's real conversion —
 `MaxItems=1` flattening, set handling, asset translation, and secret marking included — and
 yields the delta as part of the same operation.
+
+**Record `__meta` with the resource's schema version.** `parseMeta` (`pkg/tfbridge/schema.go:1337`)
+decides which schema version state is treated as, and it does so differently on the two paths:
+the delta path passes `defaultZeroSchemaVersion: true`, so a missing `__meta` means version 0
+and every state upgrader runs; the path without a delta defaults to the type's *current*
+version, so a missing `__meta` means the provider concludes the state needs no migration and
+runs no upgraders.
+
+For an injected resource that difference is a delayed fault. When the provider later bumps
+`SchemaVersion` from N to N+1 and ships an upgrader, normally-imported resources migrate, while
+an injected one with neither delta nor `__meta` is read as though it were already at N+1 — the
+upgrader never runs and old-shaped data is interpreted under the new schema. Writing
+`__meta` as `{"schema_version": "<res.TF.SchemaVersion()>"}` at injection time records the truth
+instead of leaving it to a default, and costs one field. It is written whether or not a delta
+was produced.
 
 **Sensitive values must be resolved before the instance state is built,** not after. The
 sidecar's `redactedAttributes` is already keyed by Terraform attribute name, so each real value

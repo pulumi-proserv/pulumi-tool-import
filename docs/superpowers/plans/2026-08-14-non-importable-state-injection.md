@@ -1298,6 +1298,24 @@ func TestBuildOutputsWithDelta_SimpleType(t *testing.T) {
 	assert.Contains(t, outputs, "__pulumi_raw_state_delta")
 }
 
+func TestBuildOutputsWithDelta_RecordsSchemaVersion(t *testing.T) {
+	t.Parallel()
+	prov := awsProviderForTest(t)
+
+	// Pick a type whose SchemaVersion is non-zero — confirm one against the
+	// loaded schema rather than assuming; aws_instance has historically been >0.
+	// Without __meta, a later provider version bump would skip this resource's
+	// state upgrader, because parseMeta would assume it is already current.
+	outputs, _, err := BuildOutputsWithDelta(context.Background(), prov,
+		"aws_instance", "i-0123456789abcdef0",
+		map[string]interface{}{"id": "i-0123456789abcdef0"})
+	require.NoError(t, err)
+
+	meta, ok := outputs["__meta"].(string)
+	require.True(t, ok, "__meta must record the schema version")
+	assert.Contains(t, meta, "schema_version")
+}
+
 func TestBuildOutputsWithDelta_NoProviderFallsBack(t *testing.T) {
 	t.Parallel()
 	outputs, hasDelta, err := BuildOutputsWithDelta(context.Background(), nil,
@@ -1328,7 +1346,9 @@ package pkg
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strconv"
 
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
@@ -1387,6 +1407,18 @@ func BuildOutputsWithDelta(
 	if err := tfbridge.RawStateInjectDelta(
 		ctx, res.Schema(), fields, props, res.SchemaType(), istate); err != nil {
 		return nil, false, fmt.Errorf("computing raw state delta for %s: %w", tfType, err)
+	}
+
+	// Record the schema version the attributes were written under. Without
+	// __meta, parseMeta defaults to the type's current version on the no-delta
+	// path, so a later provider version bump would skip the state upgrader that
+	// should have migrated this resource.
+	if v := res.SchemaVersion(); v > 0 {
+		meta, err := json.Marshal(map[string]string{"schema_version": strconv.Itoa(v)})
+		if err != nil {
+			return nil, false, fmt.Errorf("encoding __meta for %s: %w", tfType, err)
+		}
+		props["__meta"] = resource.NewStringProperty(string(meta))
 	}
 
 	_, hasDelta := props["__pulumi_raw_state_delta"]
