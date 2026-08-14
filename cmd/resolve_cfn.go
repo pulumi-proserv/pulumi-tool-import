@@ -15,6 +15,7 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -36,7 +37,12 @@ func newResolveCfnCmd() *cobra.Command {
 				return fmt.Errorf("reading digest: %w", err)
 			}
 			var digest cfn.StackDigest
-			if err := json.Unmarshal(digestData, &digest); err != nil {
+			// UseNumber for the same reason the tf path uses it: without it an
+			// integer above 2^53 silently decodes to a different integer, and
+			// these values are written into Pulumi state.
+			digestDec := json.NewDecoder(bytes.NewReader(digestData))
+			digestDec.UseNumber()
+			if err := digestDec.Decode(&digest); err != nil {
 				return fmt.Errorf("parsing digest: %w", err)
 			}
 			importData, err := os.ReadFile(importPath)
