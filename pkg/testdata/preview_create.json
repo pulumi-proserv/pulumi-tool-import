@@ -1,0 +1,35 @@
+{
+    "steps": [
+        {
+            "op": "create",
+            "urn": "urn:pulumi:dev::proj::aws:ec2/vpnGatewayRoutePropagation:VpnGatewayRoutePropagation::prop0",
+            "newState": {
+                "urn": "urn:pulumi:dev::proj::aws:ec2/vpnGatewayRoutePropagation:VpnGatewayRoutePropagation::prop0",
+                "custom": true,
+                "type": "aws:ec2/vpnGatewayRoutePropagation:VpnGatewayRoutePropagation",
+                "inputs": { "routeTableId": "rtb-0e370d1fdde0890b3", "vpnGatewayId": "vgw-0cdee3deb918b1983" },
+                "parent": "urn:pulumi:dev::proj::pulumi:pulumi:Stack::proj-dev",
+                "provider": "urn:pulumi:dev::proj::pulumi:providers:aws::default_7_24_0::9f4c2b1e-0000-4000-8000-000000000001",
+                "dependencies": [
+                    "urn:pulumi:dev::proj::aws:ec2/routeTable:RouteTable::rt0",
+                    "urn:pulumi:dev::proj::aws:ec2/vpnGateway:VpnGateway::vgw"
+                ],
+                "propertyDependencies": {
+                    "routeTableId": ["urn:pulumi:dev::proj::aws:ec2/routeTable:RouteTable::rt0"]
+                }
+            }
+        },
+        {
+            "op": "same",
+            "urn": "urn:pulumi:dev::proj::aws:ec2/routeTable:RouteTable::rt0",
+            "newState": {
+                "urn": "urn:pulumi:dev::proj::aws:ec2/routeTable:RouteTable::rt0",
+                "custom": true,
+                "type": "aws:ec2/routeTable:RouteTable",
+                "id": "rtb-0e370d1fdde0890b3",
+                "inputs": { "vpcId": "vpc-01234567890abcdef", "ownerId": 52848974346 }
+            }
+        }
+    ],
+    "changeSummary": { "create": 1, "same": 1 }
+}
