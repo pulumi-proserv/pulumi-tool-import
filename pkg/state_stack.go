@@ -202,6 +202,7 @@ func CheckInjectionVerification(baseline, verify *PreviewDigest, injectedURNs []
 
 	baseOps := baseline.OpsByURN()
 	verifyOps := verify.OpsByURN()
+	verifyReasons := verify.DiffReasonsByURN()
 
 	baseNonSame := 0
 	for urn, op := range baseOps {
@@ -218,15 +219,21 @@ func CheckInjectionVerification(baseline, verify *PreviewDigest, injectedURNs []
 		}
 		verifyNonSame++
 		if baseOp, ok := baseOps[urn]; !ok || baseOp == "same" {
-			newlyDirty = append(newlyDirty, urn)
+			// Named with the properties behind the diff, the same as
+			// CheckInjectedOps does for injected resources. Without them a
+			// failure here reports only a URN, which is not enough to act on:
+			// the e2e run of 2026-08-15 hit exactly this on a patched Lambda
+			// and the cause could not be recovered from the log afterwards.
+			newlyDirty = append(newlyDirty, fmt.Sprintf(
+				"%s reports %q%s", urn, op, formatDiffReasons(verifyReasons[urn])))
 		}
 	}
 
 	if len(newlyDirty) > 0 {
 		sort.Strings(newlyDirty)
 		problems = append(problems, fmt.Sprintf(
-			"%d resource(s) newly report changes that were unchanged (or absent) before this run: %s",
-			len(newlyDirty), strings.Join(newlyDirty, ", ")))
+			"%d resource(s) newly report changes that were unchanged (or absent) before this run:\n    %s",
+			len(newlyDirty), strings.Join(newlyDirty, "\n    ")))
 	}
 	if verifyNonSame > baseNonSame {
 		problems = append(problems, fmt.Sprintf(

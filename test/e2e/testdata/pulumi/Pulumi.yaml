@@ -135,16 +135,22 @@ resources:
       vpnConnectionId: ${vpn.id}
 
   # Non-importable, and the only resource in this program with Sensitive
-  # properties (caPem is a secret input; privateKey/certificatePem/publicKey
-  # are secret outputs). caPem's value matches testdata/tf/main.tf's comment
-  # explaining why it is set at all -- AWS never reads it on this resource's
-  # create path.
+  # properties (privateKey/certificatePem/publicKey are secret outputs; caPem
+  # is a secret INPUT and is deliberately absent -- see below).
+  #
+  # This must mirror testdata/tf/main.tf's "aws_iot_certificate" exactly, which
+  # sets only "active". caPem was set here to a placeholder string until the
+  # e2e run of 2026-08-15, which is when this first became reachable: caPem is
+  # ForceNew, so a program declaring it against injected state that correctly
+  # has none made the certificate preview as "replace" and reverted the run.
+  # That was this file disagreeing with the Terraform config it is supposed to
+  # be a translation of, not a tool defect -- "pulumi up" really would have
+  # replaced the certificate.
   cert:
     type: aws:iot:Certificate
     name: cert
     properties:
       active: true
-      caPem: "not a real certificate authority -- placeholder value only, see testdata/tf/main.tf"
 
   # Backs the LAMBDA-type target group below (see testdata/tf/main.tf for
   # why LAMBDA rather than IP: an IP target with nothing listening behind it
@@ -171,6 +177,23 @@ resources:
         ManagedBy: pulumi-tool-import-e2e
         Purpose: issue-22-non-importable-injection
 
+  # "code" and "sourceCodeHash" mirror testdata/tf/main.tf's "filename" and
+  # "source_code_hash". They are load-bearing, not decoration: "pulumi import"
+  # cannot write a Lambda's code into state, because AWS returns a presigned
+  # download URL rather than the bytes. That is exactly what the curated
+  # fields file exists for -- data/aws-import-diff-fields.json marks
+  # aws:lambda/function:Function's "code" as "not_read" and reconstructs it
+  # as a FileArchive hashed by "source_code_hash" -- so "patch-state" writes
+  # a code archive into state. A program declaring none would then disagree
+  # with the state the tool just patched, which is what made this Lambda the
+  # second failure in the e2e run of 2026-08-15.
+  #
+  # lambda.zip here is byte-identical to what main.tf's "archive_file" data
+  # source generates: the archive provider zeroes entry timestamps, so its
+  # output is deterministic (verified by generating it twice). To regenerate
+  # after changing the handler source, run that data source alone and copy
+  # its output_path here, keeping "sourceCodeHash" in step with its
+  # output_base64sha256.
   lambdaFn:
     type: aws:lambda:Function
     name: target
@@ -178,6 +201,9 @@ resources:
       role: ${lambdaRole.arn}
       handler: index.handler
       runtime: nodejs20.x
+      code:
+        fn::fileArchive: ./lambda.zip
+      sourceCodeHash: kwwAvkbUDySp/SXW6Hk7mMS1/G44XcqJwswP2+6lQUU=
       tags:
         Name: tool-import-e2e
         ManagedBy: pulumi-tool-import-e2e

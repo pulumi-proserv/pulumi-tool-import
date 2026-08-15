@@ -194,6 +194,54 @@ func TestCheckInjectionVerification_NewlyDirtyURNIsNamedInMessage(t *testing.T) 
 	assert.Contains(t, joined, "urn:pulumi:dev::proj::aws:ec2/x:X::a")
 }
 
+// TestCheckInjectionVerification_NewlyDirtyURNNamesDiffReasons is the
+// regression test for the e2e run of 2026-08-15. A patched (not injected)
+// Lambda newly reported changes after the mutation, and the message named
+// only its URN — so the run had to be diagnosed by hand from the log, and
+// could not be. CheckInjectedOps had already gained per-property reasons for
+// INJECTED resources ("differs on: caPem"), which made the other failure in
+// that same run diagnosable on sight; this extends the same treatment to the
+// newly-dirty list, which is the only other way a run can fail.
+func TestCheckInjectionVerification_NewlyDirtyURNNamesDiffReasons(t *testing.T) {
+	t.Parallel()
+	baseline, err := ParsePreviewJSON([]byte(`{"steps": [
+		{"op": "same", "urn": "urn:pulumi:dev::proj::aws:lambda/function:Function::target"}
+	]}`))
+	require.NoError(t, err)
+	verify, err := ParsePreviewJSON([]byte(`{"steps": [
+		{"op": "update", "urn": "urn:pulumi:dev::proj::aws:lambda/function:Function::target",
+		 "diffReasons": ["code", "sourceCodeHash"]}
+	]}`))
+	require.NoError(t, err)
+
+	problems := CheckInjectionVerification(baseline, verify, nil)
+	require.NotEmpty(t, problems)
+	joined := strings.Join(problems, "\n")
+	assert.Contains(t, joined, "code")
+	assert.Contains(t, joined, "sourceCodeHash")
+}
+
+// TestCheckInjectionVerification_NewlyDirtyWithoutReasonsSaysSo pins the
+// other half: when the provider reports an op but no per-property reasons,
+// that absence is itself the clue (it points at metadata rather than a
+// property value), so it must be stated rather than rendered as an empty list.
+func TestCheckInjectionVerification_NewlyDirtyWithoutReasonsSaysSo(t *testing.T) {
+	t.Parallel()
+	baseline, err := ParsePreviewJSON([]byte(`{"steps": [
+		{"op": "same", "urn": "urn:pulumi:dev::proj::aws:ec2/x:X::a"}
+	]}`))
+	require.NoError(t, err)
+	verify, err := ParsePreviewJSON([]byte(`{"steps": [
+		{"op": "replace", "urn": "urn:pulumi:dev::proj::aws:ec2/x:X::a"}
+	]}`))
+	require.NoError(t, err)
+
+	problems := CheckInjectionVerification(baseline, verify, nil)
+	require.NotEmpty(t, problems)
+	joined := strings.Join(problems, "\n")
+	assert.Contains(t, joined, "no property-level diff reported")
+}
+
 func TestCheckInjectionVerification_InjectedURNMustBeSame(t *testing.T) {
 	t.Parallel()
 	baseline, err := ParsePreviewJSON([]byte(`{"steps": []}`))
