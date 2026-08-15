@@ -89,6 +89,30 @@ The fourth is the most economical result on the list. It was found while *writin
 
 **Cost.** Awkward to automate — needs a process kill at a specific point. Possibly better as a documented manual procedure than a test.
 
+## Sensitive INPUT resolution, end to end
+
+**Gap.** No property in the e2e fixture exercises `resolveSecretInputs`
+(`pkg/state_injector.go`) against a real preview any more. `caPem` did, while
+`testdata/pulumi/Pulumi.yaml` declared it — but that made the program disagree
+with the Terraform config it is supposed to be a translation of (`main.tf`
+deliberately leaves `ca_pem` unset), and since `ca_pem` is ForceNew the
+certificate previewed as `replace` and reverted every run. Removing it was the
+right call; it took this coverage with it.
+
+**What is still covered.** The unit tests
+(`TestInjectNonImportable_ResolvesSecretFromConfig`, `_FillWrapsSecretInput`,
+`_DropsMaskedSecretWithNoTerraformValue`) cover the resolution logic. What is
+gone is the end-to-end path: a real `pulumi preview --json` masking a real
+secret input as `[secret]`, resolved from real stack config, landing enveloped
+in real state. That combination is what produced the 2026-08-14 failure, and
+unit fixtures cannot produce it because they hand-write the preview.
+
+**What it needs.** A non-importable resource with a Sensitive attribute that
+is a genuine *input* holding a real value. The certificate's other three
+Sensitive attributes are outputs, and the VPN connection's pre-shared keys sit
+on an importable resource. This may need a fixture resource added for the
+purpose rather than one already present.
+
 ## Unit-level gaps
 
 - **`orderInjected` cycles** return silently and produce an order that fails `VerifyIntegrity` with an opaque message. Unreachable from a real preview, but untested.

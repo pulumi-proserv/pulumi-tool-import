@@ -589,8 +589,12 @@ func testRevertRestoresStackExactly(t *testing.T, ctx context.Context, fx *fixtu
 
 	after := canonicalStackExport(t, ctx, p.pulumiDir, fx.env, p.stackName)
 	if !bytes.Equal(before, after) {
+		// Values are deliberately NOT printed: this document holds decrypted
+		// secrets (see canonicalStackExport), and the whole point of the
+		// comparison is that they match. Paths alone locate the regression.
 		t.Errorf("stack export after the reverted run differs from before it — the revert did not "+
-			"restore the stack exactly.\nbefore:\n%s\nafter:\n%s", before, after)
+			"restore the stack exactly. Differing paths (values withheld — this export contains "+
+			"decrypted secrets):\n  %s", strings.Join(differingJSONPaths(t, before, after), "\n  "))
 	} else {
 		t.Logf("confirmed the stack's exported deployment is unchanged after the reverted run "+
 			"(%d bytes, canonicalized)", len(before))
@@ -909,7 +913,12 @@ func testSecretInjectedEndToEnd(t *testing.T, ctx context.Context, fx *fixture) 
 	if outputs == nil {
 		t.Fatalf("%s has no \"outputs\" in the raw export: %+v", certURN, certRes)
 	}
-	for _, prop := range []string{"privateKey", "publicKey", "certificatePem", "caPem"} {
+	// caPem is deliberately NOT in this list. It is Sensitive in the provider
+	// schema like the other three, but testdata/tf/main.tf leaves ca_pem
+	// unset, so there is no value to envelope — see the caPem assertion
+	// below, which pins that distinction rather than letting it pass
+	// silently.
+	for _, prop := range []string{"privateKey", "publicKey", "certificatePem"} {
 		val, ok := outputs[prop]
 		if !ok {
 			t.Errorf("%s outputs has no %q property", certURN, prop)
@@ -929,26 +938,54 @@ func testSecretInjectedEndToEnd(t *testing.T, ctx context.Context, fx *fixture) 
 		t.Logf("confirmed %s output %q is enveloped as a secret", certURN, prop)
 	}
 
-	// caPem is also a program *input* (see testdata/pulumi/Pulumi.yaml), so
-	// it is resolved by resolveSecretInputs (pkg/state_injector.go) — a
-	// different code path than the three output-only properties above.
-	// Checking it here too covers both resolution paths, not just the
-	// output one.
-	if inputs, ok := certRes["inputs"].(map[string]interface{}); ok {
-		val, ok := inputs["caPem"]
-		if !ok {
-			t.Errorf("%s inputs has no %q property", certURN, "caPem")
-		} else if envelope, isMap := val.(map[string]interface{}); !isMap {
-			t.Errorf("%s input %q is not enveloped (got %T, a bare value) — a resolved secret "+
-				"must be wrapped in Pulumi's secret envelope, never written as plaintext", certURN, "caPem", val)
-		} else if _, hasSig := envelope[secretSigKey]; !hasSig {
-			t.Errorf("%s input %q is a map but carries no secret sig key %q: %+v",
-				certURN, "caPem", secretSigKey, envelope)
-		} else {
-			t.Logf("confirmed %s input %q is enveloped as a secret", certURN, "caPem")
-		}
+	// caPem is Sensitive in the provider schema but null in Terraform state,
+	// because testdata/tf/main.tf leaves ca_pem unset. It must therefore
+	// arrive as a null output and NOT as an envelope: there is no value to
+	// protect, and manufacturing one would mean inventing a secret Terraform
+	// never had. This is the state-side half of the fix for the e2e run of
+	// 2026-08-14, where "pulumi preview --json" masked caPem as "[secret]"
+	// (providers mask from the schema, whether or not a value exists) and
+	// injection hard-failed looking for a config key that correctly did not
+	// exist.
+	if val, ok := outputs["caPem"]; !ok {
+		t.Logf("confirmed %s has no %q output at all (Terraform had no value for it)", certURN, "caPem")
+	} else if val != nil {
+		t.Errorf("%s output %q is %#v, want null — ca_pem is unset in testdata/tf/main.tf, so "+
+			"there is no secret here to resolve or envelope", certURN, "caPem", val)
 	} else {
-		t.Errorf("%s has no \"inputs\" in the raw export", certURN)
+		t.Logf("confirmed %s output %q is null rather than an invented secret", certURN, "caPem")
+	}
+
+	// NOTE: no property in this fixture exercises resolveSecretInputs
+	// (pkg/state_injector.go) end to end any more. caPem used to, while the
+	// program declared it, but that made the program disagree with the
+	// Terraform config it is meant to translate — see the comment on "cert"
+	// in testdata/pulumi/Pulumi.yaml. The input-resolution path is still
+	// covered by unit tests (TestInjectNonImportable_ResolvesSecretFromConfig
+	// and _FillWrapsSecretInput); closing the e2e gap needs a non-importable
+	// resource with a Sensitive INPUT that holds a real value, which this
+	// fixture does not currently have. Recorded in
+	// docs/superpowers/plans/2026-08-14-remaining-test-coverage.md.
+
+	// --- 3b. the raw-state delta must not smuggle secret material into
+	// state. Unlike the properties above, the delta is written as a plain
+	// output with no secret envelope, so anything inside it lands in the
+	// deployment unprotected. The certificate's Sensitive attributes are all
+	// PEM blocks, which makes "-----BEGIN" a cheap and specific probe — and
+	// checking it here rather than against the whole export is deliberate:
+	// the enveloped properties legitimately contain PEM material.
+	if delta, ok := outputs["__pulumi_raw_state_delta"]; ok {
+		encoded, err := json.Marshal(delta)
+		if err != nil {
+			t.Fatalf("marshalling %s raw-state delta: %v", certURN, err)
+		}
+		if bytes.Contains(encoded, []byte("-----BEGIN")) {
+			t.Errorf("%s raw-state delta contains PEM material — the delta is written to state "+
+				"WITHOUT a secret envelope, so a Sensitive attribute reaching it is a plaintext "+
+				"secret in the deployment", certURN)
+		} else {
+			t.Logf("confirmed %s raw-state delta carries no PEM material (%d bytes)", certURN, len(encoded))
+		}
 	}
 
 	// --- 4. report whether the delta was dropped. Both outcomes are
@@ -1340,9 +1377,24 @@ func runPreviewJSON(t *testing.T, ctx context.Context, dir string, env []string,
 // compare equal byte-for-byte regardless of incidental key ordering in the
 // CLI's own output. Numbers are decoded with UseNumber so large IDs are not
 // perturbed by float64 round-tripping.
+// canonicalStackExport exports a stack's deployment and canonicalizes it for
+// byte comparison.
+//
+// --show-secrets is required, not incidental. Without it every secret is
+// emitted as "v1:<nonce>:<ciphertext>", and the passphrase provider picks a
+// fresh nonce on every encryption — so an export/import round trip re-encrypts
+// identical plaintext into different bytes and the comparison can never
+// succeed on a stack holding any secret. The e2e run of 2026-08-15 failed
+// exactly this way: the only differences between the two documents were the
+// ciphertext of the VPN tunnels' pre-shared keys and customer-gateway
+// configuration, whose plaintext was unchanged. Decrypted, those values are
+// stable and the comparison tests what it means to test.
+//
+// The cost is that the returned bytes contain decrypted secrets, so callers
+// must not print them — see the failure branch in testRevertRestoresStackExactly.
 func canonicalStackExport(t *testing.T, ctx context.Context, dir string, env []string, stackName string) []byte {
 	t.Helper()
-	cmd := exec.CommandContext(ctx, "pulumi", "stack", "export", "--stack", stackName)
+	cmd := exec.CommandContext(ctx, "pulumi", "stack", "export", "--show-secrets", "--stack", stackName)
 	cmd.Dir = dir
 	cmd.Env = env
 	out, err := cmd.Output()
@@ -1359,6 +1411,32 @@ func canonicalStackExport(t *testing.T, ctx context.Context, dir string, env []s
 		t.Fatalf("canonicalizing stack export: %v", err)
 	}
 	return canon
+}
+
+// differingJSONPaths decodes two canonicalized stack exports and reports the
+// paths at which they differ, capped so a wholesale mismatch cannot flood the
+// terminal. Values are never returned — see jsonPathDiff.
+func differingJSONPaths(t *testing.T, before, after []byte) []string {
+	t.Helper()
+	var a, b interface{}
+	if err := json.Unmarshal(before, &a); err != nil {
+		return []string{fmt.Sprintf("(could not decode the \"before\" export: %v)", err)}
+	}
+	if err := json.Unmarshal(after, &b); err != nil {
+		return []string{fmt.Sprintf("(could not decode the \"after\" export: %v)", err)}
+	}
+	paths := jsonPathDiff(a, b, "")
+	if len(paths) == 0 {
+		// The byte comparison failed but the decoded documents match, so the
+		// difference is in encoding rather than content. Say so plainly
+		// rather than reporting an empty list.
+		return []string{"(documents decode identically — the difference is in JSON encoding, not content)"}
+	}
+	if len(paths) > diffPathLimit {
+		return append(paths[:diffPathLimit],
+			fmt.Sprintf("... and %d more", len(paths)-diffPathLimit))
+	}
+	return paths
 }
 
 // canonicalizeJSON decodes data with UseNumber (so large integers survive

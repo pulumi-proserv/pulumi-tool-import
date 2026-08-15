@@ -17,11 +17,85 @@
 package e2e
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// TestJSONPathDiffNamesPathsWithoutValues is the guard on the property that
+// makes jsonPathDiff safe to print: the stack exports it compares are taken
+// with --show-secrets, so a reported path must never carry the value at that
+// path. Here the differing leaf is a "secret" string, and the output must
+// locate it without quoting it.
+func TestJSONPathDiffNamesPathsWithoutValues(t *testing.T) {
+	t.Parallel()
+	var a, b interface{}
+	if err := json.Unmarshal([]byte(`{"r":[{"outputs":{"key":"s3cret-before","keep":1}}]}`), &a); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(`{"r":[{"outputs":{"key":"s3cret-after","keep":1}}]}`), &b); err != nil {
+		t.Fatal(err)
+	}
+
+	paths := jsonPathDiff(a, b, "")
+	if len(paths) != 1 || paths[0] != "$.r[0].outputs.key" {
+		t.Fatalf("jsonPathDiff = %q, want exactly [\"$.r[0].outputs.key\"]", paths)
+	}
+	for _, p := range paths {
+		for _, secret := range []string{"s3cret-before", "s3cret-after"} {
+			if strings.Contains(p, secret) {
+				t.Errorf("path %q leaks the value at that path — these documents hold decrypted secrets", p)
+			}
+		}
+	}
+}
+
+func TestJSONPathDiffIdenticalDocuments(t *testing.T) {
+	t.Parallel()
+	var a, b interface{}
+	doc := `{"r":[{"outputs":{"key":"v"}}],"n":2}`
+	if err := json.Unmarshal([]byte(doc), &a); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(doc), &b); err != nil {
+		t.Fatal(err)
+	}
+	if paths := jsonPathDiff(a, b, ""); len(paths) != 0 {
+		t.Errorf("jsonPathDiff on identical documents = %q, want none", paths)
+	}
+}
+
+// TestJSONPathDiffReportsPresenceAndShape covers the three non-leaf cases:
+// a key on one side only, a length change, and a type change. Each must be
+// reported once at the point of difference rather than recursed into.
+func TestJSONPathDiffReportsPresenceAndShape(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, before, after, want string
+	}{
+		{"only before", `{"a":1,"b":{"deep":1}}`, `{"a":1}`, "$.b (only before)"},
+		{"only after", `{"a":1}`, `{"a":1,"b":{"deep":1}}`, "$.b (only after)"},
+		{"length", `{"a":[1,2]}`, `{"a":[1]}`, "$.a (length 2 before, 1 after)"},
+		{"type", `{"a":{"x":1}}`, `{"a":[1]}`, "$.a (type differs)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var a, b interface{}
+			if err := json.Unmarshal([]byte(tc.before), &a); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal([]byte(tc.after), &b); err != nil {
+				t.Fatal(err)
+			}
+			paths := jsonPathDiff(a, b, "")
+			if len(paths) != 1 || paths[0] != tc.want {
+				t.Errorf("jsonPathDiff = %q, want exactly [%q]", paths, tc.want)
+			}
+		})
+	}
+}
 
 func TestExpectedURN(t *testing.T) {
 	t.Parallel()

@@ -24,6 +24,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -42,6 +43,79 @@ func expectedURN(project, stack, typ, name string) string {
 func nonImportableSidecarPath(importFilePath string) string {
 	ext := filepath.Ext(importFilePath)
 	return strings.TrimSuffix(importFilePath, ext) + ".non-importable.json"
+}
+
+// diffPathLimit caps how many differing paths jsonPathDiff reports, so a
+// wholesale mismatch cannot flood the terminal with thousands of lines.
+const diffPathLimit = 40
+
+// jsonPathDiff returns the dotted paths at which two decoded JSON documents
+// differ, without ever including their values.
+//
+// It exists because the documents it is used on — stack exports taken with
+// --show-secrets — contain decrypted secrets, so a failure must be able to say
+// WHERE two states diverged without printing WHAT diverged.
+//
+// A path is reported when a leaf differs, when a key is present on one side
+// only, or when the two sides have different types or lengths at the same
+// path. Recursion stops at the first difference on a given branch: knowing
+// that an object appeared is enough, and descending into it would list every
+// leaf beneath it.
+func jsonPathDiff(a, b interface{}, path string) []string {
+	if path == "" {
+		path = "$"
+	}
+	switch av := a.(type) {
+	case map[string]interface{}:
+		bv, ok := b.(map[string]interface{})
+		if !ok {
+			return []string{path + " (type differs)"}
+		}
+		keys := map[string]bool{}
+		for k := range av {
+			keys[k] = true
+		}
+		for k := range bv {
+			keys[k] = true
+		}
+		names := make([]string, 0, len(keys))
+		for k := range keys {
+			names = append(names, k)
+		}
+		sort.Strings(names)
+		var out []string
+		for _, k := range names {
+			x, inA := av[k]
+			y, inB := bv[k]
+			switch {
+			case !inA:
+				out = append(out, fmt.Sprintf("%s.%s (only after)", path, k))
+			case !inB:
+				out = append(out, fmt.Sprintf("%s.%s (only before)", path, k))
+			default:
+				out = append(out, jsonPathDiff(x, y, path+"."+k)...)
+			}
+		}
+		return out
+	case []interface{}:
+		bv, ok := b.([]interface{})
+		if !ok {
+			return []string{path + " (type differs)"}
+		}
+		if len(av) != len(bv) {
+			return []string{fmt.Sprintf("%s (length %d before, %d after)", path, len(av), len(bv))}
+		}
+		var out []string
+		for i := range av {
+			out = append(out, jsonPathDiff(av[i], bv[i], fmt.Sprintf("%s[%d]", path, i))...)
+		}
+		return out
+	default:
+		if fmt.Sprintf("%v", a) != fmt.Sprintf("%v", b) {
+			return []string{path}
+		}
+		return nil
+	}
 }
 
 // sanitizedEnv returns the current process environment with AWS_PROFILE
