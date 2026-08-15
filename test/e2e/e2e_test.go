@@ -205,6 +205,9 @@ func TestNonImportableStateInjection(t *testing.T) {
 	t.Run("PreviewGoesFromCreateToSame", func(t *testing.T) {
 		testPreviewGoesFromCreateToSame(t, ctx, fx)
 	})
+	t.Run("ClassificationIsNotOverBroad", func(t *testing.T) {
+		testClassificationIsNotOverBroad(t, ctx, fx)
+	})
 	t.Run("RevertRestoresStackExactly", func(t *testing.T) {
 		testRevertRestoresStackExactly(t, ctx, fx)
 	})
@@ -418,6 +421,124 @@ func testPreviewGoesFromCreateToSame(t *testing.T, ctx context.Context, fx *fixt
 	if !t.Failed() {
 		t.Logf("confirmed %d non-importable resource(s) preview as \"same\" after injection", len(p.sidecar.Resources))
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Scenario 1b: every resource the tool diverts into injection must actually
+// need it. Injection is the risky path; import is the safe one.
+// ---------------------------------------------------------------------------
+
+// testClassificationIsNotOverBroad attempts "pulumi import" on each resource
+// the tool classified as non-importable, and fails if any of them imports
+// correctly. A resource that import can handle should never be injected.
+//
+// The classification is a SCHEMA judgement: importsupport asks whether the
+// Terraform resource type declares an Importer. The bridge's actual
+// requirement is weaker. In pkg/tfbridge/provider.go (v3.121.0:1454):
+//
+//	isRefresh := len(req.GetProperties().GetFields()) != 0
+//	if !isRefresh && res.TF.Importer() != nil {
+//	    state, err = res.runTerraformImporter(ctx, id, p)
+//	}
+//
+// When the type declares no Importer that branch is skipped entirely and
+// control falls through to p.tf.Refresh with an InstanceState carrying only
+// the ID. So the real question is not "is an Importer declared?" but "can the
+// provider's Read reconstruct this resource from its ID alone?" — and for
+// some types the answer is yes despite no Importer being declared.
+//
+// aws_vpn_gateway_route_propagation is the concrete suspect: its Read parses
+// the ID via vpnGatewayRoutePropagationParseID(d.Id()), queries AWS to
+// confirm the propagation exists, and reads no attribute that is not encoded
+// in the ID. Nothing about that needs an Importer.
+//
+// The evidence that these types cannot be imported is a v0.2.0 field run that
+// reported "resource '<id>' does not exist", and no test has ever re-checked
+// it. The rest of this file asserts that injection works; nothing asserts
+// that injection was NECESSARY. That gap is what this closes.
+//
+// Import "succeeding" is not enough to call a resource importable — the
+// import must also leave state that is actually correct, so each successful
+// import is followed by a preview and only counts if the resource comes back
+// "same". That is the same bar the injection scenarios are held to.
+//
+// If this test fails it is a FINDING, not a defect: it means the tool is
+// pushing resources through injection that "pulumi import" already handles,
+// and the fix is to narrow the classification (see #31) rather than to
+// weaken this assertion.
+func testClassificationIsNotOverBroad(t *testing.T, ctx context.Context, fx *fixture) {
+	p := provisionStack(t, ctx, fx)
+
+	type outcome struct {
+		name, typ, detail string
+	}
+	var importable, wrongState []outcome
+
+	for _, r := range p.sidecar.Resources {
+		// One entry at a time: a resource that fails to import must not
+		// prevent the others from being attempted, and attributing a
+		// failure to a specific resource is the whole point.
+		oneEntry := pkg.ImportFile{
+			Resources: []pkg.ImportEntry{{Type: r.Type, Name: r.Name, ID: r.ID}},
+		}
+		data, err := json.MarshalIndent(oneEntry, "", "  ")
+		if err != nil {
+			t.Fatalf("marshalling one-entry import file for %s: %v", r.Name, err)
+		}
+		entryPath := filepath.Join(t.TempDir(), "one-import.json")
+		if err := os.WriteFile(entryPath, data, 0o600); err != nil {
+			t.Fatalf("writing one-entry import file for %s: %v", r.Name, err)
+		}
+
+		_, err = runPulumiAllowFail(t, ctx, p.pulumiDir, fx.env, "import",
+			"--file", entryPath,
+			"--stack", p.stackName,
+			"--yes",
+			"--generate-code=false",
+		)
+		if err != nil {
+			// The expected outcome: import cannot bring this resource in, so
+			// diverting it into injection was correct.
+			t.Logf("confirmed non-importable: %s (%s) — pulumi import failed", r.Name, r.Type)
+			continue
+		}
+
+		// Import reported success. That alone does not make the resource
+		// importable: the state it produced has to be right.
+		urn := expectedURN(pulumiProject, p.stackName, r.Type, r.Name)
+		op, ok := runPreviewJSON(t, ctx, p.pulumiDir, fx.env, p.stackName).OpsByURN()[urn]
+		switch {
+		case !ok:
+			wrongState = append(wrongState, outcome{r.Name, r.Type,
+				"import succeeded but the resource has no step in the preview at all"})
+		case op == "same":
+			importable = append(importable, outcome{r.Name, r.Type,
+				"import succeeded and the resource previews as \"same\""})
+		default:
+			wrongState = append(wrongState, outcome{r.Name, r.Type,
+				fmt.Sprintf("import succeeded but the resource previews as %q, not \"same\"", op)})
+		}
+	}
+
+	// Import that "succeeds" into incorrect state is the failure mode the
+	// v0.2.0 field run described. It is not a finding — it confirms the
+	// resource needs injection — but it is worth naming, because it is a
+	// materially different outcome from a clean refusal and an operator
+	// following the docs by hand would be misled by it.
+	for _, o := range wrongState {
+		t.Logf("needs injection (import is not a clean refusal): %s (%s) — %s", o.name, o.typ, o.detail)
+	}
+
+	if len(importable) > 0 {
+		for _, o := range importable {
+			t.Errorf("FINDING: %s (%s) was classified non-importable, but %s. "+
+				"It should be imported, not injected — injection is the riskier path, and the "+
+				"classification (Terraform type declares no Importer) is stricter than what the "+
+				"bridge actually requires.", o.name, o.typ, o.detail)
+		}
+		return
+	}
+	t.Logf("confirmed all %d non-importable resource(s) genuinely need injection", len(p.sidecar.Resources))
 }
 
 // ---------------------------------------------------------------------------
@@ -1139,14 +1260,24 @@ func runToolAllowFail(t *testing.T, ctx context.Context, binPath, dir string, en
 // the test on error.
 func runPulumi(t *testing.T, ctx context.Context, dir string, env []string, args ...string) {
 	t.Helper()
+	out, err := runPulumiAllowFail(t, ctx, dir, env, args...)
+	if err != nil {
+		t.Fatalf("pulumi %s: %v\n%s", strings.Join(args, " "), err, out)
+	}
+}
+
+// runPulumiAllowFail runs the pulumi CLI in dir and returns its combined
+// output and error without failing the test — for scenarios where the
+// command failing is a legitimate outcome to be recorded rather than a
+// test failure.
+func runPulumiAllowFail(t *testing.T, ctx context.Context, dir string, env []string, args ...string) (string, error) {
+	t.Helper()
 	cmd := exec.CommandContext(ctx, "pulumi", args...)
 	cmd.Dir = dir
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	t.Logf("$ pulumi %s\n%s", strings.Join(args, " "), out)
-	if err != nil {
-		t.Fatalf("pulumi %s: %v", strings.Join(args, " "), err)
-	}
+	return string(out), err
 }
 
 // runPulumiToFile runs the pulumi CLI in dir and writes its stdout to path,
