@@ -343,6 +343,89 @@ func TestInjectNonImportable_UnresolvedSecretFails(t *testing.T) {
 	assert.Contains(t, err.Error(), "route_shared_key")
 }
 
+// TestInjectNonImportable_DropsMaskedSecretWithNoTerraformValue is the
+// regression test for the e2e run of 2026-08-14, where every scenario failed
+// on aws_iot_certificate's "ca_pem".
+//
+// A Pulumi provider marks a property secret from its schema, so "pulumi
+// preview --json" emits "[secret]" for it whether or not it holds a value.
+// Terraform's side is value-driven: redactSensitivePaths skips a null
+// attribute (module_map.go), so the digest records no config key for it and
+// none is written to stack config. Both halves are individually right; the
+// mismatch is that the preview masks a property Terraform never had.
+//
+// The property must be dropped, not resolved and not fatal. There is no
+// secret to recover, and leaving the literal "[secret]" in inputs would write
+// a known-wrong value into state.
+func TestInjectNonImportable_DropsMaskedSecretWithNoTerraformValue(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		attrs map[string]interface{}
+	}{
+		{
+			// The shape aws_iot_certificate produces: the attribute exists in
+			// state and is explicitly null.
+			name: "explicitly null",
+			attrs: map[string]interface{}{
+				"route_table_id": "rtb-0e370d1fdde0890b3",
+				"vpn_gateway_id": "vgw-0cdee3deb918b1983",
+				"shared_key":     nil,
+			},
+		},
+		{
+			// The attribute is not in the Terraform state at all.
+			name: "absent",
+			attrs: map[string]interface{}{
+				"route_table_id": "rtb-0e370d1fdde0890b3",
+				"vpn_gateway_id": "vgw-0cdee3deb918b1983",
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			preview := propagationPreview(t)
+			preview.Steps[0].NewState["inputs"].(map[string]interface{})["sharedKey"] = "[secret]"
+
+			sidecar := propagationSidecar()
+			sidecar.Resources[0].Attributes = tc.attrs
+
+			out, result, err := InjectNonImportable(
+				minimalState(goodProviderRef), sidecar, preview, nil, nil)
+			require.NoError(t, err)
+			assert.Equal(t, 0, result.SecretsResolved,
+				"nothing was resolved: there was no secret to recover")
+
+			inputs := injected(t, out)["inputs"].(map[string]interface{})
+			_, present := inputs["sharedKey"]
+			assert.False(t, present,
+				"a masked property with no Terraform value must be dropped, not written as %q",
+				secretPlaceholder)
+		})
+	}
+}
+
+// TestInjectNonImportable_MaskedSecretWithValueButNoConfigKeyFails pins the
+// half of the guard that must survive the fix above. Here Terraform DOES have
+// a value for the attribute, so a missing config key means the digest and the
+// sidecar genuinely disagree — the corruption the hard error exists to catch.
+// Dropping the property here would silently discard a real secret.
+func TestInjectNonImportable_MaskedSecretWithValueButNoConfigKeyFails(t *testing.T) {
+	t.Parallel()
+	preview := propagationPreview(t)
+	preview.Steps[0].NewState["inputs"].(map[string]interface{})["sharedKey"] = "[secret]"
+
+	sidecar := propagationSidecar()
+	sidecar.Resources[0].Attributes["shared_key"] = "(sensitive)"
+	// RedactedAttributes deliberately left empty.
+
+	_, _, err := InjectNonImportable(
+		minimalState(goodProviderRef), sidecar, preview, nil, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "shared_key")
+}
+
 func TestInjectNonImportable_ResolvesSecretFromConfig(t *testing.T) {
 	t.Parallel()
 	preview := propagationPreview(t)

@@ -601,6 +601,23 @@ func resolveSecretInputs(
 		}
 		configKey, ok := r.RedactedAttributes[tfName]
 		if !ok {
+			// A property the Pulumi provider marks secret in its schema is
+			// masked by "pulumi preview --json" whether or not it holds a
+			// value, while the Terraform side is value-driven: the digest's
+			// redactSensitivePaths skips a null attribute, so no config key
+			// exists for one. When Terraform has no value either, there is no
+			// secret to recover and nothing was lost — drop the property.
+			// Leaving the literal "[secret]" in inputs would write a
+			// known-wrong value into state.
+			//
+			// This is deliberately narrow. If Terraform DOES have a value for
+			// the attribute, a missing config key means the digest and the
+			// sidecar genuinely disagree, and dropping it would silently
+			// discard a real secret — so that stays a hard error below.
+			if value, present := r.Attributes[tfName]; !present || value == nil {
+				delete(inputs, name)
+				continue
+			}
 			return 0, fmt.Errorf(
 				"%s %q input %q is a masked secret but the sidecar records no config key for "+
 					"Terraform attribute %q; re-run \"resolve tf\" or set the value by hand",
