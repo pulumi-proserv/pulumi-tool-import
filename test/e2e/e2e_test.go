@@ -130,6 +130,12 @@ type fixture struct {
 	tfStatePath      string
 	pulumiFixtureDir string
 	env              []string
+
+	// nodeModulesDir is a single "npm ci" tree shared by every scenario's
+	// working copy through a symlink. The nodejs runtime needs node_modules
+	// present, and installing it once per scenario would repeat the same
+	// download eleven times per run for no benefit.
+	nodeModulesDir string
 }
 
 // TestNonImportableStateInjection applies the shared Terraform fixture once,
@@ -201,6 +207,15 @@ func TestNonImportableStateInjection(t *testing.T) {
 		"PULUMI_HOME="+pulumiHomeDir,
 	)
 
+	// The Pulumi program is TypeScript rather than YAML. Both expressed the
+	// same resources under the same logical names — the port was verified by
+	// generating an import file from each and comparing them entry for entry
+	// — but YAML cannot declare a ComponentResource, which blocked the
+	// component-parent coverage gap. See the header comment in
+	// testdata/pulumi-ts/index.ts.
+	pulumiFixtureDir := filepath.Join(repoRoot, "test", "e2e", "testdata", "pulumi-ts")
+	nodeModulesDir := installNodeModules(t, ctx, pulumiFixtureDir, env)
+
 	// --- Create the real fixture, once, shared by every scenario below. ---
 	runTofu(t, ctx, tfDir, env, "init", "-input=false")
 	// Registered before "apply" runs — not after it succeeds — so it also
@@ -241,7 +256,8 @@ func TestNonImportableStateInjection(t *testing.T) {
 		binPath:          binPath,
 		tfDir:            tfDir,
 		tfStatePath:      filepath.Join(tfDir, "terraform.tfstate"),
-		pulumiFixtureDir: filepath.Join(repoRoot, "test", "e2e", "testdata", "pulumi"),
+		pulumiFixtureDir: pulumiFixtureDir,
+		nodeModulesDir:   nodeModulesDir,
 		env:              env,
 	}
 
@@ -322,6 +338,12 @@ func provisionStackWith(t *testing.T, ctx context.Context, fx *fixture, secretsP
 	pulumiDir := filepath.Join(t.TempDir(), "pulumi")
 	if err := copyDir(fx.pulumiFixtureDir, pulumiDir); err != nil {
 		t.Fatalf("copying pulumi fixture: %v", err)
+	}
+	// Symlinked rather than copied: node_modules is thousands of files, and
+	// copying it once per scenario would cost more than the scenarios do.
+	// Nothing writes to it, so sharing one tree is safe.
+	if err := os.Symlink(fx.nodeModulesDir, filepath.Join(pulumiDir, "node_modules")); err != nil {
+		t.Fatalf("linking node_modules into %s: %v", pulumiDir, err)
 	}
 
 	n := atomic.AddInt64(&stackSeq, 1)
@@ -414,6 +436,41 @@ func provisionStackWith(t *testing.T, ctx context.Context, fx *fixture, secretsP
 		sidecar:          sidecar,
 		backupDir:        t.TempDir(),
 	}
+}
+
+// installNodeModules runs "npm ci" once, in its own directory, and returns
+// the resulting node_modules path for every scenario to symlink to.
+//
+// "npm ci" rather than "npm install": it installs exactly what
+// testdata/pulumi-ts/package-lock.json pins and fails if package.json and the
+// lock disagree. That matters more than usual here — the nodejs SDK writes
+// the provider version into every generated import-file entry, so a resolved
+// version drifting from the pinned one would silently change what "resolve
+// tf" sees, and the fixture would stop matching the Terraform side for a
+// reason with no visible connection to the failure.
+func installNodeModules(t *testing.T, ctx context.Context, fixtureDir string, env []string) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, name := range []string{"package.json", "package-lock.json"} {
+		if err := copyFile(filepath.Join(fixtureDir, name), filepath.Join(dir, name)); err != nil {
+			t.Fatalf("copying %s for the shared npm install: %v", name, err)
+		}
+	}
+
+	cmd := exec.CommandContext(ctx, "npm", "ci", "--no-audit", "--no-fund")
+	cmd.Dir = dir
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("npm ci in %s: %v\n%s", dir, err, out)
+	}
+
+	modules := filepath.Join(dir, "node_modules")
+	if _, err := os.Stat(modules); err != nil {
+		t.Fatalf("npm ci reported success but %s is missing: %v", modules, err)
+	}
+	t.Logf("installed shared node_modules at %s", modules)
+	return modules
 }
 
 // assertSidecarMatches checks that a loaded sidecar names exactly the
