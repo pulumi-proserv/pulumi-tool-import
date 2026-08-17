@@ -334,6 +334,27 @@ func provisionStackWith(t *testing.T, ctx context.Context, fx *fixture, secretsP
 	runPulumi(t, ctx, pulumiDir, fx.env, initArgs...)
 	runPulumi(t, ctx, pulumiDir, fx.env, "config", "set", "aws:region", "us-west-2")
 
+	// An EXPLICIT provider has to be created before anything can be imported
+	// or injected under it. "pulumi import" creates the default provider it
+	// needs, but one declared in the program (eastProvider, for the aliased
+	// aws.east resources) only comes into existence when the program runs —
+	// so it must be brought up first, targeted so that nothing else is
+	// created with it.
+	//
+	// Without this step every scenario failed run 10 with "state integrity
+	// check failed: ... refers to unknown provider": injection had copied the
+	// correct provider reference out of the preview's create step, but the
+	// provider it named was not in the deployment yet.
+	//
+	// --target creates only this resource; the provider itself is state and
+	// configuration, so nothing is created in AWS here.
+	runPulumi(t, ctx, pulumiDir, fx.env, "up",
+		"--stack", stackName,
+		"--target", expectedURN(pulumiProject, stackName, "pulumi:providers:aws", "eastProvider"),
+		"--yes",
+		"--skip-preview",
+	)
+
 	// --skip-secrets is deliberately not passed: the fixture's IoT
 	// certificate has real Sensitive attributes (private_key, certificate_pem,
 	// ca_pem, public_key — see testdata/tf/main.tf), and every scenario below
@@ -781,14 +802,16 @@ func resourceURNOrder(t *testing.T, exportJSON []byte) map[string]int {
 // a skip that reads as a pass). The key comes from the tofu fixture; see the
 // comment on aws_kms_key.secrets in testdata/tf/main.tf for its cost.
 func testKMSSecretsProvider(t *testing.T, ctx context.Context, fx *fixture) {
-	keyARN := tofuOutput(t, ctx, fx.tfDir, fx.env, "kms_key_arn")
-	if keyARN == "" {
-		t.Fatalf("the tofu fixture produced no kms_key_arn output — this scenario cannot " +
+	keyID := tofuOutput(t, ctx, fx.tfDir, fx.env, "kms_key_id")
+	if keyID == "" {
+		t.Fatalf("the tofu fixture produced no kms_key_id output — this scenario cannot " +
 			"fall back to passphrase, because passphrase is the configuration it exists to differ from")
 	}
-	// The awskms provider takes the key ARN directly; the region is carried
-	// in the ARN itself.
-	p := provisionStackWith(t, ctx, fx, "awskms://"+keyARN)
+	// Key ID plus an explicit region, not the ARN: the secrets-provider value
+	// is parsed as a URL, and an ARN's colons are read as a port
+	// ("invalid port \":key\" after host"), which is how this scenario failed
+	// on its first run.
+	p := provisionStackWith(t, ctx, fx, "awskms://"+keyID+"?region="+fixtureRegion)
 
 	// Prove the stack really is on a different provider before asserting
 	// anything about it — otherwise a silent fallback to passphrase would

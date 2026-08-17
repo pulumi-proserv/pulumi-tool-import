@@ -297,8 +297,12 @@ resource "aws_kms_alias" "secrets" {
   target_key_id = aws_kms_key.secrets.key_id
 }
 
-output "kms_key_arn" {
-  value = aws_kms_key.secrets.arn
+# The key ID, not the ARN: Pulumi's secrets-provider URL is parsed as a URL,
+# and an ARN's colons read as a port ("invalid port \":key\" after host").
+# The documented forms are "awskms://<key-id>?region=<region>" and
+# "awskms://alias/<name>?region=<region>".
+output "kms_key_id" {
+  value = aws_kms_key.secrets.key_id
 }
 
 output "vpc_id" {

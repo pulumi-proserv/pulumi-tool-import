@@ -1,0 +1,11 @@
+name: tool-import-e2e
+runtime: nodejs
+description: >
+  Pulumi program mirroring test/e2e/testdata/tf/main.tf, for the
+  patch-state-tf-non-importable end-to-end test (test/e2e/e2e_test.go).
+
+  TypeScript port of testdata/pulumi/Pulumi.yaml. The two programs declare
+  the same resources under the same logical (URN) names and must generate
+  identical import files -- see the header comment in index.ts for why the
+  names are the contract, and what TypeScript makes possible that YAML does
+  not (component parents).
