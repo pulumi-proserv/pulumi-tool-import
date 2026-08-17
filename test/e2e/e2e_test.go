@@ -1133,30 +1133,41 @@ func testInjectionSurvivesPreExistingDrift(t *testing.T, ctx context.Context, fx
 // gets injected).
 func introduceProgramDrift(t *testing.T, pulumiDir, stackName string) string {
 	t.Helper()
-	path := filepath.Join(pulumiDir, "Pulumi.yaml")
+	path := filepath.Join(pulumiDir, "index.ts")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("reading %s: %v", path, err)
 	}
+	src := string(data)
 
-	// Anchor on the "tg:" resource block, then on the FIRST "tags:" inside
-	// it, so the edit cannot land on another resource's tags — every
-	// resource in this program has a tags map.
-	const block = "\n  tg:\n"
-	i := strings.Index(string(data), block)
+	// Anchor on the target group's own declaration, then on the tags line
+	// INSIDE it — every resource in this program shares the same "tags"
+	// object, so an unanchored edit would drift all of them at once.
+	//
+	// These anchors are checked rather than assumed. When the fixture was
+	// ported from YAML to TypeScript this function still anchored on YAML
+	// (`\n  tg:\n`), and the guard below is what turned that into a failure
+	// naming the stale anchor rather than a scenario that silently drifted
+	// nothing and then asserted on a clean baseline.
+	const decl = `new aws.vpclattice.TargetGroup("tg", {`
+	i := strings.Index(src, decl)
 	if i < 0 {
-		t.Fatalf("%s no longer declares a %q resource; this scenario's anchor is stale", path, "tg")
+		t.Fatalf("%s no longer declares the target group as %s; this scenario's anchor is stale",
+			path, decl)
 	}
-	const tagsKey = "\n      tags:\n"
-	j := strings.Index(string(data)[i:], tagsKey)
+	const tagsLine = "\n    tags: tags,\n"
+	j := strings.Index(src[i:], tagsLine)
 	if j < 0 {
-		t.Fatalf("%s's \"tg\" resource has no tags map; this scenario's anchor is stale", path)
+		t.Fatalf("%s's target group no longer carries the line %q; this scenario's anchor is stale",
+			path, strings.TrimSpace(tagsLine))
 	}
-	at := i + j + len(tagsKey)
 
-	drifted := string(data[:at]) +
-		"        DriftMarker: introduced-by-InjectionSurvivesPreExistingDrift\n" +
-		string(data[at:])
+	// Spread rather than mutating the shared object, so exactly one resource
+	// drifts.
+	at := i + j
+	drifted := src[:at] +
+		"\n    tags: { ...tags, DriftMarker: \"introduced-by-InjectionSurvivesPreExistingDrift\" },\n" +
+		src[at+len(tagsLine):]
 	if err := os.WriteFile(path, []byte(drifted), 0o600); err != nil {
 		t.Fatalf("writing drifted %s: %v", path, err)
 	}
