@@ -184,6 +184,123 @@ resource "aws_vpclattice_target_group_attachment" "attach" {
   depends_on = [aws_lambda_permission.vpclattice]
 }
 
+# ---------------------------------------------------------------------------
+# A second, aliased provider in a different region.
+#
+# The provider reference is the one field the sidecar cannot carry: the uuid in
+# "urn:...::pulumi:providers:aws::default_7_24_0::<uuid>" exists only in the
+# target stack. Injection takes it from the preview's create step precisely so
+# it does not have to guess, and the design claims this resolves correctly when
+# several provider instances exist. A wrong reference silently targets the
+# wrong region or account -- the failure recorded as issue 3 of #11, which has
+# happened in the field.
+#
+# us-east-1 rather than a second aliased provider in us-west-2, because a
+# different region is what makes a mis-resolved provider observable: the
+# certificate simply does not exist in the other region, so the preview cannot
+# report "same" if injection picked the wrong one.
+# ---------------------------------------------------------------------------
+
+provider "aws" {
+  alias  = "east"
+  region = "us-east-1"
+}
+
+# Non-importable, and the only resource in this fixture under a non-default
+# provider. aws_iot_certificate is used because it has zero dependencies and
+# creates/destroys in under a second, so a second region costs almost nothing.
+resource "aws_iot_certificate" "east" {
+  provider = aws.east
+  active   = true
+}
+
+# ---------------------------------------------------------------------------
+# A non-importable resource that depends on another non-importable resource.
+#
+# Every other injected resource in this fixture depends only on IMPORTABLE
+# ones, which are already earlier in the deployment array -- so orderInjected's
+# topological sort has never had real work to do against edges the engine
+# actually emits. aws_iot_policy_attachment declares no importer (verified
+# against the provider source at v5.100.0: it has Create/Read/Delete and no
+# Importer) and its "target" is the certificate's ARN, so it must be written
+# into state AFTER the certificate.
+# ---------------------------------------------------------------------------
+
+# Importable (declares an Importer), so it arrives through "pulumi import"
+# like the rest of the fixture's supporting resources.
+resource "aws_iot_policy" "policy" {
+  name = "${local.name}-policy"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["iot:Connect"]
+      Resource = ["*"]
+    }]
+  })
+}
+
+resource "aws_iot_policy_attachment" "policy_attach" {
+  policy = aws_iot_policy.policy.name
+  target = aws_iot_certificate.cert.arn
+}
+
+# ---------------------------------------------------------------------------
+# for_each rather than count.
+#
+# Terraform addresses differ: aws_iot_certificate.each["alpha"] rather than
+# aws_iot_certificate.cert[0]. Those addresses flow through flattenAddress into
+# stack config keys, through "resolve tf" into import-file names, and into the
+# type+name matching that pairs a sidecar entry to a preview create step. The
+# Pulumi program already needed a workaround for count's brackets; for_each
+# adds QUOTES inside them, which is a different shape again.
+# ---------------------------------------------------------------------------
+
+resource "aws_iot_certificate" "each" {
+  for_each = toset(["alpha", "beta"])
+  active   = true
+}
+
+# ---------------------------------------------------------------------------
+# Harness infrastructure, NOT part of the migration surface.
+#
+# Everything above exists to be migrated, and is mirrored in
+# testdata/pulumi/Pulumi.yaml. This key is different: it exists so one scenario
+# can create a stack whose secrets provider is "awskms" rather than
+# "passphrase". It is deliberately absent from the Pulumi program, so "resolve
+# tf" reports it as unmatched -- which is correct, since it is not something
+# the migration is meant to move.
+#
+# Why it is worth the cost: e2e run 1 found that VerifyDeploymentIntegrity used
+# stack.Base64SecretsProvider, whose OfType errors for any type but "b64", so
+# the function had NEVER worked against a real deployment. Nine per-task
+# reviews, a whole-branch review and the full unit suite all missed it, because
+# every fixture carried no secrets_providers block. The fix added hand-written
+# passphrase/service fixtures -- the same kind of artifact that hid the bug.
+# Only a real stack on a real non-passphrase provider closes that.
+#
+# awskms rather than "service" because it needs no Pulumi Cloud org or token,
+# which is the dependency the local file backend was chosen to avoid. The
+# deletion window is the 7-day minimum AWS allows: "tofu destroy" schedules the
+# key for deletion rather than removing it, so each run leaves one pending key
+# for a week (the alias is freed immediately, so reruns do not collide).
+# ---------------------------------------------------------------------------
+
+resource "aws_kms_key" "secrets" {
+  description             = "pulumi-tool-import e2e: stack secrets provider under test"
+  deletion_window_in_days = 7
+  tags                    = local.tags
+}
+
+resource "aws_kms_alias" "secrets" {
+  name          = "alias/${local.name}-secrets"
+  target_key_id = aws_kms_key.secrets.key_id
+}
+
+output "kms_key_arn" {
+  value = aws_kms_key.secrets.arn
+}
+
 output "vpc_id" {
   value = aws_vpc.main.id
 }

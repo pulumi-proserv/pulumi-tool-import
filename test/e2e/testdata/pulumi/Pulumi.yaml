@@ -27,6 +27,14 @@ description: >
   credentials needed for that -- aws:skipCredentialsValidation) before
   ever running it against real infrastructure.
 
+  That offline check needs one extra step now that "eastProvider" exists:
+  an EXPLICIT provider resource does not inherit aws:* stack config, so it
+  tries to validate credentials and fails with "unable to validate AWS
+  credentials" before any import file is written. To re-run the check, add
+  skipCredentialsValidation and skipRequestingAccountId (as booleans, not
+  strings) to eastProvider's properties in a COPY of this file -- not here,
+  where they would change what the real run exercises.
+
 resources:
   main:
     type: aws:ec2:Vpc
@@ -218,6 +226,63 @@ resources:
         Name: tool-import-e2e
         ManagedBy: pulumi-tool-import-e2e
         Purpose: issue-22-non-importable-injection
+
+  # --- A second provider instance, in a different region.
+  #
+  # This is what makes the provider-reference resolution observable. The
+  # sidecar cannot carry a provider reference (the uuid exists only in the
+  # target stack), so injection takes it from the preview's create step. If it
+  # took the wrong one, "eastCert" would be injected against us-west-2, where
+  # that certificate does not exist, and the preview could not report "same".
+  eastProvider:
+    type: pulumi:providers:aws
+    properties:
+      region: us-east-1
+
+  # Non-importable, under the aliased provider (aws.east in main.tf).
+  eastCert:
+    type: aws:iot:Certificate
+    name: east
+    properties:
+      active: true
+    options:
+      provider: ${eastProvider}
+
+  # --- Importable; the policy the attachment below refers to.
+  iotPolicy:
+    type: aws:iot:Policy
+    name: policy
+    properties:
+      name: tool-import-e2e-policy
+      policy: |
+        {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["iot:Connect"],"Resource":["*"]}]}
+
+  # Non-importable AND dependent on another non-importable resource: "target"
+  # is the certificate's ARN, and "cert" is itself injected. This is the edge
+  # orderInjected's topological sort exists for -- VerifyIntegrity rejects a
+  # resource whose dependency appears later in the deployment array, so if the
+  # sort got this wrong the run would fail loudly rather than subtly.
+  policyAttach:
+    type: aws:iot:PolicyAttachment
+    name: policy_attach
+    properties:
+      policy: ${iotPolicy.name}
+      target: ${cert.arn}
+
+  # --- for_each rather than count. The logical names carry QUOTES inside the
+  # brackets ('each["alpha"]'), a shape the count-indexed names above do not
+  # have. Same workaround as those: an interpolation-safe map key, with the
+  # real logical name in "name:".
+  eachAlpha:
+    type: aws:iot:Certificate
+    name: 'each["alpha"]'
+    properties:
+      active: true
+  eachBeta:
+    type: aws:iot:Certificate
+    name: 'each["beta"]'
+    properties:
+      active: true
 
   # Non-importable, and the only resource in this program with a nested
   # list-of-objects property ("target": {id, port}) -- every other injected

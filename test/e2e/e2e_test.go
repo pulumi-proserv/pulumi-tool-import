@@ -86,7 +86,25 @@ var wantNonImportable = map[string]string{
 	"route":   "aws:ec2/vpnConnectionRoute:VpnConnectionRoute",
 	"cert":    "aws:iot/certificate:Certificate",
 	"attach":  "aws:vpclattice/targetGroupAttachment:TargetGroupAttachment",
+
+	// Under a second, aliased provider in us-east-1 — the provider-reference
+	// resolution the sidecar cannot carry and injection takes from the
+	// preview's create step.
+	"east": "aws:iot/certificate:Certificate",
+
+	// Non-importable AND dependent on "cert", which is also injected: the
+	// dependency edge orderInjected's topological sort exists for.
+	"policy_attach": "aws:iot/policyAttachment:PolicyAttachment",
+
+	// for_each rather than count: quoted keys inside the brackets, a
+	// different address shape from "prop[0]".
+	`each["alpha"]`: "aws:iot/certificate:Certificate",
+	`each["beta"]`:  "aws:iot/certificate:Certificate",
 }
+
+// eastCertName is the one non-importable resource under a non-default
+// provider. Named here because two scenarios need to single it out.
+const eastCertName = "east"
 
 // secretSigKey is the Pulumi property-value signature key that marks a
 // serialized value as a secret (resource.SigKey in the Pulumi SDK, mirrored
@@ -220,6 +238,12 @@ func TestNonImportableStateInjection(t *testing.T) {
 	t.Run("PatchOnlyStackModeWithOutstandingDiffs", func(t *testing.T) {
 		testPatchOnlyStackMode(t, ctx, fx)
 	})
+	t.Run("ProviderAndDependencyEdges", func(t *testing.T) {
+		testInjectedStateCarriesProviderAndDependencyEdges(t, ctx, fx)
+	})
+	t.Run("KMSSecretsProvider", func(t *testing.T) {
+		testKMSSecretsProvider(t, ctx, fx)
+	})
 	t.Run("InjectionSurvivesPreExistingDrift", func(t *testing.T) {
 		testInjectionSurvivesPreExistingDrift(t, ctx, fx)
 	})
@@ -256,6 +280,19 @@ type provisioned struct {
 // imports) — the fixture's tofu apply already happened once, in the caller.
 func provisionStack(t *testing.T, ctx context.Context, fx *fixture) *provisioned {
 	t.Helper()
+	return provisionStackWith(t, ctx, fx, "")
+}
+
+// provisionStackWith is provisionStack with an explicit stack secrets
+// provider. An empty secretsProvider keeps the default, which under
+// PULUMI_CONFIG_PASSPHRASE is "passphrase" — what every scenario but
+// KMSSecretsProvider uses.
+//
+// Split out rather than adding a parameter to provisionStack so that the one
+// scenario needing a different provider cannot change the configuration the
+// other eight run under.
+func provisionStackWith(t *testing.T, ctx context.Context, fx *fixture, secretsProvider string) *provisioned {
+	t.Helper()
 
 	pulumiDir := filepath.Join(t.TempDir(), "pulumi")
 	if err := copyDir(fx.pulumiFixtureDir, pulumiDir); err != nil {
@@ -265,7 +302,11 @@ func provisionStack(t *testing.T, ctx context.Context, fx *fixture) *provisioned
 	n := atomic.AddInt64(&stackSeq, 1)
 	stackName := fmt.Sprintf("e2e-%d-%d", time.Now().UnixNano(), n)
 
-	runPulumi(t, ctx, pulumiDir, fx.env, "stack", "init", stackName)
+	initArgs := []string{"stack", "init", stackName}
+	if secretsProvider != "" {
+		initArgs = append(initArgs, "--secrets-provider", secretsProvider)
+	}
+	runPulumi(t, ctx, pulumiDir, fx.env, initArgs...)
 	runPulumi(t, ctx, pulumiDir, fx.env, "config", "set", "aws:region", "us-west-2")
 
 	// --skip-secrets is deliberately not passed: the fixture's IoT
@@ -542,6 +583,239 @@ func testClassificationIsNotOverBroad(t *testing.T, ctx context.Context, fx *fix
 		return
 	}
 	t.Logf("confirmed all %d non-importable resource(s) genuinely need injection", len(p.sidecar.Resources))
+}
+
+// ---------------------------------------------------------------------------
+// Scenario 1d: the two edges injected state carries that a "same" preview
+// does not by itself prove — the provider reference and dependency ordering.
+// ---------------------------------------------------------------------------
+
+// testInjectedStateCarriesProviderAndDependencyEdges inspects the deployment
+// injection produced, rather than only asking the preview whether it likes it.
+//
+// Both properties here are ones the sidecar cannot carry and injection must
+// take from the preview's create step:
+//
+//   - The PROVIDER REFERENCE. The uuid in
+//     "urn:...::pulumi:providers:aws::eastProvider::<uuid>" exists only in the
+//     target stack. The design claims this resolves correctly when several
+//     provider instances exist; that claim has never been tested, and a wrong
+//     reference silently targets the wrong region or account. It is issue 3 of
+//     #11, which has happened in the field.
+//
+//   - The DEPENDENCY EDGES. VerifyIntegrity rejects a resource whose
+//     dependency appears later in the resources array. Until this fixture grew
+//     an injected resource that depends on another injected resource, every
+//     edge pointed at an IMPORTABLE resource already earlier in the array, so
+//     orderInjected's sort has only ever been exercised on already-valid input.
+//
+// A "same" preview is necessary but not sufficient for either: the preview is
+// evaluated per resource, so it would not notice an array ordering that
+// VerifyIntegrity rejects, and a provider mix-up in the same account and
+// region could still preview clean.
+func testInjectedStateCarriesProviderAndDependencyEdges(t *testing.T, ctx context.Context, fx *fixture) {
+	p := provisionStack(t, ctx, fx)
+
+	args := append(patchStateArgs(fx, p),
+		"--project-dir", p.pulumiDir,
+		"--stack", p.stackName,
+		"--non-importable", p.sidecarPath,
+		"--backup-dir", p.backupDir,
+	)
+	runTool(t, ctx, fx.binPath, fx.repoRoot, fx.env, args...)
+
+	raw := rawStackExport(t, ctx, p.pulumiDir, fx.env, p.stackName)
+
+	// --- 1. The us-east-1 certificate must reference a DIFFERENT provider
+	// than the us-west-2 one, and that provider must actually be us-east-1.
+	certType := "aws:iot/certificate:Certificate"
+	eastURN := expectedURN(pulumiProject, p.stackName, certType, eastCertName)
+	westURN := expectedURN(pulumiProject, p.stackName, certType, "cert")
+
+	eastProviderRef, _ := findResourceByURN(t, raw, eastURN)["provider"].(string)
+	westProviderRef, _ := findResourceByURN(t, raw, westURN)["provider"].(string)
+	if eastProviderRef == "" || westProviderRef == "" {
+		t.Fatalf("a certificate carries no provider reference (east=%q, west=%q)",
+			eastProviderRef, westProviderRef)
+	}
+
+	if eastProviderRef == westProviderRef {
+		t.Fatalf("both certificates were injected against the SAME provider (%s), but they live "+
+			"in different regions — injection resolved the provider reference from the wrong "+
+			"create step", eastProviderRef)
+	}
+
+	// Resolve the reference back to the provider resource and check its
+	// region, rather than trusting that "different" means "correct".
+	if region := providerRegion(t, raw, eastProviderRef); region != "us-east-1" {
+		t.Errorf("%s was injected against a provider configured for region %q, want \"us-east-1\" — "+
+			"a mis-resolved provider reference silently targets the wrong region", eastURN, region)
+	} else {
+		t.Logf("confirmed %s references a us-east-1 provider, distinct from the default", eastURN)
+	}
+	if region := providerRegion(t, raw, westProviderRef); region != "us-west-2" {
+		t.Errorf("%s was injected against a provider configured for region %q, want \"us-west-2\"",
+			westURN, region)
+	}
+
+	// --- 2. The dependent injected resource must appear AFTER the injected
+	// resource it depends on, and must actually record the edge.
+	attachURN := expectedURN(pulumiProject, p.stackName, "aws:iot/policyAttachment:PolicyAttachment", "policy_attach")
+	order := resourceURNOrder(t, raw)
+	certPos, certOK := order[westURN]
+	attachPos, attachOK := order[attachURN]
+	if !certOK || !attachOK {
+		t.Fatalf("a resource is absent from the deployment (cert present=%v, attachment present=%v)",
+			certOK, attachOK)
+	}
+
+	if attachPos < certPos {
+		t.Errorf("%s (index %d) precedes the resource it depends on, %s (index %d) — "+
+			"VerifyIntegrity rejects a forward reference, so orderInjected's sort did not "+
+			"handle an edge between two INJECTED resources", attachURN, attachPos, westURN, certPos)
+	} else {
+		t.Logf("confirmed the dependent injected resource is ordered after its dependency (%d > %d)",
+			attachPos, certPos)
+	}
+
+	deps, _ := findResourceByURN(t, raw, attachURN)["dependencies"].([]interface{})
+	found := false
+	for _, d := range deps {
+		if s, ok := d.(string); ok && s == westURN {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("%s records dependencies %v, which do not include %s — without the edge, "+
+			"the ordering above held by luck rather than by the sort", attachURN, deps, westURN)
+	}
+}
+
+// providerRegion resolves a resource's provider reference (of the form
+// "<provider urn>::<uuid>") back to that provider resource and returns the
+// region it is configured for.
+func providerRegion(t *testing.T, exportJSON []byte, providerRef string) string {
+	t.Helper()
+	urn := providerRef
+	if i := strings.LastIndex(providerRef, "::"); i > 0 {
+		urn = providerRef[:i]
+	}
+	prov := findResourceByURN(t, exportJSON, urn)
+	for _, section := range []string{"inputs", "outputs"} {
+		if m, ok := prov[section].(map[string]interface{}); ok {
+			if region, ok := m["region"].(string); ok && region != "" {
+				return region
+			}
+		}
+	}
+	t.Fatalf("provider %s declares no region in its inputs or outputs: %+v", urn, prov)
+	return ""
+}
+
+// resourceURNOrder maps each URN to its index in the deployment's resources
+// array. The array order is what VerifyIntegrity checks: a dependency must
+// appear before its dependent.
+func resourceURNOrder(t *testing.T, exportJSON []byte) map[string]int {
+	t.Helper()
+	var doc struct {
+		Deployment struct {
+			Resources []struct {
+				URN string `json:"urn"`
+			} `json:"resources"`
+		} `json:"deployment"`
+	}
+	if err := json.Unmarshal(exportJSON, &doc); err != nil {
+		t.Fatalf("decoding stack export: %v", err)
+	}
+	order := make(map[string]int, len(doc.Deployment.Resources))
+	for i, r := range doc.Deployment.Resources {
+		order[r.URN] = i
+	}
+	return order
+}
+
+// ---------------------------------------------------------------------------
+// Scenario 1e: a stack whose secrets provider is not "passphrase".
+// ---------------------------------------------------------------------------
+
+// testKMSSecretsProvider runs the whole injection flow against a stack whose
+// secrets are encrypted with AWS KMS rather than a passphrase.
+//
+// This is the class of bug that has already reached a real deployment
+// undetected. E2E run 1 found that VerifyDeploymentIntegrity used
+// stack.Base64SecretsProvider, whose OfType errors for any type but "b64" — so
+// it had NEVER worked against a real deployment. Nine per-task reviews, a
+// whole-branch review and the full unit suite all missed it, because every
+// unit fixture carried no secrets_providers block. The fix added hand-written
+// passphrase and service fixtures, which is the same kind of artifact that hid
+// the bug in the first place.
+//
+// awskms rather than "service": it needs no Pulumi Cloud org or token, which
+// is the dependency the local file backend was chosen to avoid (an earlier
+// version of this test gated on PULUMI_ACCESS_TOKEN and silently skipped —
+// a skip that reads as a pass). The key comes from the tofu fixture; see the
+// comment on aws_kms_key.secrets in testdata/tf/main.tf for its cost.
+func testKMSSecretsProvider(t *testing.T, ctx context.Context, fx *fixture) {
+	keyARN := tofuOutput(t, ctx, fx.tfDir, fx.env, "kms_key_arn")
+	if keyARN == "" {
+		t.Fatalf("the tofu fixture produced no kms_key_arn output — this scenario cannot " +
+			"fall back to passphrase, because passphrase is the configuration it exists to differ from")
+	}
+	// The awskms provider takes the key ARN directly; the region is carried
+	// in the ARN itself.
+	p := provisionStackWith(t, ctx, fx, "awskms://"+keyARN)
+
+	// Prove the stack really is on a different provider before asserting
+	// anything about it — otherwise a silent fallback to passphrase would
+	// make this scenario a duplicate of the others.
+	raw := rawStackExport(t, ctx, p.pulumiDir, fx.env, p.stackName)
+	var doc struct {
+		Deployment struct {
+			SecretsProviders struct {
+				Type string `json:"type"`
+			} `json:"secrets_providers"`
+		} `json:"deployment"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("decoding stack export: %v", err)
+	}
+	if got := doc.Deployment.SecretsProviders.Type; got != "cloud" {
+		t.Fatalf("stack secrets provider is %q, want \"cloud\" (awskms) — this scenario is "+
+			"vacuous unless the provider actually differs from passphrase", got)
+	}
+	t.Logf("confirmed the stack's secrets provider is %q, not passphrase",
+		doc.Deployment.SecretsProviders.Type)
+
+	args := append(patchStateArgs(fx, p),
+		"--project-dir", p.pulumiDir,
+		"--stack", p.stackName,
+		"--non-importable", p.sidecarPath,
+		"--backup-dir", p.backupDir,
+	)
+	runTool(t, ctx, fx.binPath, fx.repoRoot, fx.env, args...)
+
+	after := runPreviewJSON(t, ctx, p.pulumiDir, fx.env, p.stackName)
+	afterOps := after.OpsByURN()
+	for _, r := range p.sidecar.Resources {
+		urn := expectedURN(pulumiProject, p.stackName, r.Type, r.Name)
+		if op, ok := afterOps[urn]; !ok || op != "same" {
+			t.Errorf("after injection on a KMS-encrypted stack: %s previews as %q, want \"same\"", urn, op)
+		}
+	}
+	if !t.Failed() {
+		t.Logf("confirmed injection verifies end to end on a stack encrypted with AWS KMS "+
+			"(%d resources)", len(p.sidecar.Resources))
+	}
+}
+
+// tofuOutput reads a single output value from the applied fixture.
+func tofuOutput(t *testing.T, ctx context.Context, tfDir string, env []string, name string) string {
+	t.Helper()
+	out, err := runTofuCombined(ctx, tfDir, env, "output", "-raw", name)
+	if err != nil {
+		t.Fatalf("tofu output -raw %s: %v\n%s", name, err, out)
+	}
+	return strings.TrimSpace(out)
 }
 
 // ---------------------------------------------------------------------------
