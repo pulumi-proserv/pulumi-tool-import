@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -159,6 +160,86 @@ func TestPatchStateFromCFN_DigestAttributePatch(t *testing.T) {
 	r := resources[0].(map[string]interface{})
 	inputs := r["inputs"].(map[string]interface{})
 	assert.Equal(t, float64(7), inputs["recoveryWindowInDays"])
+}
+
+// decodeWithUseNumber mirrors how production reads a digest: every JSON
+// decode on the reading path uses UseNumber, so numeric attributes arrive as
+// json.Number rather than float64. Tests that build attributes as Go literals
+// silently test a different type than the one the tool actually handles —
+// which is how the reflect.DeepEqual regression in 9d0c4bf reached review.
+func decodeWithUseNumber(t *testing.T, doc string) map[string]interface{} {
+	t.Helper()
+	dec := json.NewDecoder(strings.NewReader(doc))
+	dec.UseNumber()
+	var out map[string]interface{}
+	require.NoError(t, dec.Decode(&out))
+	return out
+}
+
+// TestPatchStateFromCFN_LargeIntegerKeepsExactDigits closes the unit-level gap
+// recorded in docs/superpowers/plans/2026-08-14-remaining-test-coverage.md:
+// 6ac03f6 changed the decode and 8d94094 fixed isSimpleValue, but no CFN test
+// carried a large integer through patchAndValidateResource.
+//
+// 2^53+1 is the smallest integer float64 cannot represent: it round-trips as
+// 9007199254740992, one less than it should be, and does so silently. That
+// makes it the value that distinguishes a genuine json.Number path from one
+// that merely looks like it works on small numbers.
+func TestPatchStateFromCFN_LargeIntegerKeepsExactDigits(t *testing.T) {
+	t.Parallel()
+
+	const beyondFloat64 = "9007199254740993" // 2^53 + 1
+
+	state := map[string]interface{}{
+		"version": 3,
+		"deployment": map[string]interface{}{
+			"resources": []interface{}{
+				map[string]interface{}{
+					"urn":     "urn:pulumi:dev::proj::aws:sqs/queue:Queue::core-myqueue",
+					"type":    "aws:sqs/queue:Queue",
+					"custom":  true,
+					"id":      "https://sqs.us-east-1.amazonaws.com/123/myqueue",
+					"inputs":  map[string]interface{}{"name": "myqueue"},
+					"outputs": map[string]interface{}{"name": "myqueue"},
+				},
+			},
+		},
+	}
+	stateData, err := json.Marshal(state)
+	require.NoError(t, err)
+
+	nameMap := map[string]*ModuleResource{
+		"myqueue": {
+			TerraformAddress: "myqueue",
+			Attributes:       decodeWithUseNumber(t, `{"messageRetentionSeconds": `+beyondFloat64+`}`),
+		},
+	}
+
+	fields := &FieldsFile{
+		Fields: map[string]FieldCategory{
+			"queue:Queue": {
+				NotRead: map[string]FieldInfo{
+					"messageRetentionSeconds": {Default: json.Number("345600")},
+				},
+			},
+		},
+	}
+
+	patched, result, err := PatchStateFromCFN(stateData, nameMap, fields, nil, "")
+	require.NoError(t, err)
+	assert.Equal(t, 1, result.Patched)
+	assert.Equal(t, 1, result.FieldsFromDigest)
+
+	// Asserted on the raw bytes, not the decoded value: the failure mode is
+	// re-serialization, so decoding first would hide it. A float64 round trip
+	// yields "9.007199254740992e+15" or "9007199254740992" — never the exact
+	// digits.
+	assert.Contains(t, string(patched), beyondFloat64,
+		"the exact integer must survive patching; a float64 round trip loses the last digit silently")
+	assert.NotContains(t, string(patched), "9007199254740992",
+		"9007199254740992 is 2^53+1 rounded down — its presence means the value went through float64")
+	assert.NotContains(t, string(patched), "e+15",
+		"scientific notation in state is rejected by Pulumi's state parser")
 }
 
 func TestPatchStateFromCFN_LocalZipAssetPatch(t *testing.T) {

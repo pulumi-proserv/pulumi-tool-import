@@ -28,8 +28,22 @@ The fourth is the most economical result on the list. It was found while *writin
 - patch-only stack mode: no `--non-importable`
 - secrets: `aws_iot_certificate`, sensitive attributes both populated and null
 - nested blocks: `aws_vpclattice_target_group_attachment`
+- classification: every diverted resource is confirmed to genuinely fail `pulumi import`
+- pre-existing drift: a dirty baseline, closing gap 4 below
 
 ## Gaps, in priority order
+
+### 0. A secrets provider other than `passphrase`
+
+**What.** The e2e end to end against a stack whose secrets provider is `service` (or `awskms`), not `passphrase`.
+
+**Why first.** This is the exact class of bug that has already bitten, and the fixtures written to prevent it are the same kind of artifact that hid it. E2E run 1 found that `VerifyDeploymentIntegrity` used `stack.Base64SecretsProvider`, whose `OfType` errors for any type but `b64` — so the function had **never worked against a real deployment**, and nine per-task reviews, a whole-branch review and the full unit suite all missed it, because every unit fixture carried no `secrets_providers` block. The fix (`f11e849`) added passphrase/service/encrypted-value fixtures — hand-written ones. Real customers run `service`.
+
+Note the variable is the **secrets provider**, not the backend. They are orthogonal: `passphrase` runs on the service backend and `service`/`awskms` run on either. Switching backends alone would prove nothing.
+
+**Cost.** Awkward, and the reason this is not simply done. `service` needs a Pulumi Cloud org and token — precisely the dependency the file backend was chosen to avoid (`e2e_test.go:137-155`), and an earlier version of this test gated on `PULUMI_ACCESS_TOKEN` and silently skipped, which is a skip that reads as a pass. `awskms` avoids the cloud dependency and uses credentials we already have, but needs a KMS key, which is a real billed resource in the fixture. Either way this is a deliberate tradeoff rather than a free addition — decide the mechanism before writing it.
+
+### 1. Multiple providers or regions
 
 ### 1. Multiple providers or regions
 
@@ -53,11 +67,11 @@ The fourth is the most economical result on the list. It was found while *writin
 
 **Why.** Terraform addresses differ (`prop["a"]` vs `prop[0]`), and those addresses flow through `flattenAddress` into stack config keys, through `resolve tf` into import-file names, and into the type+name matching that pairs a sidecar entry to a preview create step. The Pulumi YAML fixture already needed a bracket-name workaround for `count`; `for_each` produces quoted keys, which is a different shape again. A mismatch here fails loudly, but at a point far from its cause.
 
-### 4. A stack with genuine pre-existing drift
+### 4. A stack with genuine pre-existing drift — CLOSED
 
-**What.** Modify a resource out-of-band (or leave an unrelated diff outstanding), then run patch-only stack mode.
+**Closed by** `InjectionSurvivesPreExistingDrift`. The scenario adds a tag to the target group in the copied Pulumi program, asserts the baseline is genuinely dirty (so it cannot pass vacuously), then requires that the run succeed anyway, that the injected resources still settle to `same`, and that the pre-existing diff still be there afterwards — tolerated, not silently resolved.
 
-**Why.** `CheckInjectionVerification` compares a baseline preview against the post preview and requires that the run not make things worse. Every run so far started from a stack whose only diffs were the non-importable creates. **A dirty baseline has never been seen.** This is the guard that replaced a vacuous check, and its whole purpose is to tolerate exactly this case — the case it has never met.
+Drift is introduced in the program rather than out-of-band because that is what a real mid-migration stack looks like: more program written than patched into state. It targets an importable resource, so it cannot interact with injection.
 
 ### 5. Provider version upgrade
 
@@ -115,9 +129,9 @@ purpose rather than one already present.
 
 ## Unit-level gaps
 
-- **`orderInjected` cycles** return silently and produce an order that fails `VerifyIntegrity` with an opaque message. Unreachable from a real preview, but untested.
-- **`checkNoPlaceholders` depth** — the sweep recurses through maps and slices; no test uses a deeply nested placeholder.
-- **The CFN patch path with `json.Number`** — `6ac03f6` changed the decode and `8d94094` fixed `isSimpleValue`, but no CFN test carries a large integer through `patchAndValidateResource`.
+- ~~**`orderInjected` cycles**~~ — CLOSED by `pkg/state_injector_order_test.go`, which also supplies the transitive chains, diamonds, parent edges, self-references and out-of-batch edges the sort had never been given. The cycle case pins the degradation rather than a correct answer (there isn't one): it must terminate, must not drop or duplicate a resource — `VerifyDeploymentIntegrity` is the backstop and can only work if everything is still present — and must leave at least one forward reference for that backstop to catch.
+- ~~**`checkNoPlaceholders` depth**~~ — CLOSED by `TestCheckNoPlaceholders_NestedDepth`: maps inside arrays inside maps, four levels deep, arrays of arrays, and a placeholder in a later sibling after clean branches. Each asserts the reported **path**, not just detection — an operator told only "a placeholder is somewhere in this resource" cannot act on it. A clean-value case guards against a check that always errors.
+- ~~**The CFN patch path with `json.Number`**~~ — CLOSED by `TestPatchStateFromCFN_LargeIntegerKeepsExactDigits`, using 2^53+1 (the smallest integer float64 cannot represent) and asserting on the raw output bytes rather than the decoded value, since the failure mode is re-serialization. Its `decodeWithUseNumber` helper exists because building attributes as Go literals tests a different type than production handles — which is how the `reflect.DeepEqual` regression fixed in `9d0c4bf` reached review.
 - **Delta correctness across more types.** The bridge's turnaround check is the arbiter, and it only runs at computation time. Coverage today is two types; the `timeouts` bug showed that a whole schema feature can silently suppress deltas.
 
 ## Properties that cannot be tested here, and should be said rather than implied
@@ -125,7 +139,12 @@ purpose rather than one already present.
 - **Value correctness against the cloud.** `pulumi preview` reporting zero operations is the strongest available signal, and it is what these tests assert. It does not prove the values match the cloud resource in every respect — only that the provider's diff is empty. `pulumi refresh` is not a substitute; it reports these types unchanged even when the values are wrong.
 - **Integer precision above 2^53** on the injection path (#29). `resource.PropertyValue` has no exact-integer representation, so this is a property of the data model rather than a bug a test can drive.
 - **A non-string sensitive attribute.** The digest's `ctyjson.Unmarshal` fails for one, so the resource silently gets no injection state. Worth a unit test asserting the degradation is reported; an e2e needs a type with a non-string sensitive field, which may not exist.
+- **Byte-exact state restoration.** `RevertRestoresStackExactly` can only ever assert that a reverted stack matches *decrypted*. `pulumi stack import` decrypts and re-encrypts unconditionally — verified locally: importing the *same ciphertext* twice yields different ciphertext each time, so this is not an artifact of `--show-secrets` or of the file backend. Every secrets provider uses a random nonce, so identical plaintext never re-encrypts to identical bytes. The stored bytes after a revert are therefore always different, and "the revert restored the stack exactly" can only mean "every decrypted value matches". That is a property of the system, not a gap to close. It is also why `canonicalStackExport` passes `--show-secrets`, and why the failure branch prints differing JSON paths and never values.
 
 ## Recommended order
 
-1 and 2 next — both are cheap, both target failures with field evidence. 4 after them, since it validates a guard written to replace a defect. 5 and 6 are projects rather than scenarios and deserve their own scoping.
+Gap 4 and every unit-level gap but the last are now closed, as is the sensitive-input gap's unit half.
+
+What remains, in order: **0** first if a mechanism can be agreed — it targets the only class of bug that has already reached a real deployment undetected, and the decision (cloud token vs. a billed KMS key) is a judgement call, not a coding one. Then **1** and **2**, both cheap once the fixture grows, both with field evidence behind them. **3** and **7** after. **5** and **6** are projects rather than scenarios and deserve their own scoping — **6** in particular is bounded by the shared-runner work in issue #32, since a CFN e2e wants the source interface to exist first rather than a second copy of this file.
+
+Everything from 1 onward needs the real-AWS fixture to grow, which adds apply/destroy time, cost, and orphan risk to every run of the suite. That is worth deciding deliberately rather than accreting.

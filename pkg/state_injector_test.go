@@ -316,6 +316,99 @@ func TestInjectNonImportable_FillWrapsSecretInput(t *testing.T) {
 	require.NoError(t, VerifyDeploymentIntegrity(out))
 }
 
+// TestCheckNoPlaceholders_NestedDepth covers the backstop's whole point: the
+// targeted resolvers only look at top-level properties, so a placeholder
+// buried inside a nested block is exactly what this is here to catch. No test
+// went deeper than one level before — recorded as a unit-level gap in
+// docs/superpowers/plans/2026-08-14-remaining-test-coverage.md.
+//
+// The path in the error matters as much as the detection: an operator given
+// only "a placeholder is somewhere in this resource" cannot act on it.
+func TestCheckNoPlaceholders_NestedDepth(t *testing.T) {
+	t.Parallel()
+	r := &NonImportableResource{
+		Type: "aws:vpclattice/targetGroupAttachment:TargetGroupAttachment",
+		Name: "attach",
+	}
+
+	for _, tc := range []struct {
+		name        string
+		value       interface{}
+		placeholder string
+		wantPath    string
+	}{
+		{
+			name: "map inside array inside map",
+			value: map[string]interface{}{
+				"target": []interface{}{
+					map[string]interface{}{"id": secretPlaceholder},
+				},
+			},
+			placeholder: secretPlaceholder,
+			wantPath:    "outputs.target[0].id",
+		},
+		{
+			name: "four levels of nesting",
+			value: map[string]interface{}{
+				"a": map[string]interface{}{
+					"b": map[string]interface{}{
+						"c": map[string]interface{}{"d": redactedPlaceholder},
+					},
+				},
+			},
+			placeholder: redactedPlaceholder,
+			wantPath:    "outputs.a.b.c.d",
+		},
+		{
+			name: "array of arrays",
+			value: map[string]interface{}{
+				"rules": []interface{}{
+					[]interface{}{"fine", secretPlaceholder},
+				},
+			},
+			placeholder: secretPlaceholder,
+			wantPath:    "outputs.rules[0][1]",
+		},
+		{
+			name: "later sibling, after clean branches",
+			value: map[string]interface{}{
+				"aaa": "clean",
+				"bbb": map[string]interface{}{"nested": "also clean"},
+				"ccc": []interface{}{"clean", map[string]interface{}{"deep": redactedPlaceholder}},
+			},
+			placeholder: redactedPlaceholder,
+			wantPath:    "outputs.ccc[1].deep",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := checkNoPlaceholders(r, "outputs", tc.value, "outputs")
+			require.Error(t, err, "a placeholder at %s must be found", tc.wantPath)
+			assert.Contains(t, err.Error(), tc.wantPath,
+				"the error must name the path, not just the resource")
+			assert.Contains(t, err.Error(), tc.placeholder)
+			assert.Contains(t, err.Error(), "attach")
+		})
+	}
+}
+
+// TestCheckNoPlaceholders_CleanNestedValuePasses is the other half: a deeply
+// nested structure with no placeholder must not trip the backstop. Without
+// this, a check that always errored would pass the tests above.
+func TestCheckNoPlaceholders_CleanNestedValuePasses(t *testing.T) {
+	t.Parallel()
+	r := &NonImportableResource{Type: "aws:ec2/x:X", Name: "clean"}
+	value := map[string]interface{}{
+		"target": []interface{}{
+			map[string]interface{}{"id": "arn:aws:lambda:us-west-2:1234:function:f", "port": nil},
+		},
+		"nested": map[string]interface{}{
+			"deep": []interface{}{"(not sensitive)", "[not a secret]", ""},
+		},
+	}
+	assert.NoError(t, checkNoPlaceholders(r, "outputs", value, "outputs"))
+}
+
 func TestInjectNonImportable_NoMatchingCreateFails(t *testing.T) {
 	t.Parallel()
 	sidecar := propagationSidecar()

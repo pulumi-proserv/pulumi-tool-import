@@ -220,6 +220,9 @@ func TestNonImportableStateInjection(t *testing.T) {
 	t.Run("PatchOnlyStackModeWithOutstandingDiffs", func(t *testing.T) {
 		testPatchOnlyStackMode(t, ctx, fx)
 	})
+	t.Run("InjectionSurvivesPreExistingDrift", func(t *testing.T) {
+		testInjectionSurvivesPreExistingDrift(t, ctx, fx)
+	})
 	t.Run("SecretInjectedEndToEnd", func(t *testing.T) {
 		testSecretInjectedEndToEnd(t, ctx, fx)
 	})
@@ -539,6 +542,124 @@ func testClassificationIsNotOverBroad(t *testing.T, ctx context.Context, fx *fix
 		return
 	}
 	t.Logf("confirmed all %d non-importable resource(s) genuinely need injection", len(p.sidecar.Resources))
+}
+
+// ---------------------------------------------------------------------------
+// Scenario 1c: a stack that already has diffs before the run must not be
+// reverted for having them afterwards.
+// ---------------------------------------------------------------------------
+
+// testInjectionSurvivesPreExistingDrift covers the case CheckInjectionVerification
+// was rewritten for in fix round 2 of task 6, and which no live run has ever
+// exercised: patch-state is run ITERATIVELY during a migration, so the stack
+// it runs against nearly always still has outstanding diffs. An absolute
+// "preview must be clean" bar would revert almost every legitimate run, which
+// is why the gate compares the preview before against the preview after.
+//
+// Every other scenario here starts from a stack whose baseline is clean, so
+// the comparison has only ever been exercised in its 0-before case. This one
+// makes the baseline genuinely dirty first — recorded as gap 4 in
+// docs/superpowers/plans/2026-08-14-remaining-test-coverage.md.
+//
+// The drift is introduced in the PROGRAM rather than in state, because that is
+// what a real mid-migration stack looks like: the operator has written more of
+// their Pulumi program than they have patched into state yet. It is applied to
+// an IMPORTABLE resource, so it is independent of anything injection does.
+func testInjectionSurvivesPreExistingDrift(t *testing.T, ctx context.Context, fx *fixture) {
+	p := provisionStack(t, ctx, fx)
+
+	driftedURN := introduceProgramDrift(t, p.pulumiDir, p.stackName)
+
+	// --- The baseline must actually be dirty, or the scenario proves
+	// nothing: a clean baseline would make this a duplicate of scenario 1.
+	baseline := runPreviewJSON(t, ctx, p.pulumiDir, fx.env, p.stackName)
+	baselineOps := baseline.OpsByURN()
+	if op := baselineOps[driftedURN]; op == "same" || op == "" {
+		t.Fatalf("the drift did not take: %s previews as %q before the run, want a non-\"same\" "+
+			"op — without a dirty baseline this scenario is vacuous", driftedURN, op)
+	}
+	t.Logf("confirmed a pre-existing diff: %s previews as %q before the run",
+		driftedURN, baselineOps[driftedURN])
+
+	// --- The run must SUCCEED despite that diff.
+	args := append(patchStateArgs(fx, p),
+		"--project-dir", p.pulumiDir,
+		"--stack", p.stackName,
+		"--non-importable", p.sidecarPath,
+		"--backup-dir", p.backupDir,
+	)
+	out, err := runToolAllowFail(t, ctx, fx.binPath, fx.repoRoot, fx.env, args...)
+	if err != nil {
+		t.Fatalf("patch-state reverted a run against a stack that merely had a PRE-EXISTING "+
+			"diff — the verification gate must compare before against after, not demand an "+
+			"absolutely clean preview:\n%v\n%s", err, out)
+	}
+	if strings.Contains(out, "injection reverted") {
+		t.Errorf("patch-state reported a revert despite exiting 0; output:\n%s", out)
+	}
+
+	// --- Injected resources still had to settle, and the pre-existing diff
+	// must still be there: the gate tolerates it, it does not silence it.
+	after := runPreviewJSON(t, ctx, p.pulumiDir, fx.env, p.stackName)
+	afterOps := after.OpsByURN()
+	for _, r := range p.sidecar.Resources {
+		urn := expectedURN(pulumiProject, p.stackName, r.Type, r.Name)
+		if op, ok := afterOps[urn]; !ok || op != "same" {
+			t.Errorf("after injection: %s previews as %q, want \"same\" — a dirty baseline must "+
+				"not lower the bar for the injected resources themselves", urn, op)
+		}
+	}
+	if op := afterOps[driftedURN]; op == "same" {
+		t.Errorf("the pre-existing diff on %s disappeared; the run was supposed to tolerate it, "+
+			"not resolve it — this suggests patch-state wrote the program's drifted value into "+
+			"state, which would mask a real difference rather than report it", driftedURN)
+	} else {
+		t.Logf("confirmed the pre-existing diff on %s survives the run (previews as %q)",
+			driftedURN, op)
+	}
+}
+
+// introduceProgramDrift edits the copied Pulumi program so one IMPORTABLE
+// resource no longer matches its imported state, and returns that resource's
+// URN. Editing the copy is safe: provisionStack gives every scenario its own.
+//
+// The target is the VPC Lattice target group's tag map. Tags are the safest
+// possible drift for this purpose: the diff is an "update" rather than a
+// "replace", it needs no AWS call to produce, and it cannot interact with the
+// injected resources (the target group is imported, and the ATTACHMENT is what
+// gets injected).
+func introduceProgramDrift(t *testing.T, pulumiDir, stackName string) string {
+	t.Helper()
+	path := filepath.Join(pulumiDir, "Pulumi.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+
+	// Anchor on the "tg:" resource block, then on the FIRST "tags:" inside
+	// it, so the edit cannot land on another resource's tags — every
+	// resource in this program has a tags map.
+	const block = "\n  tg:\n"
+	i := strings.Index(string(data), block)
+	if i < 0 {
+		t.Fatalf("%s no longer declares a %q resource; this scenario's anchor is stale", path, "tg")
+	}
+	const tagsKey = "\n      tags:\n"
+	j := strings.Index(string(data)[i:], tagsKey)
+	if j < 0 {
+		t.Fatalf("%s's \"tg\" resource has no tags map; this scenario's anchor is stale", path)
+	}
+	at := i + j + len(tagsKey)
+
+	drifted := string(data[:at]) +
+		"        DriftMarker: introduced-by-InjectionSurvivesPreExistingDrift\n" +
+		string(data[at:])
+	if err := os.WriteFile(path, []byte(drifted), 0o600); err != nil {
+		t.Fatalf("writing drifted %s: %v", path, err)
+	}
+	t.Logf("introduced drift: added a tag to the target group in %s", path)
+
+	return expectedURN(pulumiProject, stackName, "aws:vpclattice/targetGroup:TargetGroup", "tg")
 }
 
 // ---------------------------------------------------------------------------
