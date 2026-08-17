@@ -206,3 +206,33 @@ const attach = new aws.vpclattice.TargetGroupAttachment("attach", {
         id: lambdaFn.arn,
     },
 });
+
+// --- A component parent, mirroring testdata/tf/modules/certs.
+//
+// This is the reason the fixture is TypeScript rather than YAML: Pulumi YAML
+// cannot declare a ComponentResource, so a component parent was unreachable
+// while the fixture was YAML.
+//
+// What it exercises that nothing else here does: the child's URN gains a
+// qualified type ("<component type>$aws:iot/certificate:Certificate"), and its
+// import entry carries a "parent". Injection takes the parent from the
+// preview's create step, and VerifyIntegrity only WARNS -- it does not error
+// -- when a child's URN does not agree with its parent's, so a wrong parent
+// would not be caught by the integrity check the way a wrong provider
+// reference was. The preview is what has to catch it.
+//
+// "resolve tf" needs "--map module.certs=certs" to connect the Terraform
+// module to this component; see provisionStack in e2e_test.go.
+class Certs extends pulumi.ComponentResource {
+    constructor(name: string, opts?: pulumi.ComponentResourceOptions) {
+        super("toolimport:index:Certs", name, {}, opts);
+
+        // Non-importable, and the only resource in this program whose parent
+        // is not the stack root.
+        new aws.iot.Certificate("inmodule", { active: true }, { parent: this });
+
+        this.registerOutputs({});
+    }
+}
+
+const certs = new Certs("certs");

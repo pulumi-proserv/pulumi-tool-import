@@ -100,11 +100,48 @@ var wantNonImportable = map[string]string{
 	// different address shape from "prop[0]".
 	`each["alpha"]`: "aws:iot/certificate:Certificate",
 	`each["beta"]`:  "aws:iot/certificate:Certificate",
+
+	// Inside a Terraform module, mapped to a Pulumi ComponentResource — the
+	// only resource here whose parent is not the stack root. Its sidecar
+	// entry records the bare type; its URN carries the qualified
+	// "component$child" form. See qualifiedTypes.
+	"inmodule": "aws:iot/certificate:Certificate",
 }
 
 // eastCertName is the one non-importable resource under a non-default
 // provider. Named here because two scenarios need to single it out.
 const eastCertName = "east"
+
+// parentedCertName is the one non-importable resource whose parent is a
+// component rather than the stack root.
+const parentedCertName = "inmodule"
+
+// componentType is the ComponentResource type token testdata/pulumi-ts
+// registers for the component that parents parentedCertName.
+const componentType = "toolimport:index:Certs"
+
+// qualifiedTypes maps a sidecar resource's name to the QUALIFIED type its URN
+// carries, for resources whose parent is not the stack root.
+//
+// A URN's type segment is "parentType$childType" for a parented resource, but
+// the sidecar records only the child's own type — it has no reason to know
+// about the parent. So expectedURN(…, r.Type, r.Name) builds the right URN for
+// every resource here except the component's child, and sidecarURN exists to
+// bridge that.
+var qualifiedTypes = map[string]string{
+	parentedCertName: componentType + "$aws:iot/certificate:Certificate",
+}
+
+// sidecarURN is the URN a sidecar resource actually has in the deployment,
+// accounting for a component parent. Use this rather than expectedURN when
+// iterating over sidecar entries.
+func sidecarURN(stackName string, r pkg.NonImportableResource) string {
+	typ := r.Type
+	if qualified, ok := qualifiedTypes[r.Name]; ok {
+		typ = qualified
+	}
+	return expectedURN(pulumiProject, stackName, typ, r.Name)
+}
 
 // secretSigKey is the Pulumi property-value signature key that marks a
 // serialized value as a secret (resource.SigKey in the Pulumi SDK, mirrored
@@ -285,6 +322,9 @@ func TestNonImportableStateInjection(t *testing.T) {
 	t.Run("KMSSecretsProvider", func(t *testing.T) {
 		testKMSSecretsProvider(t, ctx, fx)
 	})
+	t.Run("ComponentParent", func(t *testing.T) {
+		testComponentParent(t, ctx, fx)
+	})
 	t.Run("InjectionSurvivesPreExistingDrift", func(t *testing.T) {
 		testInjectionSurvivesPreExistingDrift(t, ctx, fx)
 	})
@@ -407,10 +447,18 @@ func provisionStackWith(t *testing.T, ctx context.Context, fx *fixture, secretsP
 		"--stack", stackName, "--import-file", importSkeletonPath)
 
 	filledImportPath := filepath.Join(t.TempDir(), "filled-import.json")
+	// --map is REQUIRED for the module's resource to be matched, not a
+	// convenience. FillImportFile (pkg/import_filler.go:198) puts
+	// module-scoped TF resources in tfByModule and parented import entries in
+	// byParent[componentName], and ONLY the moduleMappings loop joins those
+	// two sets — the root-resource fallback matches digest.RootResources
+	// against orphaned entries, and a module resource is in neither. Without
+	// this the module's certificate would simply never be matched.
 	runTool(t, ctx, fx.binPath, fx.repoRoot, fx.env, "resolve", "tf",
 		"--digest", digestPath,
 		"--import-file", importSkeletonPath,
 		"--out", filledImportPath,
+		"--map", "module.certs=certs",
 	)
 
 	sidecarPath := nonImportableSidecarPath(filledImportPath)
@@ -531,7 +579,7 @@ func testPreviewGoesFromCreateToSame(t *testing.T, ctx context.Context, fx *fixt
 	before := runPreviewJSON(t, ctx, p.pulumiDir, fx.env, p.stackName)
 	beforeOps := before.OpsByURN()
 	for _, r := range p.sidecar.Resources {
-		urn := expectedURN(pulumiProject, p.stackName, r.Type, r.Name)
+		urn := sidecarURN(p.stackName, r)
 		op, ok := beforeOps[urn]
 		if !ok {
 			t.Fatalf("before injection: %s has no step in the preview at all "+
@@ -554,7 +602,7 @@ func testPreviewGoesFromCreateToSame(t *testing.T, ctx context.Context, fx *fixt
 	after := runPreviewJSON(t, ctx, p.pulumiDir, fx.env, p.stackName)
 	afterOps := after.OpsByURN()
 	for _, r := range p.sidecar.Resources {
-		urn := expectedURN(pulumiProject, p.stackName, r.Type, r.Name)
+		urn := sidecarURN(p.stackName, r)
 		op, ok := afterOps[urn]
 		if !ok {
 			t.Errorf("after injection: %s has no step in the preview at all (want \"same\")", urn)
@@ -652,7 +700,7 @@ func testClassificationIsNotOverBroad(t *testing.T, ctx context.Context, fx *fix
 
 		// Import reported success. That alone does not make the resource
 		// importable: the state it produced has to be right.
-		urn := expectedURN(pulumiProject, p.stackName, r.Type, r.Name)
+		urn := sidecarURN(p.stackName, r)
 		op, ok := runPreviewJSON(t, ctx, p.pulumiDir, fx.env, p.stackName).OpsByURN()[urn]
 		switch {
 		case !ok:
@@ -902,7 +950,7 @@ func testKMSSecretsProvider(t *testing.T, ctx context.Context, fx *fixture) {
 	after := runPreviewJSON(t, ctx, p.pulumiDir, fx.env, p.stackName)
 	afterOps := after.OpsByURN()
 	for _, r := range p.sidecar.Resources {
-		urn := expectedURN(pulumiProject, p.stackName, r.Type, r.Name)
+		urn := sidecarURN(p.stackName, r)
 		if op, ok := afterOps[urn]; !ok || op != "same" {
 			t.Errorf("after injection on a KMS-encrypted stack: %s previews as %q, want \"same\"", urn, op)
 		}
@@ -921,6 +969,82 @@ func tofuOutput(t *testing.T, ctx context.Context, tfDir string, env []string, n
 		t.Fatalf("tofu output -raw %s: %v\n%s", name, err, out)
 	}
 	return strings.TrimSpace(out)
+}
+
+// ---------------------------------------------------------------------------
+// Scenario 1f: an injected resource whose parent is a component.
+// ---------------------------------------------------------------------------
+
+// testComponentParent covers the last of the AWS-fixture coverage gaps
+// (gap 7). Real migrations map Terraform modules to Pulumi components, so a
+// component parent is the common shape rather than an edge case — and until
+// the fixture program was ported from YAML to TypeScript it was unreachable,
+// because Pulumi YAML cannot declare a ComponentResource.
+//
+// Two things here are not exercised anywhere else:
+//
+//   - The URN's type segment becomes "parentType$childType" rather than the
+//     bare resource type. The sidecar records only the child's own type, so
+//     everything that reconstructs a URN from a sidecar entry has to account
+//     for the parent (see qualifiedTypes / sidecarURN).
+//
+//   - The injected resource carries a "parent" field, taken — like the
+//     provider reference — from the preview's create step.
+//
+// The parent needs its own assertion rather than relying on the preview,
+// because VerifyIntegrity only WARNS when a child's URN disagrees with its
+// parent's; it does not error. So unlike the provider reference, whose
+// mismatch failed the whole run loudly, a wrong parent would slip past the
+// integrity check and show up only as a diff — or not at all.
+func testComponentParent(t *testing.T, ctx context.Context, fx *fixture) {
+	p := provisionStack(t, ctx, fx)
+
+	var parented *pkg.NonImportableResource
+	for i := range p.sidecar.Resources {
+		if p.sidecar.Resources[i].Name == parentedCertName {
+			parented = &p.sidecar.Resources[i]
+		}
+	}
+	if parented == nil {
+		t.Fatalf("the sidecar has no %q entry — the module's certificate was not matched. "+
+			"Check that \"resolve tf\" was given --map module.certs=certs: without it the "+
+			"module's resources and the component's children are never joined "+
+			"(pkg/import_filler.go:198)", parentedCertName)
+	}
+	urn := sidecarURN(p.stackName, *parented)
+
+	// Anti-vacuous: it must preview as "create" first, as every other
+	// injected resource does.
+	if op := runPreviewJSON(t, ctx, p.pulumiDir, fx.env, p.stackName).OpsByURN()[urn]; op != "create" {
+		t.Fatalf("before injection: %s previews as %q, want \"create\" — if the URN is wrong "+
+			"(a parented resource's type segment is \"parentType$childType\") this scenario "+
+			"would silently assert nothing", urn, op)
+	}
+
+	args := append(patchStateArgs(fx, p),
+		"--project-dir", p.pulumiDir,
+		"--stack", p.stackName,
+		"--non-importable", p.sidecarPath,
+		"--backup-dir", p.backupDir,
+	)
+	runTool(t, ctx, fx.binPath, fx.repoRoot, fx.env, args...)
+
+	if op := runPreviewJSON(t, ctx, p.pulumiDir, fx.env, p.stackName).OpsByURN()[urn]; op != "same" {
+		t.Errorf("after injection: %s previews as %q, want \"same\"", urn, op)
+	}
+
+	// The parent edge itself, which the preview alone does not prove.
+	raw := rawStackExport(t, ctx, p.pulumiDir, fx.env, p.stackName)
+	res := findResourceByURN(t, raw, urn)
+	gotParent, _ := res["parent"].(string)
+	wantParent := expectedURN(pulumiProject, p.stackName, componentType, "certs")
+	if gotParent != wantParent {
+		t.Errorf("%s was injected with parent %q, want %q — VerifyIntegrity only warns about a "+
+			"mismatched parent, so nothing else in this suite would catch it",
+			urn, gotParent, wantParent)
+	} else {
+		t.Logf("confirmed the injected resource is parented by the component (%s)", wantParent)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -982,7 +1106,7 @@ func testInjectionSurvivesPreExistingDrift(t *testing.T, ctx context.Context, fx
 	after := runPreviewJSON(t, ctx, p.pulumiDir, fx.env, p.stackName)
 	afterOps := after.OpsByURN()
 	for _, r := range p.sidecar.Resources {
-		urn := expectedURN(pulumiProject, p.stackName, r.Type, r.Name)
+		urn := sidecarURN(p.stackName, r)
 		if op, ok := afterOps[urn]; !ok || op != "same" {
 			t.Errorf("after injection: %s previews as %q, want \"same\" — a dirty baseline must "+
 				"not lower the bar for the injected resources themselves", urn, op)
@@ -1132,7 +1256,7 @@ func testIdempotence(t *testing.T, ctx context.Context, fx *fixture) {
 	afterFirst := runPreviewJSON(t, ctx, p.pulumiDir, fx.env, p.stackName)
 	afterFirstOps := afterFirst.OpsByURN()
 	for _, r := range p.sidecar.Resources {
-		urn := expectedURN(pulumiProject, p.stackName, r.Type, r.Name)
+		urn := sidecarURN(p.stackName, r)
 		if op := afterFirstOps[urn]; op != "same" {
 			t.Fatalf("after the first injection: %s previews as %q, want \"same\"", urn, op)
 		}
@@ -1158,7 +1282,7 @@ func testIdempotence(t *testing.T, ctx context.Context, fx *fixture) {
 		verify := runPreviewJSON(t, ctx, p.pulumiDir, fx.env, p.stackName)
 		verifyOps := verify.OpsByURN()
 		for _, r := range p.sidecar.Resources {
-			urn := expectedURN(pulumiProject, p.stackName, r.Type, r.Name)
+			urn := sidecarURN(p.stackName, r)
 			if op := verifyOps[urn]; op != "same" {
 				t.Errorf("after the second injection: %s previews as %q, want \"same\" — "+
 					"the second run appears to have duplicated or corrupted the resource", urn, op)
@@ -1186,7 +1310,7 @@ func testIdempotence(t *testing.T, ctx context.Context, fx *fixture) {
 	verify := runPreviewJSON(t, ctx, p.pulumiDir, fx.env, p.stackName)
 	verifyOps := verify.OpsByURN()
 	for _, r := range p.sidecar.Resources {
-		urn := expectedURN(pulumiProject, p.stackName, r.Type, r.Name)
+		urn := sidecarURN(p.stackName, r)
 		if op := verifyOps[urn]; op != "same" {
 			t.Errorf("after the failed second run: %s previews as %q, want \"same\" — "+
 				"the failed second run left the stack worse than the first run left it", urn, op)
@@ -1241,7 +1365,7 @@ func testFileMode(t *testing.T, ctx context.Context, fx *fixture) {
 	after := runPreviewJSON(t, ctx, p.pulumiDir, fx.env, p.stackName)
 	afterOps := after.OpsByURN()
 	for _, r := range p.sidecar.Resources {
-		urn := expectedURN(pulumiProject, p.stackName, r.Type, r.Name)
+		urn := sidecarURN(p.stackName, r)
 		op, ok := afterOps[urn]
 		if !ok {
 			t.Errorf("after file-mode injection: %s has no step in the preview at all (want \"same\")", urn)
@@ -1277,7 +1401,7 @@ func testPatchOnlyStackMode(t *testing.T, ctx context.Context, fx *fixture) {
 	before := runPreviewJSON(t, ctx, p.pulumiDir, fx.env, p.stackName)
 	beforeOps := before.OpsByURN()
 	for _, r := range p.sidecar.Resources {
-		urn := expectedURN(pulumiProject, p.stackName, r.Type, r.Name)
+		urn := sidecarURN(p.stackName, r)
 		if op, ok := beforeOps[urn]; !ok || op != "create" {
 			t.Fatalf("before the patch-only run: %s previews as %q (ok=%v), want \"create\" — "+
 				"this scenario needs an outstanding diff to prove the verification guard isn't vacuous",
@@ -1310,7 +1434,7 @@ func testPatchOnlyStackMode(t *testing.T, ctx context.Context, fx *fixture) {
 	after := runPreviewJSON(t, ctx, p.pulumiDir, fx.env, p.stackName)
 	afterOps := after.OpsByURN()
 	for _, r := range p.sidecar.Resources {
-		urn := expectedURN(pulumiProject, p.stackName, r.Type, r.Name)
+		urn := sidecarURN(p.stackName, r)
 		if op, ok := afterOps[urn]; !ok || op != "create" {
 			t.Errorf("after the patch-only run: %s previews as %q (ok=%v), want it to remain "+
 				"\"create\" — a patch-only run with no --non-importable must not have silently "+

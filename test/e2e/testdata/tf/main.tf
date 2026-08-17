@@ -312,3 +312,10 @@ output "vpc_id" {
 output "vpn_connection_id" {
   value = aws_vpn_connection.vpn.id
 }
+
+# See modules/certs: a module exists here so the migration has a
+# module -> Pulumi component mapping to resolve, which is the shape real
+# migrations take.
+module "certs" {
+  source = "./modules/certs"
+}
