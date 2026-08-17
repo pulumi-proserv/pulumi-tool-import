@@ -20,6 +20,7 @@
 package e2e
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -191,4 +192,125 @@ func copyFile(src, dst string) error {
 		return fmt.Errorf("copying %s to %s: %w", src, dst, err)
 	}
 	return nil
+}
+
+// fixtureResourceIDs are the identifiers of the AWS resources
+// testdata/tf/main.tf creates, as read out of the fixture's own Terraform
+// state. Any field can be empty — a partial apply may not have created
+// (and therefore recorded) every resource.
+//
+// This type and loadFixtureResourceIDs live here, rather than beside their
+// only caller in orphan_check.go, because parsing state is pure and worth
+// testing offline: a silent parsing gap here disables an AWS-side check
+// without failing anything, which is how the for_each certificates below
+// went unverified.
+type fixtureResourceIDs struct {
+	vpcID              string
+	vpnGatewayID       string
+	customerGatewayID  string
+	vpnConnectionID    string
+	iotCertificateID   string
+	targetGroupID      string
+	lambdaFunctionName string
+	iamRoleName        string
+
+	// Resources created under the aliased "aws.east" provider, which live in
+	// secondaryRegion rather than fixtureRegion. Kept separate because
+	// verifying them needs a second AWS config: a client pinned to
+	// fixtureRegion reports a us-east-1 certificate as simply absent, which
+	// is indistinguishable from "cleaned up".
+	eastIoTCertificateID string
+
+	// for_each-keyed certificates (aws_iot_certificate.each). A count- or
+	// for_each-expanded resource appears once per key in state, so these
+	// cannot be a single field.
+	eachIoTCertificateIDs []string
+}
+
+// loadFixtureResourceIDs reads <tfDir>/terraform.tfstate directly (the
+// local backend file "tofu apply"/"tofu init" write to; see runTofu) and
+// extracts the "id" attribute of each resource type this fixture creates
+// that verifyFixtureResourcesGone checks for. It must be called before
+// "tofu destroy" runs — destroy removes these resources from state, which
+// is exactly why this reads state only to learn an ID, never to conclude
+// anything about whether the resource still exists.
+func loadFixtureResourceIDs(tfDir string) (fixtureResourceIDs, error) {
+	var ids fixtureResourceIDs
+
+	statePath := filepath.Join(tfDir, "terraform.tfstate")
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// "tofu init" (or even "tofu apply") never got far enough to
+			// write a state file — nothing to look up by ID, but the
+			// tag-based VPC scan in verifyFixtureResourcesGone still runs.
+			return ids, nil
+		}
+		return ids, fmt.Errorf("reading %s: %w", statePath, err)
+	}
+
+	var state struct {
+		Resources []struct {
+			Mode      string `json:"mode"`
+			Type      string `json:"type"`
+			Name      string `json:"name"`
+			Instances []struct {
+				Attributes map[string]json.RawMessage `json:"attributes"`
+			} `json:"instances"`
+		} `json:"resources"`
+	}
+	if err := json.Unmarshal(data, &state); err != nil {
+		return ids, fmt.Errorf("parsing %s: %w", statePath, err)
+	}
+
+	attrString := func(attrs map[string]json.RawMessage, key string) string {
+		raw, ok := attrs[key]
+		if !ok {
+			return ""
+		}
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return ""
+		}
+		return s
+	}
+
+	for _, r := range state.Resources {
+		if r.Mode != "managed" || len(r.Instances) == 0 {
+			continue
+		}
+		attrs := r.Instances[0].Attributes
+		switch {
+		case r.Type == "aws_vpc" && r.Name == "main":
+			ids.vpcID = attrString(attrs, "id")
+		case r.Type == "aws_vpn_gateway" && r.Name == "vgw":
+			ids.vpnGatewayID = attrString(attrs, "id")
+		case r.Type == "aws_customer_gateway" && r.Name == "cgw":
+			ids.customerGatewayID = attrString(attrs, "id")
+		case r.Type == "aws_vpn_connection" && r.Name == "vpn":
+			ids.vpnConnectionID = attrString(attrs, "id")
+		case r.Type == "aws_iot_certificate" && r.Name == "cert":
+			ids.iotCertificateID = attrString(attrs, "id")
+		case r.Type == "aws_iot_certificate" && r.Name == "east":
+			ids.eastIoTCertificateID = attrString(attrs, "id")
+		case r.Type == "aws_iot_certificate" && r.Name == "each":
+			// Every instance, not just the first: main.tf's for_each over
+			// {"alpha","beta"} produces ONE resources entry with two
+			// instances, so reading Instances[0] alone left the second
+			// certificate with no detection path at all — IoT certificates
+			// carry no tags, so the tag scan cannot back it up either.
+			for _, inst := range r.Instances {
+				if id := attrString(inst.Attributes, "id"); id != "" {
+					ids.eachIoTCertificateIDs = append(ids.eachIoTCertificateIDs, id)
+				}
+			}
+		case r.Type == "aws_vpclattice_target_group" && r.Name == "tg":
+			ids.targetGroupID = attrString(attrs, "id")
+		case r.Type == "aws_lambda_function" && r.Name == "target":
+			ids.lambdaFunctionName = attrString(attrs, "function_name")
+		case r.Type == "aws_iam_role" && r.Name == "lambda":
+			ids.iamRoleName = attrString(attrs, "name")
+		}
+	}
+	return ids, nil
 }

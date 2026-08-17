@@ -199,3 +199,121 @@ func TestCopyDir(t *testing.T) {
 		t.Errorf("source file disappeared: %v", err)
 	}
 }
+
+// fixtureStateJSON is a Terraform state in the shape "tofu apply" writes for
+// testdata/tf/main.tf, trimmed to the resources loadFixtureResourceIDs looks
+// for. The load-bearing detail is aws_iot_certificate.each: a for_each- (or
+// count-) expanded resource is ONE "resources" entry holding one instance per
+// key, which is the shape that has to be got right.
+const fixtureStateJSON = `{
+  "version": 4,
+  "resources": [
+    {"mode":"managed","type":"aws_vpc","name":"main",
+     "instances":[{"attributes":{"id":"vpc-0abc"}}]},
+    {"mode":"managed","type":"aws_vpn_gateway","name":"vgw",
+     "instances":[{"attributes":{"id":"vgw-0abc"}}]},
+    {"mode":"managed","type":"aws_customer_gateway","name":"cgw",
+     "instances":[{"attributes":{"id":"cgw-0abc"}}]},
+    {"mode":"managed","type":"aws_vpn_connection","name":"vpn",
+     "instances":[{"attributes":{"id":"vpn-0abc"}}]},
+    {"mode":"managed","type":"aws_iot_certificate","name":"cert",
+     "instances":[{"attributes":{"id":"cert-west"}}]},
+    {"mode":"managed","type":"aws_iot_certificate","name":"east",
+     "instances":[{"attributes":{"id":"cert-east"}}]},
+    {"mode":"managed","type":"aws_iot_certificate","name":"each",
+     "instances":[
+       {"index_key":"alpha","attributes":{"id":"cert-alpha"}},
+       {"index_key":"beta","attributes":{"id":"cert-beta"}}
+     ]},
+    {"mode":"managed","type":"aws_vpclattice_target_group","name":"tg",
+     "instances":[{"attributes":{"id":"tg-0abc"}}]},
+    {"mode":"managed","type":"aws_lambda_function","name":"target",
+     "instances":[{"attributes":{"function_name":"tool-import-e2e-lambda"}}]},
+    {"mode":"managed","type":"aws_iam_role","name":"lambda",
+     "instances":[{"attributes":{"name":"tool-import-e2e-lambda-role"}}]},
+    {"mode":"data","type":"aws_caller_identity","name":"current",
+     "instances":[{"attributes":{"id":"123456789012"}}]}
+  ]
+}`
+
+// TestLoadFixtureResourceIDsCollectsEveryForEachInstance pins the regression
+// that made this worth testing offline: the loop read Instances[0] only, so
+// the "beta" certificate was never collected and had no detection path at all
+// — IoT certificates carry no tags, so the tag scan cannot back one up. A
+// missed ID here fails nothing; it just silently skips an AWS-side check.
+func TestLoadFixtureResourceIDsCollectsEveryForEachInstance(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "terraform.tfstate"), []byte(fixtureStateJSON), 0o600); err != nil {
+		t.Fatalf("writing state fixture: %v", err)
+	}
+
+	ids, err := loadFixtureResourceIDs(dir)
+	if err != nil {
+		t.Fatalf("loadFixtureResourceIDs() error = %v", err)
+	}
+
+	want := []string{"cert-alpha", "cert-beta"}
+	if len(ids.eachIoTCertificateIDs) != len(want) {
+		t.Fatalf("eachIoTCertificateIDs = %v, want %v — a for_each resource is one entry "+
+			"with one instance per key, so every instance must be read", ids.eachIoTCertificateIDs, want)
+	}
+	for i, w := range want {
+		if ids.eachIoTCertificateIDs[i] != w {
+			t.Errorf("eachIoTCertificateIDs[%d] = %q, want %q", i, ids.eachIoTCertificateIDs[i], w)
+		}
+	}
+}
+
+// TestLoadFixtureResourceIDsReadsEveryCheckedResource guards the other half of
+// the same failure mode: every field verifyFixtureResourcesGone gates a check
+// on must actually get populated, since an empty one skips its check silently.
+func TestLoadFixtureResourceIDsReadsEveryCheckedResource(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "terraform.tfstate"), []byte(fixtureStateJSON), 0o600); err != nil {
+		t.Fatalf("writing state fixture: %v", err)
+	}
+
+	ids, err := loadFixtureResourceIDs(dir)
+	if err != nil {
+		t.Fatalf("loadFixtureResourceIDs() error = %v", err)
+	}
+
+	for _, tt := range []struct {
+		field string
+		got   string
+		want  string
+	}{
+		{"vpcID", ids.vpcID, "vpc-0abc"},
+		{"vpnGatewayID", ids.vpnGatewayID, "vgw-0abc"},
+		{"customerGatewayID", ids.customerGatewayID, "cgw-0abc"},
+		{"vpnConnectionID", ids.vpnConnectionID, "vpn-0abc"},
+		{"iotCertificateID", ids.iotCertificateID, "cert-west"},
+		{"eastIoTCertificateID", ids.eastIoTCertificateID, "cert-east"},
+		{"targetGroupID", ids.targetGroupID, "tg-0abc"},
+		{"lambdaFunctionName", ids.lambdaFunctionName, "tool-import-e2e-lambda"},
+		{"iamRoleName", ids.iamRoleName, "tool-import-e2e-lambda-role"},
+	} {
+		if tt.got != tt.want {
+			t.Errorf("%s = %q, want %q", tt.field, tt.got, tt.want)
+		}
+	}
+}
+
+// TestLoadFixtureResourceIDsMissingStateIsNotAnError covers the path where
+// "tofu init" never wrote state. That must not error — the tag-based VPC scan
+// still has to run — but it must also not be mistaken for "nothing to check".
+func TestLoadFixtureResourceIDsMissingStateIsNotAnError(t *testing.T) {
+	t.Parallel()
+
+	ids, err := loadFixtureResourceIDs(t.TempDir())
+	if err != nil {
+		t.Fatalf("loadFixtureResourceIDs() on a missing state file error = %v, want nil", err)
+	}
+	if ids.vpcID != "" || len(ids.eachIoTCertificateIDs) != 0 {
+		t.Errorf("loadFixtureResourceIDs() on a missing state file = %+v, want zero value", ids)
+	}
+}

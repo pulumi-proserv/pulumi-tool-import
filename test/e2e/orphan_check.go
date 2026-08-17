@@ -18,8 +18,6 @@ package e2e
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -86,21 +84,19 @@ var terraformDoneStates = map[string]bool{
 // would leave looking clean) for the resource types this fixture is known
 // to create, and t.Errors, by name, anything still around.
 //
-// It reads whatever resource IDs are in the fixture's local Terraform
-// state (captured by the caller before "tofu destroy" runs, since destroy
-// removes them from state) to know what to look up — that is "trusting
-// state" only to the extent of learning an ID to double check independently,
-// never to conclude something is gone.
-func verifyFixtureResourcesGone(t *testing.T, ctx context.Context, tfDir string) {
+// The IDs it looks up are passed in, NOT read here: they must be captured
+// before "tofu destroy" runs, because destroy removes each resource from
+// state as it destroys it and the caller then deletes the state directory
+// outright. Reading them here instead — which this function used to do —
+// found an empty state on every successful teardown, skipped every
+// ID-gated check below, and left only the tag scan running. Taking them as
+// a parameter makes that ordering the caller's explicit responsibility
+// rather than an invisible precondition.
+//
+// Note this is still "trusting state" only to the extent of learning an ID
+// to double check independently, never to conclude something is gone.
+func verifyFixtureResourcesGone(t *testing.T, ctx context.Context, ids fixtureResourceIDs) {
 	t.Helper()
-
-	ids, err := loadFixtureResourceIDs(tfDir)
-	if err != nil {
-		t.Errorf("verifyFixtureResourcesGone: could not read fixture resource IDs from %s's "+
-			"Terraform state to double check them against AWS directly: %v — this does NOT mean "+
-			"nothing is left behind, only that this check could not run; check the account by hand",
-			tfDir, err)
-	}
 
 	cfg, err := loadRegionalAWSConfig(ctx)
 	if err != nil {
@@ -181,114 +177,6 @@ func loadAWSConfigForRegion(ctx context.Context, region string) (aws.Config, err
 		defer os.Setenv("AWS_PROFILE", prev)
 	}
 	return awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(region))
-}
-
-// fixtureResourceIDs are the identifiers of the AWS resources
-// testdata/tf/main.tf creates, as read out of the fixture's own Terraform
-// state. Any field can be empty — a partial apply may not have created
-// (and therefore recorded) every resource.
-type fixtureResourceIDs struct {
-	vpcID              string
-	vpnGatewayID       string
-	customerGatewayID  string
-	vpnConnectionID    string
-	iotCertificateID   string
-	targetGroupID      string
-	lambdaFunctionName string
-	iamRoleName        string
-
-	// Resources created under the aliased "aws.east" provider, which live in
-	// secondaryRegion rather than fixtureRegion. Kept separate because
-	// verifying them needs a second AWS config: a client pinned to
-	// fixtureRegion reports a us-east-1 certificate as simply absent, which
-	// is indistinguishable from "cleaned up".
-	eastIoTCertificateID string
-
-	// for_each-keyed certificates (aws_iot_certificate.each). A count- or
-	// for_each-expanded resource appears once per key in state, so these
-	// cannot be a single field.
-	eachIoTCertificateIDs []string
-}
-
-// loadFixtureResourceIDs reads <tfDir>/terraform.tfstate directly (the
-// local backend file "tofu apply"/"tofu init" write to; see runTofu) and
-// extracts the "id" attribute of each resource type this fixture creates
-// that verifyFixtureResourcesGone checks for. It must be called before
-// "tofu destroy" runs — destroy removes these resources from state, which
-// is exactly why this reads state only to learn an ID, never to conclude
-// anything about whether the resource still exists.
-func loadFixtureResourceIDs(tfDir string) (fixtureResourceIDs, error) {
-	var ids fixtureResourceIDs
-
-	statePath := tfDir + "/terraform.tfstate"
-	data, err := os.ReadFile(statePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			// "tofu init" (or even "tofu apply") never got far enough to
-			// write a state file — nothing to look up by ID, but the
-			// tag-based VPC scan in verifyFixtureResourcesGone still runs.
-			return ids, nil
-		}
-		return ids, fmt.Errorf("reading %s: %w", statePath, err)
-	}
-
-	var state struct {
-		Resources []struct {
-			Mode      string `json:"mode"`
-			Type      string `json:"type"`
-			Name      string `json:"name"`
-			Instances []struct {
-				Attributes map[string]json.RawMessage `json:"attributes"`
-			} `json:"instances"`
-		} `json:"resources"`
-	}
-	if err := json.Unmarshal(data, &state); err != nil {
-		return ids, fmt.Errorf("parsing %s: %w", statePath, err)
-	}
-
-	attrString := func(attrs map[string]json.RawMessage, key string) string {
-		raw, ok := attrs[key]
-		if !ok {
-			return ""
-		}
-		var s string
-		if err := json.Unmarshal(raw, &s); err != nil {
-			return ""
-		}
-		return s
-	}
-
-	for _, r := range state.Resources {
-		if r.Mode != "managed" || len(r.Instances) == 0 {
-			continue
-		}
-		attrs := r.Instances[0].Attributes
-		switch {
-		case r.Type == "aws_vpc" && r.Name == "main":
-			ids.vpcID = attrString(attrs, "id")
-		case r.Type == "aws_vpn_gateway" && r.Name == "vgw":
-			ids.vpnGatewayID = attrString(attrs, "id")
-		case r.Type == "aws_customer_gateway" && r.Name == "cgw":
-			ids.customerGatewayID = attrString(attrs, "id")
-		case r.Type == "aws_vpn_connection" && r.Name == "vpn":
-			ids.vpnConnectionID = attrString(attrs, "id")
-		case r.Type == "aws_iot_certificate" && r.Name == "cert":
-			ids.iotCertificateID = attrString(attrs, "id")
-		case r.Type == "aws_iot_certificate" && r.Name == "east":
-			ids.eastIoTCertificateID = attrString(attrs, "id")
-		case r.Type == "aws_iot_certificate" && r.Name == "each":
-			if id := attrString(attrs, "id"); id != "" {
-				ids.eachIoTCertificateIDs = append(ids.eachIoTCertificateIDs, id)
-			}
-		case r.Type == "aws_vpclattice_target_group" && r.Name == "tg":
-			ids.targetGroupID = attrString(attrs, "id")
-		case r.Type == "aws_lambda_function" && r.Name == "target":
-			ids.lambdaFunctionName = attrString(attrs, "function_name")
-		case r.Type == "aws_iam_role" && r.Name == "lambda":
-			ids.iamRoleName = attrString(attrs, "name")
-		}
-	}
-	return ids, nil
 }
 
 // isNotFoundErr reports whether err is any of the many differently-named

@@ -270,6 +270,25 @@ func TestNonImportableStateInjection(t *testing.T) {
 	// out of this test (success, t.Fatalf, panic), which is the actual
 	// guarantee here; it is not specific to subtest failures.
 	t.Cleanup(func() {
+		// Capture the resource IDs BEFORE destroy, while state still lists
+		// them. Destroy removes each resource from state as it destroys it,
+		// and the success path below then deletes tfRoot outright, so
+		// reading state after destroy — which verifyFixtureResourcesGone
+		// used to do for itself — found nothing and silently skipped every
+		// AWS-side check, leaving only the tag scan. That disabled the
+		// check on exactly the case it exists for: a destroy that exits
+		// zero while leaving resources behind.
+		//
+		// Reading here rather than after "apply" also covers a failed or
+		// partial apply, which fatals before any post-apply capture would
+		// run but still leaves what it did create recorded in state.
+		ids, idErr := loadFixtureResourceIDs(tfDir)
+		if idErr != nil {
+			t.Errorf("could not read fixture resource IDs from %s's Terraform state to double "+
+				"check them against AWS directly: %v — this does NOT mean nothing is left behind, "+
+				"only that this check could not run; check the account by hand", tfDir, idErr)
+		}
+
 		out, err := runTofuCombined(ctx, tfDir, env, "destroy", "-auto-approve", "-input=false")
 		if err == nil {
 			// Only now is the state safe to discard.
@@ -284,7 +303,7 @@ func TestNonImportableStateInjection(t *testing.T) {
 			t.Errorf("tofu destroy failed — clean up by hand from %s (terraform state left in place):\n%v\n%s",
 				tfDir, err, out)
 		}
-		verifyFixtureResourcesGone(t, ctx, tfDir)
+		verifyFixtureResourcesGone(t, ctx, ids)
 	})
 	runTofu(t, ctx, tfDir, env, "apply", "-auto-approve", "-input=false")
 
