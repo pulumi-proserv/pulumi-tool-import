@@ -147,7 +147,23 @@ func TestNonImportableStateInjection(t *testing.T) {
 	repoRoot := repoRoot(t)
 	binPath := buildTool(t, ctx, repoRoot)
 
-	tfDir := filepath.Join(t.TempDir(), "tf")
+	// Deliberately NOT t.TempDir(): Go removes a t.TempDir when the test
+	// ends, including on failure, which takes the Terraform state with it.
+	//
+	// That is what happened on 2026-08-17. DNS failed mid-apply, "tofu
+	// destroy" could not reach STS, and the cleanup printed "clean up by hand
+	// from <dir>" naming a directory Go had already deleted — so the state
+	// needed to destroy a running VPN connection was gone, and every orphan
+	// had to be found and deleted through the AWS API by hand instead.
+	//
+	// So this directory is created outside the testing framework's lifecycle
+	// and removed explicitly only when teardown actually succeeded. A leftover
+	// directory is a much cheaper failure than unreachable state.
+	tfRoot, err := os.MkdirTemp("", "pulumi-tool-import-e2e-tf-")
+	if err != nil {
+		t.Fatalf("creating tf working directory: %v", err)
+	}
+	tfDir := filepath.Join(tfRoot, "tf")
 	if err := copyDir(filepath.Join(repoRoot, "test", "e2e", "testdata", "tf"), tfDir); err != nil {
 		t.Fatalf("copying tf fixture: %v", err)
 	}
@@ -203,7 +219,16 @@ func TestNonImportableStateInjection(t *testing.T) {
 	// guarantee here; it is not specific to subtest failures.
 	t.Cleanup(func() {
 		out, err := runTofuCombined(ctx, tfDir, env, "destroy", "-auto-approve", "-input=false")
-		if err != nil {
+		if err == nil {
+			// Only now is the state safe to discard.
+			if rmErr := os.RemoveAll(tfRoot); rmErr != nil {
+				t.Logf("removing %s: %v", tfRoot, rmErr)
+			}
+		} else {
+			t.Errorf("RECOVERY: the Terraform state is preserved at %s — re-run\n"+
+				"    esc run team-ce/aws/pulumi-ce -- env -u AWS_PROFILE tofu -chdir=%s destroy -auto-approve\n"+
+				"once the cause below is resolved. Delete that directory afterwards.",
+				tfDir, tfDir)
 			t.Errorf("tofu destroy failed — clean up by hand from %s (terraform state left in place):\n%v\n%s",
 				tfDir, err, out)
 		}

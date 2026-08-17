@@ -48,6 +48,18 @@ import (
 // mistake.
 const fixtureRegion = "us-west-2"
 
+// secondaryRegion is the region testdata/tf/main.tf's aliased
+// 'provider "aws" { alias = "east" }' block hard-codes. Same
+// keep-in-sync-by-hand caveat as fixtureRegion.
+//
+// A second region is not merely more surface to sweep — it is a second way
+// for the sweep to report a false "clean". A client pinned to fixtureRegion
+// asking about a us-east-1 certificate is told it does not exist, which is
+// indistinguishable from "torn down". That happened on 2026-08-17: a DNS
+// failure broke teardown, and a fixtureRegion-only sweep missed the
+// certificate left behind in us-east-1.
+const secondaryRegion = "us-east-1"
+
 // fixtureManagedByTag is the tag value testdata/tf/main.tf's local.tags
 // sets on every taggable resource it creates ("ManagedBy" key). Used as an
 // independent, ID-free way to find leftover VPCs — independent because it
@@ -115,6 +127,24 @@ func verifyFixtureResourcesGone(t *testing.T, ctx context.Context, tfDir string)
 	if ids.iotCertificateID != "" {
 		checkIoTCertificateGone(t, ctx, iotClient, ids.iotCertificateID)
 	}
+	for _, id := range ids.eachIoTCertificateIDs {
+		checkIoTCertificateGone(t, ctx, iotClient, id)
+	}
+
+	// The aliased provider's resources live in another region, and a client
+	// pinned to fixtureRegion would report them as absent — which reads as
+	// "cleaned up" and is exactly the false negative this file exists to
+	// prevent. On 2026-08-17 a failed teardown left a certificate in
+	// us-east-1 that a fixtureRegion-only sweep did not see.
+	if ids.eastIoTCertificateID != "" {
+		eastCfg, err := loadAWSConfigForRegion(ctx, secondaryRegion)
+		if err != nil {
+			t.Errorf("verifyFixtureResourcesGone: loading AWS config for region %s: %v — could not "+
+				"verify the aliased provider's resources; check %s by hand", secondaryRegion, err, secondaryRegion)
+		} else {
+			checkIoTCertificateGone(t, ctx, iot.NewFromConfig(eastCfg), ids.eastIoTCertificateID)
+		}
+	}
 	if ids.targetGroupID != "" {
 		checkTargetGroupGone(t, ctx, vpcLatticeClient, ids.targetGroupID)
 	}
@@ -140,11 +170,17 @@ func verifyFixtureResourcesGone(t *testing.T, ctx context.Context, tfDir string)
 // (which reads os.Environ() directly, in-process, unlike the subprocess
 // calls elsewhere in this test).
 func loadRegionalAWSConfig(ctx context.Context) (aws.Config, error) {
+	return loadAWSConfigForRegion(ctx, fixtureRegion)
+}
+
+// loadAWSConfigForRegion is loadRegionalAWSConfig for an arbitrary region,
+// needed since the fixture gained an aliased provider in secondaryRegion.
+func loadAWSConfigForRegion(ctx context.Context, region string) (aws.Config, error) {
 	if prev, ok := os.LookupEnv("AWS_PROFILE"); ok {
 		os.Unsetenv("AWS_PROFILE")
 		defer os.Setenv("AWS_PROFILE", prev)
 	}
-	return awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(fixtureRegion))
+	return awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(region))
 }
 
 // fixtureResourceIDs are the identifiers of the AWS resources
@@ -160,6 +196,18 @@ type fixtureResourceIDs struct {
 	targetGroupID      string
 	lambdaFunctionName string
 	iamRoleName        string
+
+	// Resources created under the aliased "aws.east" provider, which live in
+	// secondaryRegion rather than fixtureRegion. Kept separate because
+	// verifying them needs a second AWS config: a client pinned to
+	// fixtureRegion reports a us-east-1 certificate as simply absent, which
+	// is indistinguishable from "cleaned up".
+	eastIoTCertificateID string
+
+	// for_each-keyed certificates (aws_iot_certificate.each). A count- or
+	// for_each-expanded resource appears once per key in state, so these
+	// cannot be a single field.
+	eachIoTCertificateIDs []string
 }
 
 // loadFixtureResourceIDs reads <tfDir>/terraform.tfstate directly (the
@@ -226,6 +274,12 @@ func loadFixtureResourceIDs(tfDir string) (fixtureResourceIDs, error) {
 			ids.vpnConnectionID = attrString(attrs, "id")
 		case r.Type == "aws_iot_certificate" && r.Name == "cert":
 			ids.iotCertificateID = attrString(attrs, "id")
+		case r.Type == "aws_iot_certificate" && r.Name == "east":
+			ids.eastIoTCertificateID = attrString(attrs, "id")
+		case r.Type == "aws_iot_certificate" && r.Name == "each":
+			if id := attrString(attrs, "id"); id != "" {
+				ids.eachIoTCertificateIDs = append(ids.eachIoTCertificateIDs, id)
+			}
 		case r.Type == "aws_vpclattice_target_group" && r.Name == "tg":
 			ids.targetGroupID = attrString(attrs, "id")
 		case r.Type == "aws_lambda_function" && r.Name == "target":
