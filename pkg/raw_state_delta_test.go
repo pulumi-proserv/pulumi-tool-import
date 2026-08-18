@@ -24,6 +24,7 @@ import (
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/tfprovider"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 	shim "github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfshim"
+	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/vendored/opentofu/providers"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -536,4 +537,133 @@ func TestDeltaMarshalPreservesReplaceNodes(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEqual(t, canonical, string(lossy),
 		"guard on the premise: Mappable() is expected to differ, so this test is not vacuous")
+}
+
+// TestComputeInjectionState_DeltaServesAProviderStateUpgrade is the first test
+// in this repository to hand a delta-reconstructed raw state to a real provider.
+//
+// What the delta is actually for, established from bridge source rather than
+// from this repo's issues: makeTerraformStateViaUpgradeEnabled is consulted in
+// Diff, Read AND Update (tfbridge/provider.go:1129, :1442, :1651), and
+// makeTerraformStateWithOpts is documented as "the old method used when
+// makeTerraformStateViaUpgrade is not available". So the delta is the PRIMARY
+// Pulumi->Terraform state conversion path for every operation on the resource,
+// with the legacy lossy conversion as the fallback. Surviving a provider
+// version upgrade is one consequence of that, not the purpose — UpgradeState is
+// called at the end because it also normalises to the current schema.
+//
+// That makes delta correctness a per-operation concern, not a deferred one, and
+// the failure mode is not graceful: makeTerraformStateViaUpgrade wraps both
+// UnmarshalRawStateDelta and Recover in contract.AssertNoErrorf, so a delta that
+// will not parse or will not apply PANICS the provider on the next preview. The
+// validateRecover call injection performs before writing a delta is what stands
+// between a bad delta and that crash.
+//
+// aws_ssm_patch_group is chosen because it is the one AWS resource type that is
+// both non-importable and carries a schema version (measured: 1 of 1526 in
+// terraform-provider-aws 5.100.0), so it is the only one where UpgradeState has
+// real upgraders to run rather than being a pass-through.
+//
+// The upgrade is requested at the resource's OWN schema version. The state
+// genuinely is at v1, so asking for a v0 migration would be testing a fiction.
+// The question this answers is "does the provider accept, as its own, the raw
+// state our delta reconstructs?" — which is what every Diff depends on.
+//
+// Measured scope of that check, so it is not over-read: UpgradeResourceState
+// rejects wrong attribute types, non-object JSON and malformed JSON, but
+// ACCEPTS an empty object and one missing required attributes. It is a real
+// structural and type check, not an exhaustive one.
+func TestComputeInjectionState_DeltaServesAProviderStateUpgrade(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	prov, err := tfprovider.LoadProvider(ctx, nestedBlockTestAWSProviderAddr, nestedBlockTestAWSProviderVersion)
+	if err != nil {
+		skipOrFailUnavailable(t, err, "aws provider unavailable")
+		return
+	}
+	defer prov.Close(ctx)
+
+	const tfType = "aws_ssm_patch_group"
+
+	sch, ok := prov.GetProviderSchema(ctx).ResourceTypes[tfType]
+	require.True(t, ok, "provider has no schema for %s", tfType)
+	require.EqualValues(t, 1, sch.Version,
+		"this test is pointless if %s stops carrying a schema version", tfType)
+
+	pulumiProviders, err := PulumiProvidersForTerraformProviders(
+		[]providermap.TerraformProviderName{nestedBlockTestAWSProviderAddr},
+		map[string]string{nestedBlockTestAWSProviderAddr: nestedBlockTestAWSProviderVersion},
+	)
+	if err != nil {
+		skipOrFailUnavailable(t, err, "could not bridge aws provider schema")
+		return
+	}
+	pwm := pulumiProviders[providermap.TerraformProviderName(nestedBlockTestAWSProviderAddr)]
+	require.NotNil(t, pwm)
+	shimResource := pwm.P.ResourcesMap().Get(tfType)
+	require.NotNil(t, shimResource, "expected %s in the bridged schema", tfType)
+	schemaMap := shimResource.Schema()
+	var schemaInfos map[string]*tfbridge.SchemaInfo
+	if ri := pwm.Resources[tfType]; ri != nil {
+		schemaInfos = ri.Fields
+	}
+
+	attrs := []byte(`{"id":"patch-group-1,pb-0123456789abcdef0",` +
+		`"baseline_id":"pb-0123456789abcdef0","patch_group":"patch-group-1"}`)
+
+	outputs, delta, deltaReason, version, err := ComputeInjectionState(
+		ctx, prov, tfType, attrs, schemaMap, schemaInfos)
+	require.NoError(t, err)
+	require.NotEmpty(t, delta, "no delta means nothing to upgrade from")
+	assert.Empty(t, deltaReason)
+	require.EqualValues(t, 1, version,
+		"the recorded schema version is what tells a later bridge which upgraders to run")
+
+	// Through the sidecar's JSON round trip, as production does.
+	outputsJSON, err := json.Marshal(outputs)
+	require.NoError(t, err)
+	deltaJSON, err := json.Marshal(delta)
+	require.NoError(t, err)
+	var outputsFromSidecar, deltaFromSidecar map[string]interface{}
+	require.NoError(t, json.Unmarshal(outputsJSON, &outputsFromSidecar))
+	require.NoError(t, json.Unmarshal(deltaJSON, &deltaFromSidecar))
+
+	rsd, err := tfbridge.UnmarshalRawStateDelta(resource.NewPropertyValue(deltaFromSidecar))
+	require.NoError(t, err)
+	recovered, err := rsd.Recover(
+		resource.NewObjectProperty(resource.NewPropertyMapFromMap(outputsFromSidecar)))
+	require.NoError(t, err, "the delta must apply to its own outputs")
+
+	// The provider itself is the arbiter: hand it the reconstruction.
+	resp := prov.UpgradeResourceState(ctx, providers.UpgradeResourceStateRequest{
+		TypeName:     tfType,
+		Version:      version,
+		RawStateJSON: recovered,
+	})
+	require.False(t, resp.Diagnostics.HasErrors(),
+		"the provider rejected raw state reconstructed from our delta: %v", resp.Diagnostics.Err())
+	require.False(t, resp.UpgradedState.IsNull(), "upgrade produced a null state")
+
+	// And it must come back carrying the same values, not merely parse.
+	upgraded := resp.UpgradedState.AsValueMap()
+	assert.Equal(t, "pb-0123456789abcdef0", upgraded["baseline_id"].AsString())
+	assert.Equal(t, "patch-group-1", upgraded["patch_group"].AsString())
+
+	// Non-vacuity: a corrupt delta must NOT sail through this same path. Without
+	// this the test would pass on any delta the provider happens to tolerate.
+	t.Run("a corrupt delta does not survive", func(t *testing.T) {
+		corrupt := map[string]interface{}{"obj": map[string]interface{}{
+			"ps": map[string]interface{}{"baseline_id": map[string]interface{}{"nope": map[string]interface{}{}}},
+		}}
+		badRSD, err := tfbridge.UnmarshalRawStateDelta(resource.NewPropertyValue(corrupt))
+		require.NoError(t, err)
+		badRecovered, recoverErr := badRSD.Recover(
+			resource.NewObjectProperty(resource.NewPropertyMapFromMap(outputsFromSidecar)))
+		if recoverErr != nil {
+			return // rejected before the provider ever saw it, which is fine
+		}
+		assert.NotEqual(t, string(recovered), string(badRecovered),
+			"a corrupt delta must not reconstruct the same raw state as a correct one")
+	})
 }
