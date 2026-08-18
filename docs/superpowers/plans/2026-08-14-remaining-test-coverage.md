@@ -31,6 +31,40 @@ The fourth is the most economical result on the list. It was found while *writin
 - classification: every diverted resource is confirmed to genuinely fail `pulumi import`
 - pre-existing drift: a dirty baseline, closing gap 4 below
 
+## Status as of 2026-08-18
+
+This list predates e2e runs 11-18 and the delta coverage work. Current state:
+
+| Gap | Status |
+|---|---|
+| 0. Secrets provider other than `passphrase` | **CLOSED** — `KMSSecretsProvider` scenario |
+| 1. Multiple providers or regions | **PARTLY** — an aliased `us-east-1` provider is covered; a second *region of the same resources* is not |
+| 2. Injected resources that depend on each other | **CLOSED** — `ProviderAndDependencyEdges`, and the dependency is what surfaced the unknown-sentinel bug in run 15 |
+| 3. `for_each` rather than `count` | **CLOSED** — `each["alpha"]`/`each["beta"]` in the fixture |
+| 4. Pre-existing drift | **CLOSED** — `InjectionSurvivesPreExistingDrift` |
+| 5. Provider version upgrade | **NOT BUILDABLE as written** — `aws_ssm_patch_group` already had `SchemaVersion: 1` at terraform-provider-aws v4.0.0 (Feb 2022), so no modern `pulumi-aws` pair straddles the bump. Partly served instead by a real-provider `UpgradeResourceState` test |
+| 6. The CFN path | **MOVED** — now #33 (no classification or injection at all) and #32 (shared runner) |
+| 7. Component parents | **CLOSED** — `ComponentParent`, a `toolimport:index:Certs` component |
+| 8. Interrupted run | **STILL OPEN** |
+| Sensitive INPUT resolution | **LOGIC CLOSED, E2E OPEN** — covered synthetically end to end after `caPem` was removed in `addec9a`. AWS has no natural fixture candidate: of its 14 non-importable types exactly one has a Terraform sensitive input (`aws_cloudcontrolapi_resource.schema`) |
+| Delta correctness across more types | **CLOSED** — `TestDeltaSweep` covers all 14 non-importable AWS types, 14/14 exact. See the delta coverage plan |
+
+Two scenarios exist now that this list did not anticipate:
+
+- `ClassificationIsNotOverBroad` — attempts `pulumi import` on each sidecar resource and fails if
+  any imports AND previews as `same`. Nothing previously asserted that injection was NECESSARY
+  rather than merely sufficient.
+- `CorruptDeltaFailsPreview` — corrupts an injected delta and requires the next preview to fail,
+  which is what makes every other delta assertion in the suite meaningful rather than merely
+  consistent with correctness.
+
+Delta-specific coverage has its own plan:
+`docs/superpowers/plans/2026-08-18-raw-state-delta-coverage.md`.
+
+**A caveat that applies to this whole list:** it is written against the AWS fixture, and the tool is
+not AWS-only — Azure, GCP and Kubernetes are planned. Several gaps here are AWS-shaped ("no natural
+candidate") rather than genuinely closed, and a new provider may reopen them.
+
 ## Gaps, in priority order
 
 ### 0. A secrets provider other than `passphrase`

@@ -1,7 +1,8 @@
 # Raw state delta — test coverage plan
 
-Status: revised 2026-08-18 after measuring several of its own first-draft assumptions and finding
-them wrong. Tier 1 and Tier 2 partly implemented; the rest proposed.
+Status: revised 2026-08-18 (twice). Tiers 1-4 substantially IMPLEMENTED; what remains is listed
+under "Still open" at the end. Several of this plan's own first-draft claims were disproved by
+measurement and have been corrected in place.
 
 ## Why this needs a plan
 
@@ -118,68 +119,91 @@ Node kinds: `plu` (MaxItems=1), `map`, `obj` (with `ignored`/`renamed`), `arr`, 
 
 | Node kind | State | Notes |
 |---|---|---|
-| `obj` | covered | RandomPet, nested-block, patch-group |
-| `plu` | covered | nested-block, two levels |
+| `obj` | **done** | RandomPet, nested-block, patch-group |
+| `plu` | **done** | nested-block, two levels |
 | `map` | **done** | populated tags; every earlier fixture had empty maps |
-| `arr` | partial | only empty lists so far |
-| `replace` | **partly done** | reached via precision loss, NOT via JSON strings — a policy document is a `TypeString` and round-trips naturally, producing `{"obj":{}}`. The plan's first draft named policy documents as the trigger; that was wrong. The other trigger, `schType.IsDynamicType()`, needs a **synthetic schema** — see below |
-| `num` | not covered | needs a number-typed TF value against a string-typed Pulumi value; ordinary integers round-trip naturally |
-| `asset` | not covered | `pulumiOutputsFromCty` passes `assets: nil`; establish reachability before writing a test |
-| `renamed` | incidental | observed in 4 of 10 probed types, never asserted |
-| natural | covered | RandomPet |
+| `arr` | **done** | populated lists, sets, and per-index element deltas via the nested test |
+| `replace` | **done** | two routes covered: `DynamicPseudoType` (synthetic — Kubernetes's case) and precision loss. NOT triggered by JSON strings: a policy document is a `TypeString` and round-trips naturally to `{"obj":{}}`. This plan's first draft named policy documents as the trigger; that was wrong |
+| `renamed` | **done** | schema-override rename, plus the pluralization case |
+| natural | **done** | RandomPet |
+| `num` | **UNREACHED** | needs a number-typed TF value against a string-typed Pulumi VALUE. Declaring the shim schema `TypeString` is not enough — `MakeTerraformOutputs` still yields the number. Recorded in the test rather than papered over |
+| `asset` | **open** | `pulumiOutputsFromCty` passes `assets: nil`; reachability never established |
 
-**`replace` via dynamic types is the highest-value gap**, because Kubernetes is coming and
-`kubernetes_manifest` is dynamic throughout. A synthetic schema with a `cty.DynamicPseudoType`
-attribute tests it today, without waiting for a Kubernetes fixture.
+Also covered, and NOT in this plan's first draft:
+
+- **Sets** — had zero coverage anywhere; ubiquitous (AWS security groups, Kubernetes, Azure) and the
+  case most likely to break quietly, since Terraform treats a set as unordered while its JSON
+  encoding is an ordered array.
+- **Pluralization** — the bridge renames `cidr_block` to `cidrBlocks` and `PulumiToTerraformName`
+  cannot invert it. 513 pulumi-aws attributes fail to round-trip through that transform, which is
+  what made `resolveSecretInputs` silently delete program-declared inputs.
+- **Nested combinations** — objects in lists in objects, a map two levels down, a set of objects.
+  Where the mechanisms interact, which is where a depth-2 mistake hides from depth-1 tests.
+
+`replace` via dynamic types was the highest-value gap and is now closed with a synthetic schema —
+covered today rather than waiting for a Kubernetes fixture.
 
 ## Tier 2 — the properties that have actually bitten
 
 1. **Large integers — done, and it refined #29.** Above 2^53 the *sidecar* keeps exact digits (the
    bridge emits a Replace node carrying them), but *recovery* loses them either way: plain decode
    gives a rounded number, `UseNumber` gives an exact **string**, because `json.Number` has no
-   `PropertyValue` case. Neither reproduces a Terraform number. So #29 needs a representation
-   change, not a decoding change — adding `UseNumber` downstream cannot help.
-2. **Secrets and the delta.** Assert `attachRawStateDelta`'s `(sensitive)` screen, and assert a
-   `replace` node arrives in state enveloped and survives `RemoveSecrets`.
-3. **`ignored` / the `region` case.** Pin the behaviour #30 theorised about, so it cannot silently
-   change.
-4. **`timeouts`.** Covered in three subtests; extend to a type with populated timeouts *and*
+   `PropertyValue` case. Neither reproduces a Terraform number, so #29 needs a representation
+   change, not a decoding change.
+2. **Secrets and the delta — done.** The `(sensitive)` screen in `attachRawStateDelta`, and a
+   `replace` node arriving in state enveloped and surviving `RemoveSecrets`.
+3. **`ignored` / the `region` case — done, and it corrected #30.** A Pulumi-only property is NOT
+   dropped; `objDelta.Ignored` records keys absent at delta-*computation* time, and one added later
+   by `fillOutputsFromInputs` was never there to record, so it recovers naturally — written straight
+   into the reconstructed raw state. Harmless only because providers ignore undeclared attributes,
+   which is now asserted against a real provider rather than assumed.
+4. **`timeouts` — partly.** Three subtests including a populated block. Still open: combined with
    nested blocks.
-5. **Empty vs null at our seam** — `null` vs absent key vs `[]` vs `{}` vs `""` *after* the sidecar
-   round trip, which is where `omitempty` lives. The bridge covers this at schema level, not after
-   JSON.
+5. **Empty vs null at our seam — done.** `null` vs `""` vs `[]` vs `{}` through the sidecar's JSON
+   round trip, where `omitempty` and Go zero values blur what the bridge kept separate.
+6. **Sensitive INPUT resolution — done, synthetically.** The full path: a Terraform-sensitive
+   attribute redacted out of the digest, its real value written to stack config, and injection
+   resolving it back as a Pulumi secret envelope — plus the failure direction when config lacks the
+   key. This had no coverage at any level after `caPem` was removed in `addec9a`.
 
-## Tier 3 — breadth sweep over injectable types
+## Tier 3 — breadth sweep over injectable types — DONE
 
-Population: non-importable types, enumerable offline via `importsupport.Prober`. For each,
-synthesize a value from `sch.Block.ImpliedType()`, compute, round-trip, recover, compare per
-attribute, report differing attribute names.
+`TestDeltaSweep`, behind the `deltasweep` build tag. Enumerates every non-importable type via
+`importsupport.Prober`, synthesizes a populated value from its schema, and requires exact
+reconstruction. **14 of 1526 AWS types are non-importable; all 14 round-trip exactly.**
 
-Prerequisites, both now met or known: the comparator rules above, and honest accounting of what was
-skipped (types that fail to marshal, or have no bridged schema, must be counted and reported).
-Populate values from the schema rather than using all-null — an all-null value exercises the walk
-but almost nothing else. Run behind a build tag or a cap; it needs the provider binary but no cloud.
+It names the differing attribute rather than returning a boolean, and accounts for what it did NOT
+exercise. It found zero product defects and three harness bugs of mine, each of which would have
+been a false alarm — including one where `NewPropertyMapFromMap` (no `json.Number` case) turned
+every number into a String property before recovery. The rule that came out of it: **use the
+production converters, not convenient equivalents.**
 
-Worth running per provider as Azure, GCP and Kubernetes are added — it is the cheapest way to learn
-what a new provider's schemas do to this pipeline.
+Run it per provider as Azure, GCP and Kubernetes are added. It is the cheapest way to learn what a
+new provider's schemas do to this pipeline, and it needs no cloud credentials.
 
-## Tier 4 — end to end
+## Tier 4 — end to end — DONE
 
-**The e2e already exercises delta consumption**, which the first draft understated: the
-post-injection preview runs `Diff`, `Diff` consumes the delta, the sdk-v2 shim implements
-`ProviderWithRawStateSupport` (`sdk-v2/provider2.go:540`), and the assertion panics unconditionally.
-Runs 16 and 17 (`Deltas attached (injected): 11 of 11`, all `same`, no crash) are real evidence.
+1. **`Deltas attached (injected): X of Y` is asserted.** Live in run 18: *"confirmed all 11 injected
+   resource(s) carried a raw-state delta"*. A regression to `0 of 11` would otherwise pass every
+   scenario silently.
+2. **`CorruptDeltaFailsPreview` — done, and it passed live in run 18.** Corrupting one delta made
+   the preview **panic the provider**:
+   `Failed to parse raw state markers ... archiveFormat of type archive.Format`. That converts every
+   other delta assertion in the suite from "consistent with correctness" to "sensitive to it", and
+   confirms from production — not from reading source — that the delta path is live and that
+   `contract.AssertNoErrorf` really panics.
+3. **`aws_ssm_patch_group` as a fixture resource** — still open.
 
-1. **Assert `Deltas attached (injected): X of Y` equals `Y of Y`.** Nothing checks it, so a
-   regression to `0 of 11` would pass silently — a missing delta degrades to the legacy conversion
-   rather than failing.
-2. **`CorruptDeltaFailsPreview` — done.** Corrupts one injected resource's delta and requires the
-   next preview to fail. Without it, "previews as same" was equally consistent with the delta path
-   never being taken. The payload's potency is pinned offline so the scenario cannot quietly become
-   a false alarm.
-3. **A resource type whose delta is non-trivial.** Every fixture non-importable type is schema
-   version 0 and structurally flat. `aws_ssm_patch_group` is the only AWS type that is both
-   non-importable and schema-versioned, and is free and trivial to create.
+## Still open
+
+| Item | Note |
+|---|---|
+| `asset` node | reachability never established — `pulumiOutputsFromCty` passes `assets: nil` |
+| `num` node | confirmed unreachable by this pipeline; documented in the test rather than papered over |
+| `timeouts` + nested blocks combined | Tier 2 #4 |
+| `aws_ssm_patch_group` fixture | Tier 4 #3 |
+| A sensitive-input **e2e** | the logic is covered synthetically; nothing exercises it against a live provider. AWS has no natural candidate — of its 14 non-importable types exactly one has a Terraform sensitive input (`aws_cloudcontrolapi_resource.schema`) — so this likely waits for a non-AWS fixture |
+| Azure / GCP / Kubernetes fixtures | the synthetic harness covers the shapes; nothing exercises a real schema from those providers |
 
 ## Explicitly out of scope
 
@@ -187,7 +211,10 @@ Runs 16 and 17 (`Deltas attached (injected): 11 of 11`, all `same`, no crash) ar
 - A real provider-version-pair upgrade test: `aws_ssm_patch_group` already had `SchemaVersion: 1`
   at terraform-provider-aws v4.0.0 (Feb 2022), so no modern `pulumi-aws` pair straddles the bump.
 
-## Order
+## A note for whoever adds the next provider
 
-Remaining, cheapest first: Tier 1 `num`/`asset`/`renamed`/`arr` and the **dynamic-type `replace`
-case** (synthetic schemas, no cloud) → Tier 2 items 2–5 → Tier 4 item 1 → Tier 3.
+Four times in one session, a measurement taken only against AWS was about to become a conclusion
+about the tool. Each was caught, but the pattern is the lesson: **"unreachable in AWS" is a fact
+about AWS.** `DynamicPseudoType` has zero instances in terraform-provider-aws and is what
+`kubernetes_manifest` is built on. Sensitive inputs appear on one non-importable AWS type and are
+common elsewhere. Reach for a synthetic schema before concluding a case cannot happen.

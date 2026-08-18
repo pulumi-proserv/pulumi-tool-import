@@ -19,6 +19,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/pulumi/opentofu/addrs"
+	"github.com/pulumi/opentofu/states"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 	shim "github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfshim"
 	shimschema "github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfshim/schema"
@@ -679,4 +681,123 @@ func TestSyntheticDelta_NestedCombinationsRoundTrip(t *testing.T) {
 	t.Logf("nested delta: %s", deltaJSON)
 
 	assertDeltaRecoversExactly(t, attrs, outputs, delta)
+}
+
+// TestSyntheticSecrets_SensitiveInputResolvesEndToEnd covers the sensitive
+// INPUT path in full: a Terraform-sensitive attribute is redacted out of the
+// digest, its real value is written to stack config, and injection resolves it
+// back into the resource's inputs as a Pulumi secret envelope.
+//
+// This had no coverage at any level. The e2e once exercised it through
+// aws_iot_certificate's caPem, but that was removed in addec9a — caPem is
+// ForceNew and the fixture leaves it unset, so declaring it made the program
+// disagree with the Terraform config it is meant to translate.
+//
+// Written against a SYNTHETIC schema rather than hunting for an AWS resource
+// with the right shape, for the same reason the dynamic-type tests are:
+// this tool is not AWS-only, and Azure, GCP and Kubernetes all have
+// non-importable resources with sensitive inputs. Measuring only
+// terraform-provider-aws would answer a narrower question than the one that
+// matters.
+//
+// For context, and explicitly NOT as a scope limit: of the 14 non-importable
+// types in terraform-provider-aws 5.100.0, exactly one has a Terraform
+// sensitive input (aws_cloudcontrolapi_resource.schema), which is why the e2e
+// fixture has no natural candidate. That says something about AWS, not about
+// the code path.
+func TestSyntheticSecrets_SensitiveInputResolvesEndToEnd(t *testing.T) {
+	t.Parallel()
+
+	const (
+		tfAddr    = "synthetic_secret.thing"
+		attrName  = "admin_password"
+		realValue = "hunter2-the-real-secret"
+	)
+
+	// 1. Terraform state holds the real value, marked sensitive.
+	state := states.NewState()
+	state.RootModule().SetResourceInstanceCurrent(
+		addrs.ResourceInstance{
+			Resource: addrs.Resource{
+				Mode: addrs.ManagedResourceMode, Type: "synthetic_secret", Name: "thing",
+			},
+			Key: addrs.NoKey,
+		},
+		&states.ResourceInstanceObjectSrc{
+			AttrsJSON: []byte(`{"id":"t-1","` + attrName + `":"` + realValue + `"}`),
+			AttrSensitivePaths: []cty.PathValueMarks{
+				{Path: cty.GetAttrPath(attrName), Marks: cty.NewValueMarks("sensitive")},
+			},
+		},
+		addrs.AbsProviderConfig{
+			Provider: addrs.MustParseProviderSourceString("registry.opentofu.org/hashicorp/synthetic"),
+		},
+		nil,
+	)
+
+	// 2. "digest tf" discovers it and writes the real value to stack config.
+	secrets, err := DiscoverSensitiveSecrets(state, "proj")
+	require.NoError(t, err)
+	require.Len(t, secrets, 1, "the sensitive attribute should produce exactly one config entry")
+	configKey := secrets[0].ConfigKey
+	assert.Equal(t, realValue, secrets[0].Value, "config must carry the REAL value")
+	assert.True(t, secrets[0].Secret, "it must be written as a secret, not plain config")
+
+	// 3. ...and redacts it out of the digest, so the artifact on disk is clean.
+	attrs := map[string]interface{}{"id": "t-1", attrName: realValue}
+	redactSensitivePaths(attrs, []cty.PathValueMarks{
+		{Path: cty.GetAttrPath(attrName), Marks: cty.NewValueMarks("sensitive")},
+	})
+	require.Equal(t, redactedPlaceholder, attrs[attrName],
+		"the digest must not carry the plaintext")
+
+	// 4. "resolve tf" records where the real value went.
+	keys := redactedAttributeKeys(tfAddr, attrs)
+	require.Equal(t, configKey, keys[attrName],
+		"the sidecar's config key must match the key config was actually written under — "+
+			"a mismatch here silently resolves the wrong secret, or none")
+
+	// 5. Injection resolves the masked input back from config.
+	r := &NonImportableResource{
+		Type: "synthetic:index:Thing", Name: "thing",
+		TerraformAddress:   tfAddr,
+		Attributes:         attrs,
+		RedactedAttributes: keys,
+	}
+	inputs := map[string]interface{}{
+		attrName: secretPlaceholder, // what "pulumi preview --json" emits
+		"id":     "t-1",
+	}
+	resolved, err := resolveSecretInputs(r, inputs, nil, map[string]string{configKey: realValue})
+	require.NoError(t, err)
+	assert.Equal(t, 1, resolved, "one secret should have been resolved")
+
+	// The input is now a Pulumi secret envelope carrying the real value —
+	// enveloped, not bare plaintext, so the engine encrypts it at rest.
+	env, ok := inputs[attrName].(map[string]interface{})
+	require.True(t, ok, "the resolved input should be a secret envelope, got %#v", inputs[attrName])
+	assert.Equal(t, secretSig, env[sigKey], "the envelope must carry the Pulumi secret sig")
+	assert.Contains(t, env["plaintext"], realValue, "the envelope must carry the real value")
+
+	// And no placeholder survives anywhere.
+	require.NoError(t, checkNoPlaceholders(r, "input", inputs, "inputs"))
+}
+
+// TestSyntheticSecrets_SensitiveInputWithNoConfigValueFails pins the other
+// direction. If the sidecar names a config key that stack config does not have,
+// injection must stop rather than write a placeholder or a blank into state.
+func TestSyntheticSecrets_SensitiveInputWithNoConfigValueFails(t *testing.T) {
+	t.Parallel()
+
+	r := &NonImportableResource{
+		Type: "synthetic:index:Thing", Name: "thing",
+		TerraformAddress:   "synthetic_secret.thing",
+		Attributes:         map[string]interface{}{"admin_password": redactedPlaceholder},
+		RedactedAttributes: map[string]string{"admin_password": "thing_admin_password"},
+	}
+	inputs := map[string]interface{}{"admin_password": secretPlaceholder}
+
+	_, err := resolveSecretInputs(r, inputs, nil, map[string]string{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "which is not set")
 }
