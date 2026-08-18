@@ -15,6 +15,7 @@
 package pkg
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -625,9 +626,11 @@ func TestComputeInjectionState_DeltaServesAProviderStateUpgrade(t *testing.T) {
 	require.NoError(t, err)
 	deltaJSON, err := json.Marshal(delta)
 	require.NoError(t, err)
-	var outputsFromSidecar, deltaFromSidecar map[string]interface{}
-	require.NoError(t, json.Unmarshal(outputsJSON, &outputsFromSidecar))
-	require.NoError(t, json.Unmarshal(deltaJSON, &deltaFromSidecar))
+	// UseNumber on the way back in, mirroring LoadNonImportableFile — a plain
+	// decode here would lose exactly the precision the sidecar was careful to
+	// write.
+	outputsFromSidecar := decodeExact(t, outputsJSON)
+	deltaFromSidecar := decodeExact(t, deltaJSON)
 
 	rsd, err := tfbridge.UnmarshalRawStateDelta(resource.NewPropertyValue(deltaFromSidecar))
 	require.NoError(t, err)
@@ -705,4 +708,228 @@ func TestCorruptDeltaPayloadIsGenuinelyRejected(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(valid), &validDoc))
 	_, err = tfbridge.UnmarshalRawStateDelta(resource.NewPropertyValue(validDoc))
 	assert.NoError(t, err, "a well-formed asset delta must still parse")
+}
+
+// TestComputeInjectionState_LargeIntegerIsExactInTheSidecarButNotAfterRecovery
+// pins where precision above 2^53 is kept and where it is lost. Both halves are
+// asserted, because each fails differently and only one of them is fixable
+// here.
+//
+// The sidecar KEEPS the exact digits. resource.PropertyValue cannot hold
+// 9007199254740993, so the Pulumi output is rounded to ...992 (that is #29).
+// The bridge notices it cannot reproduce the value naturally and emits a
+// Replace node carrying the original digits verbatim, and json.Marshal writes
+// them out intact. So the artifact on disk is correct.
+//
+// Recovery LOSES them anyway. Recover takes a resource.PropertyValue, and
+// PropertyValue numbers are float64 — so the exact digits the sidecar preserved
+// cannot survive being turned back into one, no matter which decoder is used.
+// Measured: still ...992 after recovery with UseNumber applied at every decode
+// this test controls.
+//
+// That refines #29 rather than restating it. The delta records the exact value
+// but cannot deliver it, so a fix has to change the representation, not the
+// decoding — and "add UseNumber" anywhere downstream will not help.
+//
+// This is also the reachable route to a Replace node for AWS: the other trigger,
+// schType.IsDynamicType() at rawstate.go:669, cannot fire, because
+// terraform-provider-aws 5.100.0 has ZERO DynamicPseudoType attributes across
+// all 1526 resource types (measured).
+func TestComputeInjectionState_LargeIntegerIsExactInTheSidecarButNotAfterRecovery(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	prov, err := tfprovider.LoadProvider(ctx, nestedBlockTestAWSProviderAddr, nestedBlockTestAWSProviderVersion)
+	if err != nil {
+		skipOrFailUnavailable(t, err, "aws provider unavailable")
+		return
+	}
+	defer prov.Close(ctx)
+
+	schemaMap, schemaInfos, ok := bridgedSchemaFor(t, "aws_sqs_queue")
+	if !ok {
+		return
+	}
+
+	// 2^53+1, the first integer float64 cannot represent exactly.
+	const exact = "9007199254740993"
+	const rounded = "9007199254740992"
+	attrs := []byte(`{"id":"q","name":"q","delay_seconds":` + exact + `,"fifo_queue":false}`)
+
+	outputs, delta, reason, _, err := ComputeInjectionState(
+		ctx, prov, "aws_sqs_queue", attrs, schemaMap, schemaInfos)
+	require.NoError(t, err)
+	require.Empty(t, reason)
+	require.NotEmpty(t, delta)
+
+	// The Pulumi output is rounded. Asserted, not glossed: if this ever becomes
+	// exact, #29 has been fixed and this test should be revisited.
+	lossy, err := json.Marshal(outputs["delaySeconds"])
+	require.NoError(t, err)
+	assert.Equal(t, rounded, string(lossy),
+		"if the Pulumi output is now exact, #29 is fixed and this test is stale")
+
+	// The sidecar keeps the exact digits, via a Replace node.
+	deltaJSON, err := json.Marshal(delta)
+	require.NoError(t, err)
+	assert.Contains(t, string(deltaJSON), `"replace"`,
+		"a value the bridge cannot reproduce naturally should produce a Replace node")
+	assert.Contains(t, string(deltaJSON), exact,
+		"the sidecar delta must carry the exact digits the Pulumi output could not hold")
+
+	// Recovery cannot deliver them, because PropertyValue numbers are float64.
+	outputsFromSidecar := decodeExact(t, mustJSON(t, outputs))
+	deltaFromSidecar := decodeExact(t, deltaJSON)
+	rsd, err := tfbridge.UnmarshalRawStateDelta(resource.NewPropertyValue(deltaFromSidecar))
+	require.NoError(t, err)
+	recovered, err := rsd.Recover(
+		resource.NewObjectProperty(resource.NewPropertyMapFromMap(outputsFromSidecar)))
+	require.NoError(t, err)
+
+	// Recovery does not reproduce the original NUMBER, by either route. Which
+	// way it fails depends on how the delta was decoded, and neither is right:
+	//
+	//   plain json.Unmarshal -> 9007199254740992 as a number   (rounded)
+	//   UseNumber            -> "9007199254740993" as a string (retyped)
+	//
+	// The second is what this test exercises, because it mirrors
+	// LoadNonImportableFile. json.Number has no resource.PropertyValue case, so
+	// reflection classes it as a String and the Replace node's raw value is
+	// emitted quoted — the digits survive but delay_seconds stops being a
+	// number.
+	//
+	// Asserted as "not the original", not as either specific wrong answer, so
+	// this stays a regression guard rather than a snapshot of today's bug: if
+	// someone makes it exact, this fails and points straight at the fix.
+	got := decodeExact(t, recovered)
+	assert.NotEqual(t, json.Number(exact), got["delay_seconds"],
+		"recovery now reproduces the exact number — #29 may be fixable end to end; "+
+			"update this test and the issue")
+	t.Logf("recovered delay_seconds = %#v (original was the number %s)", got["delay_seconds"], exact)
+}
+
+func mustJSON(t *testing.T, v interface{}) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	require.NoError(t, err)
+	return b
+}
+
+// TestComputeInjectionState_PopulatedMapRoundTrips covers the "map" node kind,
+// which every existing fixture missed because their tag maps are all empty.
+func TestComputeInjectionState_PopulatedMapRoundTrips(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	prov, err := tfprovider.LoadProvider(ctx, nestedBlockTestAWSProviderAddr, nestedBlockTestAWSProviderVersion)
+	if err != nil {
+		skipOrFailUnavailable(t, err, "aws provider unavailable")
+		return
+	}
+	defer prov.Close(ctx)
+
+	schemaMap, schemaInfos, ok := bridgedSchemaFor(t, "aws_cloudwatch_log_group")
+	if !ok {
+		return
+	}
+
+	attrs := []byte(`{"id":"lg","name":"lg","name_prefix":null,"retention_in_days":14,` +
+		`"kms_key_id":null,"skip_destroy":false,"log_group_class":null,` +
+		`"tags":{"Env":"prod","Team":"ce"},"tags_all":{"Env":"prod","Team":"ce"},` +
+		`"arn":"arn:aws:logs:us-west-2:123456789012:log-group:lg"}`)
+
+	outputs, delta, reason, _, err := ComputeInjectionState(
+		ctx, prov, "aws_cloudwatch_log_group", attrs, schemaMap, schemaInfos)
+	require.NoError(t, err)
+	require.Empty(t, reason)
+
+	deltaJSON, err := json.Marshal(delta)
+	require.NoError(t, err)
+	assert.Contains(t, string(deltaJSON), `"map"`,
+		"a populated map attribute should produce a map delta node")
+
+	assertDeltaRecoversExactly(t, attrs, outputs, delta)
+}
+
+// bridgedSchemaFor returns the bridged schema for a Terraform resource type,
+// reporting a skip when the bridge is unavailable.
+func bridgedSchemaFor(t *testing.T, tfType string) (shim.SchemaMap, map[string]*tfbridge.SchemaInfo, bool) {
+	t.Helper()
+	pulumiProviders, err := PulumiProvidersForTerraformProviders(
+		[]providermap.TerraformProviderName{nestedBlockTestAWSProviderAddr},
+		map[string]string{nestedBlockTestAWSProviderAddr: nestedBlockTestAWSProviderVersion},
+	)
+	if err != nil {
+		skipOrFailUnavailable(t, err, "could not bridge aws provider schema")
+		return nil, nil, false
+	}
+	pwm := pulumiProviders[providermap.TerraformProviderName(nestedBlockTestAWSProviderAddr)]
+	require.NotNil(t, pwm)
+	shimResource := pwm.P.ResourcesMap().Get(tfType)
+	require.NotNil(t, shimResource, "expected %s in the bridged schema", tfType)
+	var schemaInfos map[string]*tfbridge.SchemaInfo
+	if ri := pwm.Resources[tfType]; ri != nil {
+		schemaInfos = ri.Fields
+	}
+	return shimResource.Schema(), schemaInfos, true
+}
+
+// assertDeltaRecoversExactly is the acceptance criterion shared by every delta
+// case: through the sidecar's JSON round trip, the recovered raw state must
+// equal the original Terraform attributes exactly — not merely apply without
+// an error.
+func assertDeltaRecoversExactly(
+	t *testing.T, originalAttrs []byte, outputs, delta map[string]interface{},
+) {
+	t.Helper()
+
+	outputsJSON, err := json.Marshal(outputs)
+	require.NoError(t, err)
+	deltaJSON, err := json.Marshal(delta)
+	require.NoError(t, err)
+
+	var outputsFromSidecar, deltaFromSidecar map[string]interface{}
+	require.NoError(t, json.Unmarshal(outputsJSON, &outputsFromSidecar))
+	require.NoError(t, json.Unmarshal(deltaJSON, &deltaFromSidecar))
+
+	rsd, err := tfbridge.UnmarshalRawStateDelta(resource.NewPropertyValue(deltaFromSidecar))
+	require.NoError(t, err)
+	recovered, err := rsd.Recover(
+		resource.NewObjectProperty(resource.NewPropertyMapFromMap(outputsFromSidecar)))
+	require.NoError(t, err, "the delta must apply cleanly to its own outputs")
+
+	// Decoded with UseNumber on BOTH sides. A plain decode turns every number
+	// into a float64, which would silently defeat the large-integer case here —
+	// the comparison itself would lose the precision it is meant to check.
+	want := decodeExact(t, originalAttrs)
+	got := decodeExact(t, recovered)
+
+	// Recovered raw state is schema-complete: it carries every attribute the
+	// resource type declares, with unset ones null. A hand-written fixture
+	// generally lists only the interesting few. So every attribute the original
+	// DOES specify must match exactly, and anything extra must be null — which
+	// keeps the assertion strong without requiring every fixture to spell out
+	// the whole schema.
+	for k, w := range want {
+		g, present := got[k]
+		require.True(t, present, "recovered raw state is missing %q", k)
+		assert.Equal(t, w, g, "recovered raw state differs from the original at %q", k)
+	}
+	for k, g := range got {
+		if _, inOriginal := want[k]; inOriginal {
+			continue
+		}
+		assert.Nil(t, g, "recovered raw state invented a non-null value at %q that the original did not have", k)
+	}
+}
+
+// decodeExact decodes JSON preserving exact numeric digits, so a comparison
+// cannot lose the precision it is checking.
+func decodeExact(t *testing.T, data []byte) map[string]interface{} {
+	t.Helper()
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	var out map[string]interface{}
+	require.NoError(t, dec.Decode(&out))
+	return out
 }
