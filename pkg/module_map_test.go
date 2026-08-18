@@ -771,3 +771,158 @@ func TestRawStateFromTfjson_DataSources(t *testing.T) {
 	})
 	require.NotNil(t, managedRes, "expected aws_s3_bucket.example in root module")
 }
+
+// sensitiveResource is a helper for the sensitivity tests below.
+func sensitiveResource(m *states.Module, typ, name, attrsJSON string, paths []cty.PathValueMarks) {
+	m.SetResourceInstanceCurrent(
+		addrs.ResourceInstance{
+			Resource: addrs.Resource{Mode: addrs.ManagedResourceMode, Type: typ, Name: name},
+			Key:      addrs.NoKey,
+		},
+		&states.ResourceInstanceObjectSrc{
+			AttrsJSON:          []byte(attrsJSON),
+			AttrSensitivePaths: paths,
+		},
+		addrs.AbsProviderConfig{
+			Provider: addrs.MustParseProviderSourceString("registry.opentofu.org/hashicorp/aws"),
+		},
+		nil,
+	)
+}
+
+// TestRedactSensitivePaths_NestedPathIsRedacted covers the depth gap. OpenTofu
+// records nested sensitive paths — a NestingSet block with a sensitive
+// attribute (aws_mq_broker's user[].password) yields a length-3 path — and
+// skipping them left plaintext in the digest, which on this branch flows into
+// PulumiOutputs and into the injected resource's state outputs unmarked.
+func TestRedactSensitivePaths_NestedPathIsRedacted(t *testing.T) {
+	t.Parallel()
+
+	attrs := map[string]interface{}{
+		"broker_name": "b",
+		"user": []interface{}{
+			map[string]interface{}{"username": "admin", "password": "NESTED-SECRET"},
+		},
+	}
+	redactSensitivePaths(attrs, []cty.PathValueMarks{{
+		Path: cty.Path{
+			cty.GetAttrStep{Name: "user"},
+			cty.IndexStep{Key: cty.NumberIntVal(0)},
+			cty.GetAttrStep{Name: "password"},
+		},
+		Marks: cty.NewValueMarks("sensitive"),
+	}})
+
+	user := attrs["user"].([]interface{})[0].(map[string]interface{})
+	assert.Equal(t, redactedPlaceholder, user["password"])
+	assert.Equal(t, "admin", user["username"], "only the marked path may be redacted")
+	assert.Equal(t, "b", attrs["broker_name"])
+}
+
+// TestRedactSensitivePaths_UnresolvableIndexRedactsEveryElement pins the
+// direction the ambiguity is resolved. A SET index is the element value, not an
+// ordinal, so it cannot address a slot in a decoded JSON array — over-redacting
+// costs a placeholder the operator must supply, under-redacting writes a secret
+// into state.
+func TestRedactSensitivePaths_UnresolvableIndexRedactsEveryElement(t *testing.T) {
+	t.Parallel()
+
+	attrs := map[string]interface{}{
+		"user": []interface{}{
+			map[string]interface{}{"password": "A"},
+			map[string]interface{}{"password": "B"},
+		},
+	}
+	redactSensitivePaths(attrs, []cty.PathValueMarks{{
+		Path: cty.Path{
+			cty.GetAttrStep{Name: "user"},
+			// A set index: the element value rather than an ordinal.
+			cty.IndexStep{Key: cty.ObjectVal(map[string]cty.Value{"password": cty.StringVal("A")})},
+			cty.GetAttrStep{Name: "password"},
+		},
+		Marks: cty.NewValueMarks("sensitive"),
+	}})
+
+	for i, elem := range attrs["user"].([]interface{}) {
+		assert.Equal(t, redactedPlaceholder, elem.(map[string]interface{})["password"],
+			"element %d must be redacted when the index cannot be resolved", i)
+	}
+}
+
+// TestDiscoverSensitiveSecrets_LargeIntegerKeepsItsDigits guards the config
+// value against the float64 round trip. The value is stringified with %v and
+// written into stack config, and injection later resolves that key and writes
+// it into state as the resource's real secret — so a plain decode turned a
+// sensitive 1234567890123456789 into "1.2345678901234568e+18" there.
+func TestDiscoverSensitiveSecrets_LargeIntegerKeepsItsDigits(t *testing.T) {
+	t.Parallel()
+
+	state := states.NewState()
+	sensitiveResource(state.RootModule(), "aws_x", "big",
+		`{"id":"1","token":1234567890123456789}`,
+		[]cty.PathValueMarks{
+			{Path: cty.GetAttrPath("token"), Marks: cty.NewValueMarks("sensitive")},
+		})
+
+	secrets, err := DiscoverSensitiveSecrets(state, "p")
+	require.NoError(t, err)
+	require.Len(t, secrets, 1)
+	assert.Equal(t, "1234567890123456789", secrets[0].Value)
+}
+
+// TestDiscoverSensitiveSecrets_CollisionIsAnError pins the replacement for the
+// old _2 suffixing. The suffixed key was written to config but nothing could
+// read it back: the sidecar records the config key as a bare
+// flattenAddress(address, attribute), so both colliding resources pointed at
+// the un-suffixed key and the second silently resolved to the FIRST one's
+// secret — a real secret written into the wrong resource's state.
+func TestDiscoverSensitiveSecrets_CollisionIsAnError(t *testing.T) {
+	t.Parallel()
+
+	state := states.NewState()
+	root := state.RootModule()
+	// flattenAddress drops the resource type, so two resources named "this"
+	// collide on "this_password".
+	sensitiveResource(root, "aws_db_instance", "this", `{"id":"1","password":"SECRET-A"}`,
+		[]cty.PathValueMarks{{Path: cty.GetAttrPath("password"), Marks: cty.NewValueMarks("sensitive")}})
+	sensitiveResource(root, "aws_rds_cluster", "this", `{"id":"2","password":"SECRET-B"}`,
+		[]cty.PathValueMarks{{Path: cty.GetAttrPath("password"), Marks: cty.NewValueMarks("sensitive")}})
+
+	_, err := DiscoverSensitiveSecrets(state, "p")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "collision")
+}
+
+// TestSensitivePathsFromTfjson covers the state format that had NO redaction at
+// all. It is selected automatically — a "format_version" key is all
+// DetectStateFormatBytes needs — so an operator passing "tofu show -json"
+// output got plaintext secrets in the digest with nothing to indicate it.
+func TestSensitivePathsFromTfjson(t *testing.T) {
+	t.Parallel()
+
+	paths := sensitivePathsFromTfjson([]byte(
+		`{"password":true,"tags":false,"user":[{"password":true,"name":false}]}`))
+	require.Len(t, paths, 2)
+
+	attrs := map[string]interface{}{
+		"password": "TOP-SECRET",
+		"tags":     "public",
+		"user": []interface{}{
+			map[string]interface{}{"password": "NESTED-SECRET", "name": "admin"},
+		},
+	}
+	redactSensitivePaths(attrs, paths)
+
+	assert.Equal(t, redactedPlaceholder, attrs["password"])
+	assert.Equal(t, "public", attrs["tags"], "a false leaf is not sensitive")
+	user := attrs["user"].([]interface{})[0].(map[string]interface{})
+	assert.Equal(t, redactedPlaceholder, user["password"])
+	assert.Equal(t, "admin", user["name"])
+}
+
+func TestSensitivePathsFromTfjson_EmptyOrInvalid(t *testing.T) {
+	t.Parallel()
+	assert.Nil(t, sensitivePathsFromTfjson(nil))
+	assert.Nil(t, sensitivePathsFromTfjson([]byte(`not json`)))
+	assert.Empty(t, sensitivePathsFromTfjson([]byte(`{"a":false}`)))
+}

@@ -791,11 +791,19 @@ func DiscoverSensitiveSecrets(state *states.State, projectName string) ([]Sensit
 				}
 
 				// Parse attributes.
-				var attrs map[string]interface{}
 				if inst.Current.AttrsJSON == nil {
 					continue
 				}
-				if err := json.Unmarshal(inst.Current.AttrsJSON, &attrs); err != nil {
+				// decodeAttrs, not a plain Unmarshal: this value is about to be
+				// stringified with %v and written into stack config, and a
+				// plain decode turns every number into a float64. A sensitive
+				// 1234567890123456789 became "1.2345678901234568e+18" in
+				// config, and injection then resolved that key and wrote the
+				// corrupted, retyped value into state as the resource's real
+				// secret. json.Number is itself a string type, so %v prints the
+				// original digits.
+				attrs, err := decodeAttrs(inst.Current.AttrsJSON)
+				if err != nil {
 					continue
 				}
 
@@ -822,10 +830,23 @@ func DiscoverSensitiveSecrets(state *states.State, projectName string) ([]Sensit
 		}
 	}
 
+	// Deterministic order. state.Modules, res.Instances and module.Resources
+	// are all Go maps, and nothing above sorts them (unlike the sibling
+	// discoverModuleInstances, which does), so without this the assignment of
+	// a colliding key to one address or the other varied between runs of the
+	// same command over the same state.
+	sort.Slice(raw, func(i, j int) bool {
+		if raw[i].address != raw[j].address {
+			return raw[i].address < raw[j].address
+		}
+		return raw[i].attribute < raw[j].attribute
+	})
+
 	// Generate keys and handle dedup + length checking.
 	maxKeyLen := 128 - len(projectName) - 1 // subtract "project:" namespace
 	keyCounts := make(map[string]int)
 	keyToAddress := make(map[string]string) // first address that produced each key
+	var collisions []string
 
 	var secrets []SensitiveSecret
 	var tooLong []string
@@ -842,8 +863,22 @@ func DiscoverSensitiveSecrets(state *states.State, projectName string) ([]Sensit
 		finalKey := key
 		if count > 1 {
 			finalKey = fmt.Sprintf("%s_%d", key, count)
-			fmt.Fprintf(os.Stderr, "  WARNING: duplicate config key %q from:\n    1: %s\n    %d: %s\n",
-				key, keyToAddress[key], count, r.address)
+			// The suffixed key is written to config but NOTHING can read it
+			// back: the sidecar records the config key as a bare
+			// flattenAddress(address, attribute) (redactedAttributeKeys in
+			// import_filler.go), so both colliding resources point at the
+			// un-suffixed key and the second one silently resolves to the
+			// FIRST one's secret. Suffixing therefore does not handle a
+			// collision, it only hides it — and the resulting corruption is a
+			// real secret written into the wrong resource's state.
+			//
+			// Collisions are easy to produce because flattenAddress drops the
+			// resource type and collapses punctuation: two resources named
+			// "this" in one module collide, as do ssm_parameters["/a/b"] and
+			// ssm_parameters["/a_b"].
+			collisions = append(collisions, fmt.Sprintf(
+				"%q is produced by both %s and %s (attribute %q)",
+				key, keyToAddress[key], r.address, r.attribute))
 		}
 
 		if len(finalKey) > maxKeyLen {
@@ -857,6 +892,18 @@ func DiscoverSensitiveSecrets(state *states.State, projectName string) ([]Sensit
 			Value:     r.value,
 			Secret:    true,
 		})
+	}
+
+	if len(collisions) > 0 {
+		for _, msg := range collisions {
+			fmt.Fprintf(os.Stderr, "  ERROR: colliding config key: %s\n", msg)
+		}
+		return secrets, fmt.Errorf(
+			"%d config key collision(s): two sensitive attributes flatten to the same stack "+
+				"config key, and the sidecar cannot tell them apart — injection would write one "+
+				"resource's secret into the other. Rename or remap the resources so their "+
+				"addresses differ after flattening, or set these secrets by hand and re-run "+
+				"with --skip-secrets", len(collisions))
 	}
 
 	if len(tooLong) > 0 {
@@ -1090,40 +1137,139 @@ func redactSensitivePaths(attrs map[string]interface{}, paths []cty.PathValueMar
 		if len(pvm.Path) == 0 {
 			continue
 		}
-		// For top-level attributes, the first step is a GetAttrStep.
-		step, ok := pvm.Path[0].(cty.GetAttrStep)
+		redactAtPath(attrs, pvm.Path)
+	}
+}
+
+// redactAtPath walks one cty path into a decoded attribute tree and replaces
+// the value at its end with redactedPlaceholder.
+//
+// Nested paths are walked rather than skipped. OpenTofu really does record
+// them — a NestingSet block with a sensitive attribute (aws_mq_broker's
+// user[].password, google_container_cluster's master_auth.client_key, or
+// anything derived from a sensitive variable) yields a path of length 3, and
+// ResourceInstanceObject.Encode stores it with no depth filter. Ignoring those
+// left the plaintext in the digest; on this branch it would then flow through
+// ComputeInjectionState into PulumiOutputs and into the injected resource's
+// state outputs, unmarked, since resolveOutputSecrets only envelopes
+// properties named in RedactedAttributes.
+//
+// A nested secret gets no stack config key (DiscoverSensitiveSecrets still
+// records only top-level attributes, because the config key format is derived
+// from an address plus one attribute name). That is deliberate: injection then
+// meets the placeholder and hard-fails in checkNoPlaceholders, which is a loud,
+// fixable stop rather than a silent leak.
+func redactAtPath(container interface{}, path cty.Path) {
+	if len(path) == 0 {
+		return
+	}
+	last := len(path) == 1
+
+	switch step := path[0].(type) {
+	case cty.GetAttrStep:
+		m, ok := container.(map[string]interface{})
 		if !ok {
-			continue
+			return
 		}
-		if value, exists := attrs[step.Name]; exists {
-			if len(pvm.Path) == 1 {
-				// A null value has nothing to hide: it is not a secret, and
-				// redacting it would manufacture a reference to a stack
-				// config entry that is never created. DiscoverSensitiveSecrets
-				// (`:804-806` above) already agrees — it skips nil values when
-				// deciding what to write into config — so this keeps the
-				// digest's redaction and the config-writing loop in sync. Left
-				// unfixed, the digest would claim a secret exists
-				// (redactedAttributes would record a config key for it) that
-				// config never got, and patch-state/injection would hard-fail
-				// trying to resolve it.
-				//
-				// Empty string is treated differently: DiscoverSensitiveSecrets
-				// does NOT skip "" (only `value == nil` is excluded there; an
-				// empty string is stringified via fmt.Sprintf("%v", value) and
-				// written to config like any other value), so redacting an
-				// empty-string attribute here does not create a dangling
-				// reference — config already has a (empty) entry for it. So
-				// empty string keeps the normal redaction behavior below.
-				if value == nil {
-					continue
+		value, exists := m[step.Name]
+		if !exists {
+			return
+		}
+		if !last {
+			redactAtPath(value, path[1:])
+			return
+		}
+		// A null value has nothing to hide: it is not a secret, and redacting
+		// it would manufacture a reference to a stack config entry that is
+		// never created. DiscoverSensitiveSecrets agrees — it skips nil values
+		// when deciding what to write into config — so this keeps the digest's
+		// redaction and the config-writing loop in sync. Left unfixed, the
+		// digest would claim a secret exists (redactedAttributes would record a
+		// config key for it) that config never got, and patch-state/injection
+		// would hard-fail trying to resolve it.
+		//
+		// Empty string is treated differently: DiscoverSensitiveSecrets does
+		// NOT skip "" (only value == nil is excluded there; an empty string is
+		// stringified and written to config like any other value), so redacting
+		// an empty-string attribute here does not create a dangling reference.
+		if value == nil {
+			return
+		}
+		m[step.Name] = redactedPlaceholder
+
+	case cty.IndexStep:
+		switch c := container.(type) {
+		case []interface{}:
+			// A list index is a number; a SET index is the element VALUE
+			// itself, which cannot address a slot in a decoded JSON array. When
+			// the index does not resolve to an ordinal, every element is
+			// redacted instead. Over-redacting costs a placeholder the operator
+			// must supply; under-redacting writes a secret into state, so the
+			// ambiguity is resolved towards over-redacting.
+			idx, ok := indexStepOrdinal(step, len(c))
+			if !ok {
+				for i := range c {
+					redactSliceElement(c, i, path, last)
 				}
-				// Top-level attribute is sensitive — redact it.
-				attrs[step.Name] = "(sensitive)"
+				return
 			}
-			// Nested paths: we could recurse, but for now top-level is sufficient.
+			redactSliceElement(c, idx, path, last)
+		case map[string]interface{}:
+			key, ok := indexStepKey(step)
+			if !ok {
+				return
+			}
+			value, exists := c[key]
+			if !exists {
+				return
+			}
+			if !last {
+				redactAtPath(value, path[1:])
+				return
+			}
+			if value == nil {
+				return
+			}
+			c[key] = redactedPlaceholder
 		}
 	}
+}
+
+// redactSliceElement applies the remainder of a path to one slice element,
+// redacting it outright when the path ends here.
+func redactSliceElement(s []interface{}, i int, path cty.Path, last bool) {
+	if i < 0 || i >= len(s) {
+		return
+	}
+	if !last {
+		redactAtPath(s[i], path[1:])
+		return
+	}
+	if s[i] == nil {
+		return
+	}
+	s[i] = redactedPlaceholder
+}
+
+// indexStepOrdinal returns a list index for an IndexStep, if it carries one.
+func indexStepOrdinal(step cty.IndexStep, length int) (int, bool) {
+	if step.Key.Type() != cty.Number {
+		return 0, false
+	}
+	f, _ := step.Key.AsBigFloat().Float64()
+	i := int(f)
+	if i < 0 || i >= length {
+		return 0, false
+	}
+	return i, true
+}
+
+// indexStepKey returns a map key for an IndexStep, if it carries one.
+func indexStepKey(step cty.IndexStep) (string, bool) {
+	if step.Key.Type() != cty.String {
+		return "", false
+	}
+	return step.Key.AsString(), true
 }
 
 // ctyValueToInterface converts a cty.Value to a plain Go value suitable for JSON serialization.
