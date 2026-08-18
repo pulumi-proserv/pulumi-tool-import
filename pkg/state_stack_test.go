@@ -331,3 +331,95 @@ func TestCheckInjectionVerification_SurfacesDiffReasons(t *testing.T) {
 	joined := strings.Join(problems, "\n")
 	assert.Contains(t, joined, "differs on: routeTableId")
 }
+
+// TestCheckInjectionVerification_EscalationIsAProblem covers the gap that made
+// "must not make things worse" a count-only rule: a resource already non-"same"
+// in the baseline is neither newly dirty nor an increase in the total, so an
+// operation escalating from "update" to "replace" passed silently and the run
+// printed "Verified" while keeping a stack whose next "pulumi up" would destroy
+// and recreate a live resource. Many not_read fields are ForceNew, so a wrongly
+// patched value produces exactly this.
+func TestCheckInjectionVerification_EscalationIsAProblem(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, before, after string
+	}{
+		{"update to replace", "update", "replace"},
+		{"update to delete", "update", "delete"},
+		{"update to create-replacement", "update", "create-replacement"},
+		{"create to delete", "create", "delete"},
+		{"unrecognised op", "update", "some-future-op"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			baseline, err := ParsePreviewJSON([]byte(`{"steps": [
+				{"op": "` + tc.before + `", "urn": "urn:pulumi:dev::proj::aws:ec2/x:X::a"}
+			]}`))
+			require.NoError(t, err)
+			verify, err := ParsePreviewJSON([]byte(`{"steps": [
+				{"op": "` + tc.after + `", "urn": "urn:pulumi:dev::proj::aws:ec2/x:X::a"}
+			]}`))
+			require.NoError(t, err)
+
+			problems := CheckInjectionVerification(baseline, verify, nil)
+			require.NotEmpty(t, problems, "%s -> %s must be reported", tc.before, tc.after)
+			joined := strings.Join(problems, "\n")
+			assert.Contains(t, joined, "X::a")
+			assert.Contains(t, joined, tc.before)
+			assert.Contains(t, joined, tc.after)
+		})
+	}
+}
+
+// TestCheckInjectionVerification_EscalationSwapIsAProblem pins the case the
+// aggregate count cannot catch even in principle: two resources both escalate,
+// so baseNonSame and verifyNonSame are equal.
+func TestCheckInjectionVerification_EscalationSwapIsAProblem(t *testing.T) {
+	t.Parallel()
+	baseline, err := ParsePreviewJSON([]byte(`{"steps": [
+		{"op": "update", "urn": "urn:pulumi:dev::proj::aws:ec2/x:X::a"},
+		{"op": "update", "urn": "urn:pulumi:dev::proj::aws:ec2/y:Y::b"}
+	]}`))
+	require.NoError(t, err)
+	verify, err := ParsePreviewJSON([]byte(`{"steps": [
+		{"op": "delete", "urn": "urn:pulumi:dev::proj::aws:ec2/x:X::a"},
+		{"op": "replace", "urn": "urn:pulumi:dev::proj::aws:ec2/y:Y::b"}
+	]}`))
+	require.NoError(t, err)
+
+	problems := CheckInjectionVerification(baseline, verify, nil)
+	require.NotEmpty(t, problems)
+	joined := strings.Join(problems, "\n")
+	assert.Contains(t, joined, "X::a")
+	assert.Contains(t, joined, "Y::b")
+}
+
+// TestCheckInjectionVerification_DeEscalationIsNotAProblem is the other half of
+// the rule. patch-state is run iteratively, so an operation getting BETTER is
+// the expected outcome and must never trigger a revert.
+func TestCheckInjectionVerification_DeEscalationIsNotAProblem(t *testing.T) {
+	t.Parallel()
+	baseline, err := ParsePreviewJSON([]byte(`{"steps": [
+		{"op": "replace", "urn": "urn:pulumi:dev::proj::aws:ec2/x:X::a"}
+	]}`))
+	require.NoError(t, err)
+	verify, err := ParsePreviewJSON([]byte(`{"steps": [
+		{"op": "update", "urn": "urn:pulumi:dev::proj::aws:ec2/x:X::a"}
+	]}`))
+	require.NoError(t, err)
+
+	assert.Empty(t, CheckInjectionVerification(baseline, verify, nil))
+}
+
+func TestOpGotWorse(t *testing.T) {
+	t.Parallel()
+	assert.False(t, opGotWorse("update", "update"))
+	assert.False(t, opGotWorse("replace", "update"))
+	assert.False(t, opGotWorse("update", "same"))
+	assert.True(t, opGotWorse("update", "replace"))
+	assert.True(t, opGotWorse("same", "delete"))
+	assert.True(t, opGotWorse("create", "replace"))
+	// Unrecognised in either position is reported rather than assumed benign.
+	assert.True(t, opGotWorse("update", "brand-new-op"))
+	assert.True(t, opGotWorse("brand-new-op", "update"))
+}

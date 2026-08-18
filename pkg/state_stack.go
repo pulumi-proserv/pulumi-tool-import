@@ -213,12 +213,14 @@ func CheckInjectionVerification(baseline, verify *PreviewDigest, injectedURNs []
 
 	verifyNonSame := 0
 	var newlyDirty []string
+	var escalated []string
 	for urn, op := range verifyOps {
 		if injected[urn] || op == "same" {
 			continue
 		}
 		verifyNonSame++
-		if baseOp, ok := baseOps[urn]; !ok || baseOp == "same" {
+		baseOp, ok := baseOps[urn]
+		if !ok || baseOp == "same" {
 			// Named with the properties behind the diff, the same as
 			// CheckInjectedOps does for injected resources. Without them a
 			// failure here reports only a URN, which is not enough to act on:
@@ -226,6 +228,20 @@ func CheckInjectionVerification(baseline, verify *PreviewDigest, injectedURNs []
 			// and the cause could not be recovered from the log afterwards.
 			newlyDirty = append(newlyDirty, fmt.Sprintf(
 				"%s reports %q%s", urn, op, formatDiffReasons(verifyReasons[urn])))
+			continue
+		}
+		// Already non-"same" before the run, so neither check above fires and
+		// the aggregate count below cannot see it either — the resource is one
+		// of baseNonSame AND one of verifyNonSame, so the totals match. But an
+		// operation can get WORSE while staying non-"same": many not_read
+		// fields are ForceNew, so a wrongly patched value turns "update" into
+		// "replace", and the next "pulumi up" then destroys and recreates a
+		// live resource. Comparing severity is what makes "must not make
+		// things worse" mean the operation as well as the count.
+		if opGotWorse(baseOp, op) {
+			escalated = append(escalated, fmt.Sprintf(
+				"%s escalated from %q to %q%s", urn, baseOp, op,
+				formatDiffReasons(verifyReasons[urn])))
 		}
 	}
 
@@ -235,6 +251,12 @@ func CheckInjectionVerification(baseline, verify *PreviewDigest, injectedURNs []
 			"%d resource(s) newly report changes that were unchanged (or absent) before this run:\n    %s",
 			len(newlyDirty), strings.Join(newlyDirty, "\n    ")))
 	}
+	if len(escalated) > 0 {
+		sort.Strings(escalated)
+		problems = append(problems, fmt.Sprintf(
+			"%d resource(s) report a more destructive operation than before this run:\n    %s",
+			len(escalated), strings.Join(escalated, "\n    ")))
+	}
 	if verifyNonSame > baseNonSame {
 		problems = append(problems, fmt.Sprintf(
 			"preview shows more outstanding changes after the patch than before: %d before, %d after",
@@ -242,4 +264,52 @@ func CheckInjectionVerification(baseline, verify *PreviewDigest, injectedURNs []
 	}
 
 	return problems
+}
+
+// opSeverity ranks preview operations by how much of the live resource they
+// destroy, so "must not make things worse" can be judged on the operation and
+// not only on how many resources report one.
+//
+// The ranking is what matters, not the absolute numbers: "same" is no change,
+// an update mutates in place, a create means the resource is missing from
+// state entirely, and the replace/delete family destroys something that
+// exists.
+var opSeverity = map[string]int{
+	"same":    0,
+	"refresh": 0,
+	"read":    0,
+
+	"import": 1,
+	"update": 1,
+
+	"create": 2,
+
+	"replace":            3,
+	"create-replacement": 3,
+	"delete-replaced":    3,
+	"import-replacement": 3,
+
+	"delete":                 4,
+	"discard":                4,
+	"remove-pending-replace": 4,
+}
+
+// opGotWorse reports whether a resource's operation became more destructive
+// between the baseline and the verifying preview.
+//
+// An operation this table does not know is reported rather than assumed
+// benign: guessing wrong in that direction keeps a stack whose verification
+// silently failed, while guessing wrong the other way costs one revert of a
+// run the operator can repeat. The engine's op vocabulary can grow, so an
+// unrecognised value is a reason to stop, not to continue.
+func opGotWorse(before, after string) bool {
+	if before == after {
+		return false
+	}
+	beforeRank, beforeKnown := opSeverity[before]
+	afterRank, afterKnown := opSeverity[after]
+	if !beforeKnown || !afterKnown {
+		return true
+	}
+	return afterRank > beforeRank
 }

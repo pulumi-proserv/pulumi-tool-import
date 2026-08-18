@@ -629,6 +629,30 @@ func patchResourceFields(
 	return res, nil
 }
 
+// deepCopyJSONValue returns a copy of a JSON-decoded value that shares no maps
+// or slices with the original, so mutating one cannot affect the other.
+//
+// Scalars are returned as-is: strings, bools, nil and json.Number are all
+// immutable, so sharing them is safe and copying them would only allocate.
+func deepCopyJSONValue(v interface{}) interface{} {
+	switch val := v.(type) {
+	case map[string]interface{}:
+		out := make(map[string]interface{}, len(val))
+		for k, elem := range val {
+			out[k] = deepCopyJSONValue(elem)
+		}
+		return out
+	case []interface{}:
+		out := make([]interface{}, len(val))
+		for i, elem := range val {
+			out[i] = deepCopyJSONValue(elem)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
 // patchAndValidateResource patches a single resource's fields and validates
 // the result with the bridge's Recover function. If Recover fails, outputs
 // are reverted to their pre-patch state.
@@ -650,6 +674,19 @@ func patchAndValidateResource(
 	outputsSnapshot := make(map[string]interface{}, len(outputsRaw))
 	for k, v := range outputsRaw {
 		outputsSnapshot[k] = v
+	}
+	// The delta needs a DEEP copy, unlike everything else here. Patching
+	// replaces a top-level output wholesale, so a shallow copy is a faithful
+	// snapshot of those — but injectAssetDeltas below reaches into the delta's
+	// nested "obj"/"ps" maps and mutates them in place, returning the same map
+	// it was given. A shallow snapshot shares those maps, so reverting
+	// outputsRaw = outputsSnapshot restored the delta's IDENTITY while keeping
+	// the injected asset entries, leaving the resource in a state its pre-patch
+	// outputs never had: validateRecover on the "reverted" outputs then fails
+	// with an error the original state would not have produced, and that is
+	// what gets written.
+	if delta, hasDelta := outputsRaw[rawStateDeltaKey]; hasDelta {
+		outputsSnapshot[rawStateDeltaKey] = deepCopyJSONValue(delta)
 	}
 
 	res, err := patchResourceFields(fields, inputsRaw, outputsRaw, digResource, configSecrets, configDir)
@@ -1520,6 +1557,19 @@ func propertyValueFromState(v interface{}) resource.PropertyValue {
 					return resource.MakeSecret(elem), true
 				}
 			}
+			// The third shape, and the one the documented file-mode workflow
+			// actually produces: "pulumi stack export" without --show-secrets
+			// writes {sig, "ciphertext": "..."}. The plaintext is not
+			// recoverable here and is not needed — this conversion feeds
+			// validateRecover, which checks that outputs are SHAPED the way
+			// the delta expects. What matters is that the value stays a
+			// Secret. Falling through returned a plain Object, so Recover was
+			// handed an object where it required a scalar, failed, and
+			// patchAndValidateResource reverted every patch for the resource
+			// while reporting overall success.
+			if ciphertext, ok := m["ciphertext"].(string); ok {
+				return resource.MakeSecret(resource.NewStringProperty(ciphertext)), true
+			}
 			return resource.PropertyValue{}, false
 		default:
 			if a, isAsset, err := resource.DeserializeAsset(m); err == nil && isAsset {
@@ -1528,6 +1578,36 @@ func propertyValueFromState(v interface{}) resource.PropertyValue {
 			if ar, isArchive, err := resource.DeserializeArchive(m); err == nil && isArchive {
 				return resource.NewArchiveProperty(ar), true
 			}
+		}
+		return resource.PropertyValue{}, false
+	}
+	return resource.NewPropertyValueRepl(v, nil, replv)
+}
+
+// deltaPropertyValue converts a JSON-decoded __pulumi_raw_state_delta into a
+// PropertyValue.
+//
+// Only json.Number needs special handling, and it needs it for the same reason
+// propertyValueFromState does: both of the delta's producers (PatchState and
+// LoadNonImportableFile) decode with UseNumber to keep large integers exact,
+// resource.NewPropertyValue has no case for json.Number, and reflection reports
+// its Kind as String. The delta's own numeric fields are typed on the bridge
+// side — assetDelta.archiveFormat is an archive.Format, not a string — so a
+// stringified number makes UnmarshalRawStateDelta fail outright with "cannot
+// unmarshal string into Go struct field ... of type archive.Format", and
+// patchAndValidateResource then reverts every patch for the resource.
+//
+// Unlike propertyValueFromState this deliberately does NOT interpret Pulumi
+// sentinel maps: a delta is the bridge's own encoding, so a sig-keyed map
+// inside one would be data, not a sentinel.
+func deltaPropertyValue(v interface{}) resource.PropertyValue {
+	replv := func(v interface{}) (resource.PropertyValue, bool) {
+		if n, ok := v.(json.Number); ok {
+			f, err := n.Float64()
+			if err != nil {
+				return resource.PropertyValue{}, false
+			}
+			return resource.NewNumberProperty(f), true
 		}
 		return resource.PropertyValue{}, false
 	}
@@ -1548,7 +1628,7 @@ func validateRecover(urn string, outputsRaw map[string]interface{}) error {
 	}
 
 	outputsPV := propertyValueFromState(outputsRaw)
-	deltaPV := resource.NewPropertyValue(deltaMap)
+	deltaPV := deltaPropertyValue(deltaMap)
 	rsd, err := tfbridge.UnmarshalRawStateDelta(deltaPV)
 	if err != nil {
 		return fmt.Errorf("UnmarshalRawStateDelta: %w", err)

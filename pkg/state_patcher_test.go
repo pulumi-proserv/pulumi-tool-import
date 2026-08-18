@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/providermap"
@@ -1982,4 +1983,119 @@ func TestPatchStateFromSchema_DeltaUpdatesOnArrayPatch_REMOVED(t *testing.T) {
 	elem0Map := elem0.(map[string]interface{})
 	_, hasObj := elem0Map["obj"]
 	assert.True(t, hasObj, "element 0 delta should have 'obj' marker")
+}
+
+// TestPropertyValueFromState_CiphertextSecretStaysSecret covers the secret
+// shape the DOCUMENTED file-mode workflow produces. README.md and
+// docs/non-importable-resources.md both say `pulumi stack export > state.json`
+// with no --show-secrets, which writes {sig, ciphertext} rather than the
+// {sig, value} form the engine uses in memory or the {sig, plaintext} form
+// --show-secrets produces. Recovering it as a plain Object made the bridge's
+// Recover fail, so patchAndValidateResource reverted every patch for the
+// resource while the run still reported success. Stack mode never saw it
+// because auto.Stack.Export passes --show-secrets.
+func TestPropertyValueFromState_CiphertextSecretStaysSecret(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		in   map[string]interface{}
+	}{
+		{"ciphertext (stack export, no --show-secrets)", map[string]interface{}{
+			sigKey: "1b47061264138c4ac30d75fd1eb44270", "ciphertext": "v1:abc:def",
+		}},
+		{"value (engine in-memory form)", map[string]interface{}{
+			sigKey: "1b47061264138c4ac30d75fd1eb44270", "value": "hunter2",
+		}},
+		{"plaintext (--show-secrets)", map[string]interface{}{
+			sigKey: "1b47061264138c4ac30d75fd1eb44270", "plaintext": `"hunter2"`,
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			pv := propertyValueFromState(tc.in)
+			assert.True(t, pv.IsSecret(), "must recover as a Secret, got %s", pv.TypeString())
+			assert.False(t, pv.IsObject(), "recovering as an Object is what breaks Recover")
+		})
+	}
+}
+
+// TestDeltaPropertyValue_JSONNumberSurvives pins the delta side of the
+// UseNumber contract. Both producers of a delta decode with UseNumber, and the
+// delta's numeric fields are typed on the bridge side (archive.Format), so a
+// number arriving as a string made UnmarshalRawStateDelta fail outright — and
+// a failure there reverts every patch for the resource.
+func TestDeltaPropertyValue_JSONNumberSurvives(t *testing.T) {
+	t.Parallel()
+
+	delta := `{"obj":{"ps":{"code":{"asset":{"kind":1,"archiveFormat":2}}}}}`
+
+	var plain map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(delta), &plain))
+
+	dec := json.NewDecoder(strings.NewReader(delta))
+	dec.UseNumber()
+	var numbered map[string]interface{}
+	require.NoError(t, dec.Decode(&numbered))
+
+	// The decode mode must not change the result: that difference is the bug.
+	_, plainErr := tfbridge.UnmarshalRawStateDelta(deltaPropertyValue(plain))
+	_, numErr := tfbridge.UnmarshalRawStateDelta(deltaPropertyValue(numbered))
+	assert.NoError(t, plainErr)
+	assert.NoError(t, numErr, "a UseNumber-decoded delta must unmarshal like a plain one")
+}
+
+// TestPatchRevert_DoesNotKeepInjectedAssetDeltas guards the revert path's
+// snapshot. injectAssetDeltas mutates the delta's nested maps in place and
+// returns the same map, so a shallow snapshot shared them and "reverting" left
+// the injected entries behind — leaving the resource in a state its pre-patch
+// outputs never had.
+func TestPatchRevert_DoesNotKeepInjectedAssetDeltas(t *testing.T) {
+	t.Parallel()
+
+	outputs := map[string]interface{}{
+		"code": "x",
+		rawStateDeltaKey: map[string]interface{}{
+			"obj": map[string]interface{}{"ps": map[string]interface{}{}},
+		},
+	}
+
+	snapshot := make(map[string]interface{}, len(outputs))
+	for k, v := range outputs {
+		snapshot[k] = v
+	}
+	snapshot[rawStateDeltaKey] = deepCopyJSONValue(outputs[rawStateDeltaKey])
+
+	before, err := json.Marshal(snapshot[rawStateDeltaKey])
+	require.NoError(t, err)
+
+	outputs[rawStateDeltaKey] = injectAssetDeltas(outputs[rawStateDeltaKey],
+		[]assetFieldDeltaInfo{{pulumiField: "code", kind: 0}})
+
+	after, err := json.Marshal(snapshot[rawStateDeltaKey])
+	require.NoError(t, err)
+	assert.JSONEq(t, string(before), string(after),
+		"the snapshot must be unaffected by injectAssetDeltas, or a revert cannot restore it")
+
+	// And the live copy really was mutated, so this is not vacuous.
+	live, err := json.Marshal(outputs[rawStateDeltaKey])
+	require.NoError(t, err)
+	assert.NotEqual(t, string(before), string(live))
+}
+
+func TestDeepCopyJSONValue_SharesNothingMutable(t *testing.T) {
+	t.Parallel()
+
+	orig := map[string]interface{}{
+		"m": map[string]interface{}{"k": "v"},
+		"a": []interface{}{map[string]interface{}{"k": "v"}},
+		"s": "scalar",
+	}
+	cp := deepCopyJSONValue(orig).(map[string]interface{})
+
+	cp["m"].(map[string]interface{})["k"] = "changed"
+	cp["a"].([]interface{})[0].(map[string]interface{})["k"] = "changed"
+
+	assert.Equal(t, "v", orig["m"].(map[string]interface{})["k"])
+	assert.Equal(t, "v", orig["a"].([]interface{})[0].(map[string]interface{})["k"])
 }
