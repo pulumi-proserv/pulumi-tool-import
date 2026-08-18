@@ -8,10 +8,16 @@ afterwards.
 
 This is a diagnostic document. Where a stage is lossy or a dependency is
 awkward, it says so; where a claim could not be established from the source, it
-says that instead of guessing. Line numbers are against
-`feat/inject-non-importable-state` and against
-`github.com/pulumi/pulumi-terraform-bridge/v3@v3.121.0` /
-`github.com/pulumi/pulumi/pkg/v3@v3.222.0` for the vendored modules.
+says that instead of guessing.
+
+> **On the line numbers.** This document carries roughly 250 of them, and they
+> rot fast — a single day's changes to `pkg/state_injector.go` invalidated every
+> anchor in the S7 section, several of which then pointed at blank lines and
+> closing braces. **Treat function and identifier names as authoritative and
+> line numbers as a hint.** S7 has been rewritten without them as the pattern to
+> follow; the rest are unverified after any given change. Versions referenced
+> are `github.com/pulumi/pulumi-terraform-bridge/v3@v3.121.0` and
+> `github.com/pulumi/pulumi/pkg/v3@v3.222.0`.
 
 Background that is *not* repeated here:
 [`docs/non-importable-resources.md`](non-importable-resources.md),
@@ -385,96 +391,109 @@ In stack mode the re-import goes through `StackSession.Import`
 
 `patch-state tf --non-importable` writes the resources `resolve tf` left out of
 the import file directly into the deployment. `InjectNonImportable`
-(`pkg/state_injector.go:69`) is the whole of it, and it **starts no provider**:
+(`pkg/state_injector.go`) is the whole of it, and it **starts no provider**:
 everything provider-derived was computed by `digest tf` in S2b and travels in
-the sidecar (`:63-68`). The `providers` argument is only used for
-`GetSchemaFieldInfo` name lookups (`:188`).
+the sidecar. The `providers` argument is used only for `GetSchemaFieldInfo` name
+lookups.
+
+> Function names rather than line numbers below. The previous version of this
+> section anchored everything to line numbers and every one of them was stale
+> within a day of the code changing.
 
 **The program is the source of truth for everything but the values.** A preview
 of the user's program reports these resources as `create` steps — they are
-declared, they simply could not be imported — and each step's `newState`
-carries the URN, parent, provider reference, inputs and dependency edges the
-engine computed. `CreatesByTypeName` (`pkg/preview.go:67`) indexes those by
-Pulumi type and name; `buildInjectedResource` (`pkg/state_injector.go:164`)
-copies `newState` wholesale (`:172-180`) and overrides only what the sidecar
-knows:
+declared, they simply could not be imported — and each step's `newState` carries
+the URN, parent, provider reference, inputs and dependency edges the engine
+computed. `CreatesByTypeName` (`pkg/preview.go`) indexes those by Pulumi type and
+name; `buildInjectedResource` copies `newState` wholesale and overrides only what
+the sidecar knows:
 
 | Field | Source |
 |---|---|
-| `urn`, `parent`, `provider`, `protect`, `dependencies`, `propertyDependencies`, … | `newState`, verbatim (`:172-180`) |
-| `custom` | `true` (`:181`) |
-| `id` | sidecar (`:182`) |
-| `outputs` | `r.PulumiOutputs` from S2b, or `MapTFAttributesToPulumi(r.Attributes, fields)` for a sidecar written before S2b existed (`:195-203`) |
-| `__pulumi_raw_state_delta`, `__meta` | `attachRawStateDelta` (`:304`) |
-| `inputs` | `newState.inputs` plus `__defaults: []` when the engine did not already supply one (`:212-230`) |
+| `urn`, `parent`, `provider`, `protect`, `dependencies`, `propertyDependencies`, … | `newState`, verbatim |
+| `custom` | `true` |
+| `id` | sidecar — **rejected if empty**, see below |
+| `outputs` | `r.PulumiOutputs` from S2b, or `MapTFAttributesToPulumi(r.Attributes, fields)` for a sidecar written before S2b existed |
+| `__pulumi_raw_state_delta`, `__meta` | `attachRawStateDelta` |
+| `inputs` | `newState.inputs` plus `__defaults: []` when the engine did not already supply one |
 
-Matching is strict in both directions: a sidecar entry listed twice is an error
-(`:113-118`), and a sidecar entry with no matching create step is an error
-(`:121-127`). There is no fallback heuristic.
+Matching is strict: a sidecar entry listed twice is an error, and a sidecar entry
+with no matching create step is an error. There is no fallback heuristic.
 
-**Two placeholders have to be resolved, from opposite directions.**
-`(sensitive)` arrives in the *outputs* from the digest and is resolved by
-`resolveOutputSecrets` (`:365`), which maps the TF attribute name to a Pulumi
-name and looks the config key up in `r.RedactedAttributes`. `[secret]` arrives
-in the *inputs* from the preview — `MassageSecrets` masks every secret property
-in `pulumi preview --json` output — and is resolved by `resolveSecretInputs`
-(`:416`), which maps the Pulumi name back to a TF name (falling back to
-`tfbridge.PulumiToTerraformName` when no schema is loaded, `:442`) and wraps the
-real value in Pulumi's secret envelope (`:463-466`). Both hard-error when the
-value cannot be resolved (`:401`, `:446`, `:453`).
+An **ambiguous** create key is different from a missing one. `PreviewKey` is
+(type, name), but a parented URN's type segment is `parentType$childType` while
+the sidecar records only the child's own type — so two same-named resources under
+different components collapse to one key. That is legal (a Terraform module
+instantiated twice, mapped to a Pulumi component, produces it), so
+`CreatesByTypeName` records the ambiguity and `PreviewCreates.Lookup` reports it
+**only if a sidecar entry actually needs that key**. Failing at index time would
+block injection of every unrelated resource.
 
-Because both resolutions depend on a name mapping being right,
-`checkNoPlaceholders` (`:261`) then walks inputs and outputs recursively —
-including nested objects and arrays, which the targeted resolvers do not — and
-fails the injection if either literal survives anywhere (`:242-247`). That
-backstop depends on no mapping at all.
+#### Values that must never reach state
 
-**The delta is attached conservatively.** `attachRawStateDelta` (`:304`) writes
-`__meta` whenever a non-zero schema version is known (`:310-314`), independently
-of the delta, since a provider upgrade needs the version even when no delta
-exists. It then drops the delta outright if its raw JSON contains `(sensitive)`
-anywhere (`:324-327`) — substituting the real secret into outputs does not
-change what a `Replace` node reconstructs, so such a delta would rebuild
-Terraform state containing the placeholder — and otherwise validates it with
-`validateRecover` and deletes it on failure (`:332-335`). Every drop increments
-`InjectResult.NoDelta`, and the resource falls back to the bridge's pre-delta
-reconstruction. This is what closes
-[#25](https://github.com/pulumi-proserv/pulumi-tool-import/issues/25) for the
-common case; the residue is exactly the `NoDelta` count.
+Three placeholders can arrive in a resource being injected, from three
+directions, and each is handled where it arrives:
 
-`orderInjected` (`:479`) topologically sorts the batch so a resource appears
-after its parent and after any injected resource it depends on, because
-`VerifyIntegrity` rejects forward references. Only edges *within* the batch
-matter — anything already in the deployment is necessarily earlier (`:476-478`).
+- **`(sensitive)`** arrives in the *outputs* from the digest. `resolveOutputSecrets`
+  maps the Terraform attribute name to a Pulumi name and looks the config key up
+  in `r.RedactedAttributes`.
+- **`[secret]`** arrives in the *inputs* from the preview — `MassageSecrets` masks
+  every secret property in `pulumi preview --json` output — and is resolved by
+  `resolveSecretInputs` from stack config.
+- **The engine's unknown sentinel** (`04da6b54-…`) arrives in the *inputs* when an
+  injected resource references **another injected resource**: at the preview that
+  drives injection the dependency is not in state yet, so its outputs are unknown.
+  `resolveUnknownInputs` fills the value from the resource's own
+  Terraform-derived outputs — Terraform already created both resources, so the
+  real value is in the sidecar. This is the mirror of `fillOutputsFromInputs`.
 
-**Stack mode wraps the cycle** (`pkg/state_stack.go`, driven from
-`cmd/patch_state_tf.go:97-348`):
+`checkNoPlaceholders` then walks both bags recursively and hard-errors on any
+survivor, reporting the property path. Nothing may be written to state that a
+later operation could not distinguish from a real value.
 
-1. `Export` the deployment, write a timestamped backup to disk and print an
-   absolute `pulumi stack import` recovery command — **before any mutation**
-   (`cmd/patch_state_tf.go:104-149`).
-2. `PreviewJSON` (`pkg/state_stack.go:88`) for the injection skeleton; that same
-   preview is reused as the **baseline** (`cmd/patch_state_tf.go:254`). A
-   patch-only run takes a baseline of its own, still before import (`:280-288`).
-3. Patch, then inject, then `VerifyDeploymentIntegrity`, then `Import`.
-4. `PreviewJSON` again and compare.
+`resolveSecretInputs` distinguishes a **trusted** Terraform name from a
+**guessed** one. With no loaded provider schema, names go through
+`PulumiToTerraformName`, which cannot invert the bridge's pluralisation (513
+attributes in pulumi-aws v7.24.0 do not round-trip). An attribute *found* under
+the guessed name corroborates it, so a present-but-null value is a genuine
+"Terraform has no value here" and the input is dropped; an *absent* one is
+conclusive only when the name came from the schema, and is otherwise an error.
+Dropping on a guess silently deletes a program-declared input.
 
-**The verification rule is a comparison, not a cleanliness check.**
-`CheckInjectionVerification` (`pkg/state_stack.go:156`) requires two things:
-every injected URN reports `same` (`CheckInjectedOps`, `:105`), and the run did
-not make anything else worse — no URN that was `same` or absent in the baseline
-is non-`same` afterwards (`:181-191`), and the count of non-`same` steps outside
-the injected set does not increase (`:192-196`). A stack mid-migration
-legitimately still has diffs, which is why the operator is running the tool at
-all; demanding an absolutely clean preview would revert nearly every legitimate
-patch-only pass (`:146-153`). `CheckPreviewClean` (`:129`) exists but is
-diagnostic only — it reports how many operations remain outstanding (`:345`).
+#### The raw state delta
 
-Any problem triggers `revertOrExplain` (`cmd/patch_state_tf.go:304`), which
-re-imports the pre-mutation export and, if even that fails, prints the
-hand-restore command pointing at the on-disk backup.
+`attachRawStateDelta` writes `__meta` (the schema version, independently of
+whether a delta exists) and then the delta itself, subject to three gates:
 
----
+1. a delta embedding `(sensitive)` is **dropped** — substituting the real secret
+   into outputs would not change what a Replace node reconstructs;
+2. `validateRecover` must succeed, or the delta is dropped and the reason
+   recorded;
+3. surviving Replace nodes are wrapped in the Pulumi secret envelope by
+   `envelopeReplaceNodes`, matching what the engine does for the deltas the
+   bridge writes itself, so the same payload is not encrypted one way and
+   plaintext the other. Applied *after* validation, because `validateRecover`
+   builds its `PropertyValue` with `deltaPropertyValue`, which deliberately does
+   not interpret sentinel maps.
+
+Each outcome is counted separately and reported as
+`Deltas attached (injected): X of Y` plus a named reason per dropped resource.
+This matters because a missing delta does **not** fail: the resource degrades to
+the bridge's legacy state conversion and still previews as `same`. Without the
+positive count, a regression to zero deltas is invisible.
+
+#### Ordering and verification
+
+`orderInjected` sorts injected resources so a dependency precedes its dependent —
+`VerifyIntegrity` rejects a resource whose parent or dependency appears later in
+the array. A cycle terminates without dropping anything and leaves a forward
+reference for verification to catch.
+
+`InjectNonImportable` verifies the deployment it produces before returning, and
+does so **even when the sidecar is empty**. That path returns a non-nil (empty)
+result, so the command's own fallback check — guarded on a nil result — would
+otherwise be skipped too, leaving the only path through `patch-state` that
+verified nothing at all.
 
 ## The three bridge reserved keys
 
