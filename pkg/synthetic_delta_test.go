@@ -598,3 +598,85 @@ func TestSyntheticDelta_PluralizedNamesRoundTrip(t *testing.T) {
 	// And the raw state must come back under the ORIGINAL Terraform names.
 	assertDeltaRecoversExactly(t, attrs, outputs, delta)
 }
+
+// TestSyntheticDelta_NestedCombinationsRoundTrip covers the shape where the
+// delta's mechanisms interact rather than appearing one at a time: objects
+// inside lists inside objects, a map nested two levels down, and a set of
+// objects.
+//
+// Every other test here exercises one mechanism at a time, and the real
+// provider tests are the one aws_vpn_connection case. Interaction is where the
+// interesting failures live — naming, pluralization and element deltas all
+// apply at each level, and a mistake at depth 2 is invisible at depth 1. Azure
+// in particular is dense with this shape.
+func TestSyntheticDelta_NestedCombinationsRoundTrip(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	// A list of objects, each containing a map and a nested list of objects.
+	inner := cty.Object(map[string]cty.Type{
+		"port":  cty.Number,
+		"proto": cty.String,
+	})
+	rule := cty.Object(map[string]cty.Type{
+		"name":    cty.String,
+		"labels":  cty.Map(cty.String),
+		"targets": cty.List(inner),
+	})
+
+	prov, schemaMap := syntheticResource("synthetic_nested", 0,
+		map[string]*configschema.Attribute{
+			"id":    {Type: cty.String, Computed: true},
+			"rule":  {Type: cty.List(rule), Optional: true},
+			"group": {Type: cty.Set(inner), Optional: true},
+		},
+		shimschema.SchemaMap{
+			"id": (&shimschema.Schema{Type: shim.TypeString, Computed: true}).Shim(),
+			"rule": (&shimschema.Schema{
+				Type: shim.TypeList, Optional: true,
+				Elem: (&shimschema.Resource{Schema: shimschema.SchemaMap{
+					"name": (&shimschema.Schema{Type: shim.TypeString, Optional: true}).Shim(),
+					"labels": (&shimschema.Schema{
+						Type: shim.TypeMap, Optional: true,
+						Elem: (&shimschema.Schema{Type: shim.TypeString}).Shim(),
+					}).Shim(),
+					"targets": (&shimschema.Schema{
+						Type: shim.TypeList, Optional: true,
+						Elem: (&shimschema.Resource{Schema: shimschema.SchemaMap{
+							"port":  (&shimschema.Schema{Type: shim.TypeInt, Optional: true}).Shim(),
+							"proto": (&shimschema.Schema{Type: shim.TypeString, Optional: true}).Shim(),
+						}}).Shim(),
+					}).Shim(),
+				}}).Shim(),
+			}).Shim(),
+			"group": (&shimschema.Schema{
+				Type: shim.TypeSet, Optional: true,
+				Elem: (&shimschema.Resource{Schema: shimschema.SchemaMap{
+					"port":  (&shimschema.Schema{Type: shim.TypeInt, Optional: true}).Shim(),
+					"proto": (&shimschema.Schema{Type: shim.TypeString, Optional: true}).Shim(),
+				}}).Shim(),
+			}).Shim(),
+		})
+
+	attrs := []byte(`{"id":"r-1",` +
+		`"rule":[{"name":"web","labels":{"env":"prod","tier":"edge"},` +
+		`"targets":[{"port":80,"proto":"tcp"},{"port":443,"proto":"tcp"}]},` +
+		`{"name":"empty","labels":{},"targets":[]}],` +
+		`"group":[{"port":22,"proto":"tcp"}]}`)
+
+	outputs, delta, reason, _, err := ComputeInjectionState(
+		ctx, prov, "synthetic_nested", attrs, schemaMap, nil)
+	require.NoError(t, err)
+	require.Empty(t, reason, "nesting must not defeat delta computation")
+
+	// Depth is the point: assert the delta reaches inside the list elements,
+	// not just the top level. Without this the test could pass on a delta that
+	// ignored everything below the first level.
+	deltaJSON, err := json.Marshal(delta)
+	require.NoError(t, err)
+	assert.Contains(t, string(deltaJSON), `"arr"`,
+		"the delta should describe the list levels")
+	t.Logf("nested delta: %s", deltaJSON)
+
+	assertDeltaRecoversExactly(t, attrs, outputs, delta)
+}
