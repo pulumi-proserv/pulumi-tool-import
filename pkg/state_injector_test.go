@@ -754,3 +754,39 @@ func TestInjectNonImportable_EmptyIDIsRejected(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no import ID")
 }
+
+// TestInjectNonImportable_EmptySidecarStillVerifies covers the only path
+// through patch-state that verified nothing at all.
+//
+// The empty-sidecar early return hands back a NON-nil (empty) InjectResult, so
+// the command's fallback check — guarded by "injectResult == nil" — was skipped
+// too, and stack mode then imported the state into the live stack unverified.
+// A sidecar with "resources": [] is what a run that found nothing writes, so
+// this is reachable without hand-editing.
+func TestInjectNonImportable_EmptySidecarStillVerifies(t *testing.T) {
+	t.Parallel()
+
+	corrupt := minimalState("")
+
+	for _, tc := range []struct {
+		name    string
+		sidecar *NonImportableFile
+	}{
+		{"nil sidecar", nil},
+		{"empty resources", &NonImportableFile{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, _, err := InjectNonImportable(corrupt, tc.sidecar, nil, nil, nil)
+			require.Error(t, err, "corrupt state must not pass through unverified")
+		})
+	}
+
+	// A sound state still passes, so the guard is not simply rejecting
+	// everything.
+	out, result, err := InjectNonImportable(minimalState(goodProviderRef), nil, nil, nil, nil)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, 0, result.Injected)
+	assert.NotEmpty(t, out)
+}

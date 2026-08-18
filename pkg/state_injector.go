@@ -108,6 +108,20 @@ func InjectNonImportable(
 	configSecrets map[string]string,
 ) ([]byte, *InjectResult, error) {
 	if sidecar == nil || len(sidecar.Resources) == 0 {
+		// Verify even though nothing was injected. The caller's fallback check
+		// is guarded by "injectResult == nil", and this path returns a NON-nil
+		// (empty) result, so returning early skipped both this function's own
+		// verification AND the caller's — the only path through patch-state
+		// that verified nothing at all, after which stack mode imports the
+		// state into the live stack. Reachable from a sidecar with
+		// "resources": [], which is what a run that found nothing writes.
+		//
+		// Verifying here keeps the contract this function's callers rely on:
+		// the bytes it returns have been checked, whether or not it changed
+		// them.
+		if err := VerifyDeploymentIntegrity(stateData); err != nil {
+			return nil, nil, err
+		}
 		return stateData, &InjectResult{}, nil
 	}
 	if preview == nil {
@@ -152,8 +166,11 @@ func InjectNonImportable(
 		}
 		seen[key] = r
 
-		newState, ok := creates[key]
-		if !ok {
+		newState, err := creates.Lookup(key)
+		if err != nil {
+			return nil, nil, err
+		}
+		if newState == nil {
 			return nil, nil, fmt.Errorf(
 				"no create step in the preview matches %s %q (%s); the program must declare "+
 					"this resource for its state to be injected",

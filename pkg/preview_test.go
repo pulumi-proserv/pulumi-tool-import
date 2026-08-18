@@ -40,15 +40,13 @@ func TestParsePreviewJSON_CreatesByTypeName(t *testing.T) {
 	creates, err := d.CreatesByTypeName()
 	require.NoError(t, err)
 
-	// Only the create step is collected; the "same" step is ignored.
-	require.Len(t, creates, 1)
-
 	key := PreviewKey{
 		Type: "aws:ec2/vpnGatewayRoutePropagation:VpnGatewayRoutePropagation",
 		Name: "prop0",
 	}
-	state, ok := creates[key]
-	require.True(t, ok, "create step should be keyed by type and name")
+	state, err := creates.Lookup(key)
+	require.NoError(t, err)
+	require.NotNil(t, state, "create step should be keyed by type and name")
 
 	assert.Equal(t,
 		"urn:pulumi:dev::proj::pulumi:providers:aws::default_7_24_0::9f4c2b1e-0000-4000-8000-000000000001",
@@ -94,4 +92,69 @@ func TestPreviewDigest_OpsByURN(t *testing.T) {
 		ops["urn:pulumi:dev::proj::aws:ec2/vpnGatewayRoutePropagation:VpnGatewayRoutePropagation::prop0"])
 	assert.Equal(t, "same", ops["urn:pulumi:dev::proj::aws:ec2/routeTable:RouteTable::rt0"])
 	assert.Equal(t, map[string]int{"create": 1, "same": 1}, d.ChangeSummary)
+}
+
+// TestCreatesByTypeName_AmbiguousKeyOnlyFailsWhenUsed covers the case that used
+// to block injection outright. A parented URN's type segment is
+// "parentType$childType" while the sidecar records only the child's own type,
+// so two same-named resources under different components collapse to one key —
+// a Terraform module instantiated twice and mapped to a Pulumi component
+// produces exactly that. Failing at index time meant one such pair anywhere in
+// the program stopped every unrelated resource from being injected.
+func TestCreatesByTypeName_AmbiguousKeyOnlyFailsWhenUsed(t *testing.T) {
+	t.Parallel()
+
+	d, err := ParsePreviewJSON([]byte(`{"steps":[
+		{"op":"create","urn":"urn:pulumi:dev::proj::my:mod:CompA$aws:s3/bucket:Bucket::logs",
+		 "newState":{"urn":"urn:pulumi:dev::proj::my:mod:CompA$aws:s3/bucket:Bucket::logs"}},
+		{"op":"create","urn":"urn:pulumi:dev::proj::my:mod:CompB$aws:s3/bucket:Bucket::logs",
+		 "newState":{"urn":"urn:pulumi:dev::proj::my:mod:CompB$aws:s3/bucket:Bucket::logs"}},
+		{"op":"create","urn":"urn:pulumi:dev::proj::aws:ec2/vpc:Vpc::main",
+		 "newState":{"urn":"urn:pulumi:dev::proj::aws:ec2/vpc:Vpc::main"}}
+	]}`))
+	require.NoError(t, err)
+
+	// Indexing must succeed even though two steps collide.
+	creates, err := d.CreatesByTypeName()
+	require.NoError(t, err, "an ambiguous key must not block the whole preview")
+
+	// The unrelated resource resolves normally.
+	unrelated, err := creates.Lookup(PreviewKey{Type: "aws:ec2/vpc:Vpc", Name: "main"})
+	require.NoError(t, err)
+	require.NotNil(t, unrelated)
+
+	// The ambiguous one fails only now, naming both URNs.
+	_, err = creates.Lookup(PreviewKey{Type: "aws:s3/bucket:Bucket", Name: "logs"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "CompA")
+	assert.Contains(t, err.Error(), "CompB")
+
+	// A key with no create step at all is not an error, just absent.
+	missing, err := creates.Lookup(PreviewKey{Type: "aws:ec2/vpc:Vpc", Name: "nope"})
+	require.NoError(t, err)
+	assert.Nil(t, missing)
+}
+
+// TestSplitURN_NameContainingDoubleColon pins the parse against a name that
+// carries "::" itself — a for_each key derived from an ARN is the common case.
+// A plain Split put the name's own segments at the end, so the last two fields
+// were read as (type, name) and both were wrong.
+func TestSplitURN_NameContainingDoubleColon(t *testing.T) {
+	t.Parallel()
+
+	typ, name, err := splitURN(
+		"urn:pulumi:dev::proj::aws:iam/rolePolicyAttachment:RolePolicyAttachment::" +
+			"attach-arn:aws:iam::123456789012:role/admin")
+	require.NoError(t, err)
+	assert.Equal(t, "aws:iam/rolePolicyAttachment:RolePolicyAttachment", typ)
+	assert.Equal(t, "attach-arn:aws:iam::123456789012:role/admin", name)
+
+	// Parented types still reduce to the child's own type.
+	typ, name, err = splitURN("urn:pulumi:dev::proj::my:mod:Certs$aws:iot/certificate:Certificate::cert")
+	require.NoError(t, err)
+	assert.Equal(t, "aws:iot/certificate:Certificate", typ)
+	assert.Equal(t, "cert", name)
+
+	_, _, err = splitURN("not-a-urn")
+	require.Error(t, err)
 }

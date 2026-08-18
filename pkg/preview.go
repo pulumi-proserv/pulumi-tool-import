@@ -69,11 +69,50 @@ func ParsePreviewJSON(data []byte) (*PreviewDigest, error) {
 	return &digest, nil
 }
 
+// PreviewCreates indexes a preview's create steps by (type, name) — the only
+// identity the sidecar records — while remembering when more than one step
+// shares that identity.
+//
+// Two distinct URNs can legitimately collapse to one key, because a parented
+// URN's type segment is "parentType$childType" and the sidecar stores only the
+// child's own type. A Terraform module instantiated twice and mapped to a
+// Pulumi component produces exactly that: my:mod:CompA$aws:s3/bucket:Bucket
+// and my:mod:CompB$aws:s3/bucket:Bucket, both named "logs". Failing on sight
+// meant one such pair anywhere in the program blocked injection of every
+// unrelated resource, so ambiguity is recorded and reported only if something
+// actually looks the key up.
+type PreviewCreates struct {
+	byKey map[PreviewKey]map[string]interface{}
+	// urns holds every create-step URN behind a key, in preview order.
+	urns map[PreviewKey][]string
+}
+
+// Lookup returns the create step's new state for a key. It reports an error
+// when the key is ambiguous, naming the URNs involved, and (nil, nil) when the
+// preview has no create step for it.
+func (c *PreviewCreates) Lookup(key PreviewKey) (map[string]interface{}, error) {
+	if urns := c.urns[key]; len(urns) > 1 {
+		return nil, fmt.Errorf(
+			"the preview contains %d create steps for %s %q and the sidecar records only the "+
+				"resource's own type, so they cannot be told apart: %s. Give the resources "+
+				"distinct Pulumi names, or map them so their names differ",
+			len(urns), key.Type, key.Name, strings.Join(urns, ", "))
+	}
+	state, ok := c.byKey[key]
+	if !ok {
+		return nil, nil
+	}
+	return state, nil
+}
+
 // CreatesByTypeName indexes every create step by Pulumi type and resource name.
 // Resources the program would create are the ones injection can supply state
 // for; every other operation is ignored.
-func (d *PreviewDigest) CreatesByTypeName() (map[PreviewKey]map[string]interface{}, error) {
-	result := make(map[PreviewKey]map[string]interface{})
+func (d *PreviewDigest) CreatesByTypeName() (*PreviewCreates, error) {
+	result := &PreviewCreates{
+		byKey: make(map[PreviewKey]map[string]interface{}),
+		urns:  make(map[PreviewKey][]string),
+	}
 	for _, step := range d.Steps {
 		if step.Op != "create" || step.NewState == nil {
 			continue
@@ -87,10 +126,10 @@ func (d *PreviewDigest) CreatesByTypeName() (map[PreviewKey]map[string]interface
 			return nil, err
 		}
 		key := PreviewKey{Type: typ, Name: name}
-		if _, dup := result[key]; dup {
-			return nil, fmt.Errorf("preview contains two create steps for %s %q", typ, name)
+		result.urns[key] = append(result.urns[key], urn)
+		if _, dup := result.byKey[key]; !dup {
+			result.byKey[key] = step.NewState
 		}
-		result[key] = step.NewState
 	}
 	return result, nil
 }
@@ -125,12 +164,17 @@ func (d *PreviewDigest) DiffReasonsByURN() map[string][]string {
 // type may name a chain of parents separated by "$"; the resource's own type is
 // the last element.
 func splitURN(urn string) (string, string, error) {
-	parts := strings.Split(urn, "::")
+	// SplitN with a limit of 4, matching batchimport.ParseURN, because a
+	// resource NAME may itself contain "::" — a for_each key derived from an
+	// ARN ("arn:aws:iam::123456789012:role/x") is the common case. A plain
+	// Split then puts the name's own segments at the end and taking
+	// parts[len-1]/parts[len-2] reads the wrong fields entirely.
+	parts := strings.SplitN(urn, "::", 4)
 	if len(parts) < 4 {
 		return "", "", fmt.Errorf("malformed URN %q", urn)
 	}
-	name := parts[len(parts)-1]
-	qualifiedType := parts[len(parts)-2]
+	name := parts[3]
+	qualifiedType := parts[2]
 	typ := qualifiedType
 	if idx := strings.LastIndex(qualifiedType, "$"); idx >= 0 {
 		typ = qualifiedType[idx+1:]

@@ -136,18 +136,41 @@ func ComputeInjectionState(
 		return outputs, nil, fmt.Sprintf("computing raw state delta for %s: %v", tfType, deltaErr), sch.Version, nil
 	}
 
-	marshalled, ok := rawDelta.Marshal().Mappable().(map[string]interface{})
-	if !ok {
-		// Believed unreachable for a whole-resource delta: the top-level
+	// Marshalled by encoding/json directly, NOT via Marshal().Mappable().
+	//
+	// The bridge secrets every Replace node — rawstate.go returns
+	// resource.MakeSecret(...) for any map carrying a "replace" key — and
+	// PropertyValue.MapRepl, which Mappable calls, returns v.SecretValue() for
+	// a secret: a *resource.Secret STRUCT, not a JSON shape. So Mappable
+	// produced {"Element":{"V":{"replace":{"V":...}}}} instead of
+	// {"replace":...}, with the SDK's internal field names baked into the
+	// sidecar. Reading that back through UnmarshalRawStateDelta returned
+	// err=nil and an EMPTY delta at that path, so the resource silently
+	// recovered the natural encoding rather than the provider's exact bytes —
+	// a wrong raw state written with no error anywhere, surfacing only as a
+	// later phantom diff. The bridge's deliberate secret marking was lost too,
+	// so the raw payload landed in state unencrypted.
+	//
+	// RawStateDelta's own JSON form is the canonical one: Marshal() itself
+	// starts with json.Marshal(d) and only then converts to a PropertyValue.
+	// Going straight to JSON keeps that shape and skips the lossy conversion.
+	deltaJSON, err := json.Marshal(rawDelta)
+	if err != nil {
+		return outputs, nil, fmt.Sprintf("marshalling raw state delta for %s: %v", tfType, err),
+			sch.Version, nil
+	}
+	marshalled, err := decodeAttrs(deltaJSON)
+	if err != nil {
+		return outputs, nil, fmt.Sprintf("decoding raw state delta for %s: %v", tfType, err),
+			sch.Version, nil
+	}
+	if marshalled == nil {
+		// A null delta. Unreachable for a whole-resource delta: the top-level
 		// PropertyValue handed to RawStateComputeDelta is always an Object (a
 		// resource's outputs are always a property map), and
 		// rawStateRecoverNatural — the only path that produces an empty delta —
-		// refuses Object values outright (pulumi-terraform-bridge's
-		// rawstate.go). So a top-level delta is always either non-empty or the
-		// turnaround check catches the mismatch first and RawStateComputeDelta
-		// returns an error instead, which is handled above. Kept as a
-		// defensive fallback rather than a panic, in case a future bridge
-		// version changes that behaviour.
+		// refuses Object values outright. Kept as a defensive fallback rather
+		// than a panic, in case a future bridge version changes that.
 		return outputs, nil, fmt.Sprintf("raw state delta for %s computed empty despite no error", tfType),
 			sch.Version, nil
 	}

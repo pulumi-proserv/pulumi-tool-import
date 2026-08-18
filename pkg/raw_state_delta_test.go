@@ -493,3 +493,47 @@ func TestComputeInjectionState_TimeoutsDeltaRecovers(t *testing.T) {
 		assert.Empty(t, deltaReason)
 	})
 }
+
+// TestDeltaMarshalPreservesReplaceNodes pins the sidecar's on-disk delta shape.
+//
+// The bridge secrets every Replace node, and PropertyValue.Mappable returns a
+// *resource.Secret STRUCT for a secret rather than a JSON shape — so
+// Marshal().Mappable() wrote the SDK's internal field names
+// ({"Element":{"V":...}}) into the sidecar. Reading that back returned err=nil
+// and an EMPTY delta at that path, so the resource silently recovered the
+// natural encoding instead of the provider's exact bytes: a wrong raw state
+// written with no error anywhere, visible only as a later phantom diff.
+//
+// The assertion is a round trip rather than a literal, because what matters is
+// that what we write is what UnmarshalRawStateDelta reads back.
+func TestDeltaMarshalPreservesReplaceNodes(t *testing.T) {
+	t.Parallel()
+
+	const canonical = `{"obj":{"ps":{"policy":{"replace":{"raw":"{\"a\":1}"}}}}}`
+
+	var doc interface{}
+	require.NoError(t, json.Unmarshal([]byte(canonical), &doc))
+	delta, err := tfbridge.UnmarshalRawStateDelta(resource.NewPropertyValue(doc))
+	require.NoError(t, err)
+
+	// What ComputeInjectionState now writes.
+	written, err := json.Marshal(delta)
+	require.NoError(t, err)
+	assert.JSONEq(t, canonical, string(written),
+		"the delta must serialize to its own JSON form, not to PropertyValue internals")
+
+	// And it must survive the trip back, still carrying the Replace node.
+	var back interface{}
+	require.NoError(t, json.Unmarshal(written, &back))
+	roundTripped, err := tfbridge.UnmarshalRawStateDelta(resource.NewPropertyValue(back))
+	require.NoError(t, err)
+	again, err := json.Marshal(roundTripped)
+	require.NoError(t, err)
+	assert.JSONEq(t, canonical, string(again), "the Replace node must not be silently dropped")
+
+	// The old shape, for contrast: it parses without error and loses the node.
+	lossy, err := json.Marshal(delta.Marshal().Mappable())
+	require.NoError(t, err)
+	assert.NotEqual(t, canonical, string(lossy),
+		"guard on the premise: Mappable() is expected to differ, so this test is not vacuous")
+}
