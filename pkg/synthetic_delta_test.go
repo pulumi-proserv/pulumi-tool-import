@@ -347,3 +347,136 @@ func TestSyntheticDelta_EmptyAndNullSurviveTheSidecar(t *testing.T) {
 	// is a diff on the next preview.
 	assertDeltaRecoversExactly(t, attrs, outputs, delta)
 }
+
+// TestSyntheticDelta_RenamedPropertyRoundTrips covers objDelta.Renamed.
+//
+// The bridge derives a Terraform name from a Pulumi one with
+// PulumiToTerraformName when it can, and records an explicit mapping only when
+// that derivation would be wrong. Provider overlays rename attributes freely —
+// this is common across Azure and GCP, where Pulumi names often diverge from
+// Terraform's — so the recorded-rename path is not an edge case, and a lost
+// rename silently reconstructs raw state under the wrong attribute name.
+func TestSyntheticDelta_RenamedPropertyRoundTrips(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	prov, schemaMap := syntheticResource("synthetic_renamed", 0,
+		map[string]*configschema.Attribute{
+			"id": {Type: cty.String, Computed: true},
+			// A name no camelCase derivation would produce from "friendlyName".
+			"obscure_tf_name": {Type: cty.String, Optional: true},
+		},
+		shimschema.SchemaMap{
+			"id":              (&shimschema.Schema{Type: shim.TypeString, Computed: true}).Shim(),
+			"obscure_tf_name": (&shimschema.Schema{Type: shim.TypeString, Optional: true}).Shim(),
+		})
+
+	schemaInfos := map[string]*tfbridge.SchemaInfo{
+		"obscure_tf_name": {Name: "friendlyName"},
+	}
+
+	attrs := []byte(`{"id":"r-1","obscure_tf_name":"value"}`)
+	outputs, delta, reason, _, err := ComputeInjectionState(
+		ctx, prov, "synthetic_renamed", attrs, schemaMap, schemaInfos)
+	require.NoError(t, err)
+	require.Empty(t, reason)
+
+	// The Pulumi side really did use the overridden name — otherwise the
+	// rename is never exercised and this test proves nothing.
+	require.Contains(t, outputs, "friendlyName",
+		"the schema override should have renamed the property on the Pulumi side")
+
+	deltaJSON, err := json.Marshal(delta)
+	require.NoError(t, err)
+	assert.Contains(t, string(deltaJSON), "renamed",
+		"a name the bridge cannot derive must be recorded explicitly")
+
+	assertDeltaRecoversExactly(t, attrs, outputs, delta)
+}
+
+// TestSyntheticDelta_PopulatedListRoundTrips covers a list carrying actual
+// elements. Every list in the existing fixtures is empty, so element handling
+// inside arrayOrSetDelta had no coverage at this seam at all.
+func TestSyntheticDelta_PopulatedListRoundTrips(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	prov, schemaMap := syntheticResource("synthetic_list", 0,
+		map[string]*configschema.Attribute{
+			"id":     {Type: cty.String, Computed: true},
+			"algos":  {Type: cty.List(cty.String), Optional: true},
+			"counts": {Type: cty.List(cty.Number), Optional: true},
+		},
+		shimschema.SchemaMap{
+			"id": (&shimschema.Schema{Type: shim.TypeString, Computed: true}).Shim(),
+			"algos": (&shimschema.Schema{
+				Type: shim.TypeList, Optional: true,
+				Elem: (&shimschema.Schema{Type: shim.TypeString}).Shim(),
+			}).Shim(),
+			"counts": (&shimschema.Schema{
+				Type: shim.TypeList, Optional: true,
+				Elem: (&shimschema.Schema{Type: shim.TypeInt}).Shim(),
+			}).Shim(),
+		})
+
+	attrs := []byte(`{"id":"r-1","algos":["AES256","AES128",""],"counts":[0,1,42]}`)
+
+	outputs, delta, reason, _, err := ComputeInjectionState(
+		ctx, prov, "synthetic_list", attrs, schemaMap, nil)
+	require.NoError(t, err)
+	require.Empty(t, reason)
+
+	// Order and emptiness both matter: a reordered list or a dropped empty
+	// string is a diff on the next preview.
+	assertDeltaRecoversExactly(t, attrs, outputs, delta)
+}
+
+// TestSyntheticDelta_NumberSurvivesASchemaTypeMismatch covers a numeric
+// attribute whose Pulumi-side schema disagrees about its type.
+//
+// It does NOT reach the num delta node, and the name says so. num requires the
+// Pulumi VALUE to be a string against a numeric Terraform type
+// (rawstate.go:702), and declaring the shim schema as TypeString is not enough
+// — MakeTerraformOutputs still produces the number 42, so the values agree and
+// no node is emitted. The remaining route to a num node appears to be a value
+// the bridge itself renders as a string, which is the large-integer path
+// already covered (and which produces a replace node rather than num, because
+// the digits do not survive either).
+//
+// Kept because the round trip is worth guarding regardless: a schema
+// disagreement of this shape must not turn a Terraform number into a quoted
+// string in raw state. num itself remains UNREACHED by this tool's pipeline,
+// which is a fact worth recording rather than a gap to paper over.
+func TestSyntheticDelta_NumberSurvivesASchemaTypeMismatch(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	prov, schemaMap := syntheticResource("synthetic_num", 0,
+		map[string]*configschema.Attribute{
+			"id":    {Type: cty.String, Computed: true},
+			"count": {Type: cty.Number, Optional: true},
+		},
+		// Deliberately mismatched: Terraform says number, the Pulumi-side
+		// schema says string.
+		shimschema.SchemaMap{
+			"id":    (&shimschema.Schema{Type: shim.TypeString, Computed: true}).Shim(),
+			"count": (&shimschema.Schema{Type: shim.TypeString, Optional: true}).Shim(),
+		})
+
+	attrs := []byte(`{"id":"r-1","count":42}`)
+	outputs, delta, reason, _, err := ComputeInjectionState(
+		ctx, prov, "synthetic_num", attrs, schemaMap, nil)
+	require.NoError(t, err)
+	require.Empty(t, reason)
+
+	deltaJSON, err := json.Marshal(delta)
+	require.NoError(t, err)
+	// Recorded, not asserted: if a num node ever appears here, the bridge's
+	// conversion changed and the comment above is stale.
+	t.Logf("delta=%s outputs.count=%#v (no num node expected; see the comment above)",
+		deltaJSON, outputs["count"])
+
+	// Whatever node kind the bridge chooses, the number must come back a
+	// number — that is the property worth guarding, not the encoding.
+	assertDeltaRecoversExactly(t, attrs, outputs, delta)
+}
