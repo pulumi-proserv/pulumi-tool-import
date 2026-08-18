@@ -74,3 +74,39 @@ func TestClassifyConnectionFailureIsUnknown(t *testing.T) {
 	err := errors.New("connection refused")
 	assert.Equal(t, Unknown, Classify(err))
 }
+
+// TestClassifyPluginDidNotRespondIsUnknown covers the message OpenTofu itself
+// emits when a plugin stops answering — plugin/grpc_error.go:56 and
+// plugin6/grpc_error.go:56, whose comment says "the plugin has stopped running
+// for some reason, and is usually the result of a crash".
+//
+// This was the worst possible omission from transportFailureMarkers, because
+// Classify's fallthrough is Supported: a crashed provider was read as a
+// POSITIVE answer that the type is importable. Once a plugin is down every
+// later probe fails identically, so one crash could mark a whole run's
+// resources importable and let genuinely non-importable ones into the import
+// file — the exact failure this package exists to prevent.
+//
+// The full diagnostic text is used, not just the marker, so this fails if the
+// substring stops matching what OpenTofu actually produces.
+func TestClassifyPluginDidNotRespondIsUnknown(t *testing.T) {
+	t.Parallel()
+
+	err := errors.New("Plugin did not respond: The plugin encountered an error, " +
+		"and failed to respond to the plugin6.(*GRPCProvider).ImportResourceState call. " +
+		"The plugin logs may contain more details.")
+	assert.Equal(t, Unknown, Classify(err),
+		"a crashed plugin must never be read as an answer")
+}
+
+// TestClassifyEveryTransportMarkerIsUnknown guards the list itself. Each marker
+// is there because it means "no answer"; one that stopped being matched would
+// silently become a Supported verdict, which is the dangerous direction.
+func TestClassifyEveryTransportMarkerIsUnknown(t *testing.T) {
+	t.Parallel()
+
+	for _, marker := range transportFailureMarkers {
+		assert.Equal(t, Unknown, Classify(errors.New("probe failed: "+marker)),
+			"marker %q must classify as Unknown", marker)
+	}
+}

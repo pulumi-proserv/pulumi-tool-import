@@ -77,6 +77,19 @@ var transportFailureMarkers = []string{
 	"connection refused",
 	"connection reset",
 	"EOF",
+	// What OpenTofu itself reports when a plugin stops answering, in both
+	// protocol versions: plugin/grpc_error.go:56 and plugin6/grpc_error.go:56,
+	// whose own comment says "the plugin has stopped running for some reason,
+	// and is usually the result of a crash".
+	//
+	// Its absence was the worst possible omission from this list, because
+	// Classify's fallthrough is Supported: a hung or crashed provider was read
+	// as "the provider engaged with the request", i.e. as a positive answer
+	// that the type IS importable. That is the exact failure this package
+	// exists to prevent, arrived at from the one direction the design did not
+	// guard — and once a plugin is down every subsequent probe fails the same
+	// way, so a single crash could mark an entire run's resources importable.
+	"Plugin did not respond",
 }
 
 // Classify interprets the outcome of an ImportResourceState probe:
