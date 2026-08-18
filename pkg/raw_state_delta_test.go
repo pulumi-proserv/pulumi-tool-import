@@ -667,3 +667,42 @@ func TestComputeInjectionState_DeltaServesAProviderStateUpgrade(t *testing.T) {
 			"a corrupt delta must not reconstruct the same raw state as a correct one")
 	})
 }
+
+// TestCorruptDeltaPayloadIsGenuinelyRejected pins the potency of the exact
+// payload the e2e's CorruptDeltaFailsPreview scenario injects.
+//
+// That scenario proves the delta is load-bearing by corrupting one and
+// requiring the next preview to fail. It is only meaningful if the payload is
+// genuinely rejected — a payload the bridge happened to tolerate would make the
+// scenario report a false alarm ("the delta is inert!") when nothing is wrong.
+// Since the scenario costs ~30s of real AWS time to run, that premise is worth
+// pinning here, offline, where a bridge upgrade that starts tolerating this
+// shape fails in seconds instead.
+//
+// The shape: an assetDelta whose archiveFormat is a string where the bridge's
+// own struct declares an archive.Format.
+func TestCorruptDeltaPayloadIsGenuinelyRejected(t *testing.T) {
+	t.Parallel()
+
+	const payload = `{"obj":{"ps":{"corrupted":{"asset":` +
+		`{"kind":1,"archiveFormat":"definitely-not-a-number"}}}}}`
+
+	var doc interface{}
+	require.NoError(t, json.Unmarshal([]byte(payload), &doc),
+		"the payload must be valid JSON, or it would be rejected before reaching the bridge")
+
+	_, err := tfbridge.UnmarshalRawStateDelta(resource.NewPropertyValue(doc))
+	require.Error(t, err,
+		"the e2e corruption payload is no longer rejected by UnmarshalRawStateDelta — "+
+			"CorruptDeltaFailsPreview would now report a false alarm")
+	assert.Contains(t, err.Error(), "archiveFormat",
+		"the rejection should still be the archiveFormat type mismatch this payload targets")
+
+	// And the control: the same shape with a valid archiveFormat is accepted,
+	// so the rejection is about the corruption and not about the shape.
+	valid := `{"obj":{"ps":{"corrupted":{"asset":{"kind":1,"archiveFormat":2}}}}}`
+	var validDoc interface{}
+	require.NoError(t, json.Unmarshal([]byte(valid), &validDoc))
+	_, err = tfbridge.UnmarshalRawStateDelta(resource.NewPropertyValue(validDoc))
+	assert.NoError(t, err, "a well-formed asset delta must still parse")
+}

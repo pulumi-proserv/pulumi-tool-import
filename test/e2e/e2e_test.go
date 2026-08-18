@@ -353,6 +353,9 @@ func TestNonImportableStateInjection(t *testing.T) {
 	t.Run("NestedBlockInjection", func(t *testing.T) {
 		testNestedBlockInjection(t, ctx, fx)
 	})
+	t.Run("CorruptDeltaFailsPreview", func(t *testing.T) {
+		testCorruptDeltaFailsPreview(t, ctx, fx)
+	})
 }
 
 // stackSeq gives every scenario's stack a unique name even if two scenarios
@@ -2196,4 +2199,157 @@ func runTofuCombined(ctx context.Context, dir string, env []string, args ...stri
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	return string(out), err
+}
+
+// ---------------------------------------------------------------------------
+// Scenario 13: a deliberately corrupted raw-state delta must break the next
+// preview.
+// ---------------------------------------------------------------------------
+
+// testCorruptDeltaFailsPreview is the negative that makes every other delta
+// assertion in this suite mean something.
+//
+// Every other scenario asserts that injected resources preview as "same" while
+// carrying a delta. That is equally consistent with two very different worlds:
+// the delta is correct and the bridge uses it, OR the delta is never consumed
+// at all and the resource previews clean for unrelated reasons. Nothing
+// distinguished them. That is the same shape as the orphan sweep which silently
+// checked nothing for fourteen runs while every run reported success.
+//
+// The delta IS consumed on this path, established from bridge source:
+// makeTerraformStateViaUpgradeEnabled is consulted in Diff (as well as Read and
+// Update) at tfbridge/provider.go:1129, the sdk-v2 shim implements
+// ProviderWithRawStateSupport (sdk-v2/provider2.go:540) so the path is
+// available rather than skipped, and makeTerraformStateViaUpgrade wraps both
+// UnmarshalRawStateDelta and Recover in contract.AssertNoErrorf — which
+// panics unconditionally, with no build tag.
+//
+// So corrupting a delta and previewing should fail loudly. If it does NOT, the
+// finding is far more valuable than a passing scenario: it means the delta is
+// inert on this path and every "preview as same" in this file proves less than
+// it appears to.
+//
+// Expect a provider crash rather than a tidy error message. The assertion is on
+// failure, deliberately not on wording, since the exact text belongs to the
+// engine and the plugin host and will change.
+func testCorruptDeltaFailsPreview(t *testing.T, ctx context.Context, fx *fixture) {
+	p := provisionStack(t, ctx, fx)
+
+	args := append(patchStateArgs(fx, p),
+		"--project-dir", p.pulumiDir,
+		"--stack", p.stackName,
+		"--non-importable", p.sidecarPath,
+		"--backup-dir", p.backupDir,
+	)
+	out, err := runToolAllowFail(t, ctx, fx.binPath, fx.repoRoot, fx.env, args...)
+	if err != nil {
+		t.Fatalf("injection failed before the corruption step could run: %v\n%s", err, out)
+	}
+
+	// The preview must be clean BEFORE the corruption, or a failure afterwards
+	// proves nothing about the delta.
+	beforeOps := runPreviewJSON(t, ctx, p.pulumiDir, fx.env, p.stackName).OpsByURN()
+	for _, r := range p.sidecar.Resources {
+		urn := sidecarURN(p.stackName, r)
+		if op, ok := beforeOps[urn]; !ok || op != "same" {
+			t.Fatalf("baseline for the corruption test is not clean: %s previews as %q (ok=%v)",
+				urn, op, ok)
+		}
+	}
+
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	runPulumiToFile(t, ctx, p.pulumiDir, fx.env, statePath,
+		"stack", "export", "--stack", p.stackName)
+	stateBytes, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("reading stack export: %v", err)
+	}
+
+	var state map[string]interface{}
+	if err := json.Unmarshal(stateBytes, &state); err != nil {
+		t.Fatalf("decoding stack export: %v", err)
+	}
+	deployment, _ := state["deployment"].(map[string]interface{})
+	if deployment == nil {
+		t.Fatalf("stack export has no deployment")
+	}
+	resources, _ := deployment["resources"].([]interface{})
+
+	injected := map[string]bool{}
+	for _, r := range p.sidecar.Resources {
+		injected[sidecarURN(p.stackName, r)] = true
+	}
+
+	// Corrupt the first INJECTED resource that actually carries a delta —
+	// found rather than assumed, so this cannot silently corrupt nothing.
+	const deltaKey = "__pulumi_raw_state_delta"
+	corruptedURN := ""
+	for _, raw := range resources {
+		res, _ := raw.(map[string]interface{})
+		if res == nil {
+			continue
+		}
+		urn, _ := res["urn"].(string)
+		if !injected[urn] {
+			continue
+		}
+		outputs, _ := res["outputs"].(map[string]interface{})
+		if outputs == nil {
+			continue
+		}
+		if _, hasDelta := outputs[deltaKey]; !hasDelta {
+			continue
+		}
+		// An assetDelta whose archiveFormat is a string where the bridge's own
+		// struct declares an archive.Format. Measured offline to fail
+		// UnmarshalRawStateDelta outright with "cannot unmarshal string into Go
+		// struct field assetDelta...archiveFormat of type archive.Format", so
+		// the corruption is guaranteed to bite rather than merely being odd.
+		outputs[deltaKey] = map[string]interface{}{
+			"obj": map[string]interface{}{
+				"ps": map[string]interface{}{
+					"corrupted": map[string]interface{}{
+						"asset": map[string]interface{}{
+							"kind":          1,
+							"archiveFormat": "definitely-not-a-number",
+						},
+					},
+				},
+			},
+		}
+		corruptedURN = urn
+		break
+	}
+	if corruptedURN == "" {
+		t.Fatalf("no injected resource in the stack carries a %s — there was nothing to corrupt, "+
+			"so this test cannot prove anything. Check the \"Deltas attached (injected)\" line in:\n%s",
+			deltaKey, out)
+	}
+	t.Logf("corrupted the raw-state delta of %s", corruptedURN)
+
+	corruptBytes, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("re-encoding corrupted state: %v", err)
+	}
+	corruptPath := filepath.Join(t.TempDir(), "corrupt.json")
+	if err := os.WriteFile(corruptPath, corruptBytes, 0o600); err != nil {
+		t.Fatalf("writing corrupted state: %v", err)
+	}
+	runPulumi(t, ctx, p.pulumiDir, fx.env, "stack", "import",
+		"--stack", p.stackName, "--file", corruptPath)
+
+	previewOut, previewErr := runPulumiAllowFail(t, ctx, p.pulumiDir, fx.env,
+		"preview", "--stack", p.stackName)
+	if previewErr == nil {
+		t.Errorf("preview SUCCEEDED against a knowingly corrupt raw-state delta on %s.\n"+
+			"That means the delta is not being consumed on this path, and every other "+
+			"\"previews as same\" assertion in this file proves less than it appears to — "+
+			"they would pass whether or not the delta were correct. Investigate whether the "+
+			"provider still satisfies shim.ProviderWithRawStateSupport before trusting any "+
+			"delta coverage here.\nPreview output:\n%s", corruptedURN, previewOut)
+		return
+	}
+	t.Logf("confirmed the delta is load-bearing: preview failed against a corrupt delta on %s "+
+		"(%v). Every other delta assertion in this file is therefore sensitive to delta "+
+		"correctness, not merely consistent with it.", corruptedURN, previewErr)
 }
