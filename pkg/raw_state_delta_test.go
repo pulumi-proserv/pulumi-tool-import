@@ -918,10 +918,15 @@ func assertDeltaRecoversExactly(
 	require.NoError(t, json.Unmarshal(outputsJSON, &outputsFromSidecar))
 	require.NoError(t, json.Unmarshal(deltaJSON, &deltaFromSidecar))
 
-	rsd, err := tfbridge.UnmarshalRawStateDelta(resource.NewPropertyValue(deltaFromSidecar))
+	// propertyValueFromState, NOT NewPropertyMapFromMap. That is what production
+	// uses, and it is the only converter here with a json.Number case —
+	// NewPropertyMapFromMap turns every UseNumber-decoded number into a STRING
+	// property, so natural recovery emits a quoted number and every numeric
+	// attribute reports a false mismatch. Using a different converter from
+	// production would test a pipeline this tool does not have.
+	rsd, err := tfbridge.UnmarshalRawStateDelta(deltaPropertyValue(deltaFromSidecar))
 	require.NoError(t, err)
-	recovered, err := rsd.Recover(
-		resource.NewObjectProperty(resource.NewPropertyMapFromMap(outputsFromSidecar)))
+	recovered, err := rsd.Recover(propertyValueFromState(outputsFromSidecar))
 	require.NoError(t, err, "the delta must apply cleanly to its own outputs")
 
 	// Decoded with UseNumber on BOTH sides. A plain decode turns every number

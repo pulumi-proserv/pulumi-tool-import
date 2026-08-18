@@ -480,3 +480,121 @@ func TestSyntheticDelta_NumberSurvivesASchemaTypeMismatch(t *testing.T) {
 	// number — that is the property worth guarding, not the encoding.
 	assertDeltaRecoversExactly(t, attrs, outputs, delta)
 }
+
+// TestSyntheticDelta_SetsRoundTrip covers set-typed attributes, which had zero
+// coverage anywhere in this repo — cty.Set and shim.TypeSet appeared in no
+// delta test at all.
+//
+// Sets are not a niche: AWS security group rules, Kubernetes, and much of Azure
+// use them. They are also the case most likely to break quietly, because
+// Terraform treats a set as unordered while its JSON encoding is an ordered
+// array, so any reordering during the round trip is invisible until it shows up
+// as a diff on the next preview.
+//
+// The delta node is arrayOrSetDelta — one type serving both — so a list test
+// does not stand in for a set test at the schema level, where the shim type
+// differs.
+func TestSyntheticDelta_SetsRoundTrip(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	prov, schemaMap := syntheticResource("synthetic_set", 0,
+		map[string]*configschema.Attribute{
+			"id":       {Type: cty.String, Computed: true},
+			"cidr":     {Type: cty.Set(cty.String), Optional: true},
+			"ports":    {Type: cty.Set(cty.Number), Optional: true},
+			"emptyset": {Type: cty.Set(cty.String), Optional: true},
+			"nullset":  {Type: cty.Set(cty.String), Optional: true},
+		},
+		shimschema.SchemaMap{
+			"id": (&shimschema.Schema{Type: shim.TypeString, Computed: true}).Shim(),
+			"cidr": (&shimschema.Schema{
+				Type: shim.TypeSet, Optional: true,
+				Elem: (&shimschema.Schema{Type: shim.TypeString}).Shim(),
+			}).Shim(),
+			"ports": (&shimschema.Schema{
+				Type: shim.TypeSet, Optional: true,
+				Elem: (&shimschema.Schema{Type: shim.TypeInt}).Shim(),
+			}).Shim(),
+			"emptyset": (&shimschema.Schema{
+				Type: shim.TypeSet, Optional: true,
+				Elem: (&shimschema.Schema{Type: shim.TypeString}).Shim(),
+			}).Shim(),
+			"nullset": (&shimschema.Schema{
+				Type: shim.TypeSet, Optional: true,
+				Elem: (&shimschema.Schema{Type: shim.TypeString}).Shim(),
+			}).Shim(),
+		})
+
+	// cty normalises set element order on decode, so the fixture is written in
+	// the order ctyjson produces. What is under test is that the round trip
+	// preserves whatever order it started with, not that it sorts.
+	attrs := []byte(`{"id":"sg-1","cidr":["10.0.0.0/8","192.168.0.0/16"],` +
+		`"ports":[22,443],"emptyset":[],"nullset":null}`)
+
+	outputs, delta, reason, _, err := ComputeInjectionState(
+		ctx, prov, "synthetic_set", attrs, schemaMap, nil)
+	require.NoError(t, err)
+	require.Empty(t, reason, "a set-typed attribute must not defeat delta computation")
+
+	assertDeltaRecoversExactly(t, attrs, outputs, delta)
+}
+
+// TestSyntheticDelta_PluralizedNamesRoundTrip pins the naming transform with the
+// worst track record in this repo.
+//
+// The bridge pluralises list and set attribute names on the Pulumi side — a
+// Terraform "cidr_block" set becomes "cidrBlocks" — and PulumiToTerraformName
+// cannot invert that. 513 attributes in pulumi-aws v7.24.0 fail to round-trip
+// through it, which is exactly what made resolveSecretInputs silently delete
+// program-declared inputs until it was fixed to distinguish a schema-derived
+// name from a guess.
+//
+// The delta records these as objDelta.Renamed. This asserts that it does, and
+// that the raw state comes back under the ORIGINAL Terraform names — the
+// failure mode otherwise is a reconstruction that looks structurally fine while
+// every pluralised attribute sits under the wrong key.
+func TestSyntheticDelta_PluralizedNamesRoundTrip(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	prov, schemaMap := syntheticResource("synthetic_plural", 0,
+		map[string]*configschema.Attribute{
+			"id":         {Type: cty.String, Computed: true},
+			"cidr_block": {Type: cty.Set(cty.String), Optional: true},
+			"subnet_id":  {Type: cty.List(cty.String), Optional: true},
+		},
+		shimschema.SchemaMap{
+			"id": (&shimschema.Schema{Type: shim.TypeString, Computed: true}).Shim(),
+			"cidr_block": (&shimschema.Schema{
+				Type: shim.TypeSet, Optional: true,
+				Elem: (&shimschema.Schema{Type: shim.TypeString}).Shim(),
+			}).Shim(),
+			"subnet_id": (&shimschema.Schema{
+				Type: shim.TypeList, Optional: true,
+				Elem: (&shimschema.Schema{Type: shim.TypeString}).Shim(),
+			}).Shim(),
+		})
+
+	attrs := []byte(`{"id":"vpc-1","cidr_block":["10.0.0.0/8"],"subnet_id":["subnet-a","subnet-b"]}`)
+
+	outputs, delta, reason, _, err := ComputeInjectionState(
+		ctx, prov, "synthetic_plural", attrs, schemaMap, nil)
+	require.NoError(t, err)
+	require.Empty(t, reason)
+
+	// Guard the premise: the Pulumi side really did pluralise, or the rename
+	// below is never exercised.
+	require.Contains(t, outputs, "cidrBlocks",
+		"the bridge should have pluralised the set attribute on the Pulumi side")
+	require.Contains(t, outputs, "subnetIds",
+		"the bridge should have pluralised the list attribute on the Pulumi side")
+
+	deltaJSON, err := json.Marshal(delta)
+	require.NoError(t, err)
+	assert.Contains(t, string(deltaJSON), "renamed",
+		"a pluralised name cannot be derived back, so it must be recorded explicitly")
+
+	// And the raw state must come back under the ORIGINAL Terraform names.
+	assertDeltaRecoversExactly(t, attrs, outputs, delta)
+}
