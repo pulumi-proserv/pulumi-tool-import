@@ -850,3 +850,55 @@ func TestResolveUnknownInputs_UnresolvableIsLeftForTheScreen(t *testing.T) {
 		})
 	}
 }
+
+// TestInjectResult_DeltaAttachedIsReportedPositively guards the distinction
+// between the two delta populations this tool reports on.
+//
+// Injected resources never reach the provider, so nothing would produce a
+// delta for them and "digest tf" computes it. PATCHED resources were imported,
+// and the bridge itself wrote their deltas during "pulumi import" (it calls
+// RawStateInjectDelta from Create, Read and Update). Those are counted
+// separately by PatchStateResult.DeltaValidated, and conflating the two is a
+// live hazard: the summary prints both, and an unqualified "Delta validated"
+// beside "Injected: N" reads as though it described the injected resources.
+//
+// DeltaAttached is reported positively rather than inferred from the three
+// absence counters being zero, because "every injected resource has a delta"
+// and "nothing went wrong enough to count" are different statements that look
+// identical at zero.
+func TestInjectResult_DeltaAttachedIsReportedPositively(t *testing.T) {
+	t.Parallel()
+
+	preview := propagationPreview(t)
+	sidecar := propagationSidecar()
+
+	// No delta in the sidecar: absent, not attached.
+	_, result, err := InjectNonImportable(
+		minimalState(goodProviderRef), sidecar, preview, nil, nil)
+	require.NoError(t, err)
+	assert.Equal(t, 1, result.Injected)
+	assert.Equal(t, 0, result.DeltaAttached)
+	assert.Equal(t, 1, result.DeltaAbsentFromSidecar,
+		"the absence must still be counted and explained")
+
+	// With a delta that validates, it is attached and counted.
+	withDelta := propagationSidecar()
+	withDelta.Resources[0].RawStateDelta = map[string]interface{}{
+		"obj": map[string]interface{}{},
+	}
+	_, result, err = InjectNonImportable(
+		minimalState(goodProviderRef), withDelta, preview, nil, nil)
+	require.NoError(t, err)
+	assert.Equal(t, 1, result.Injected)
+	assert.Equal(t, 1, result.DeltaAttached)
+	assert.Equal(t, 0, result.DeltaAbsentFromSidecar)
+	assert.Equal(t, 0, result.DeltaDroppedSensitive)
+	assert.Equal(t, 0, result.DeltaDroppedUnrecoverable)
+
+	// The counters must partition the injected set, with nothing double-counted
+	// and nothing unaccounted for.
+	total := result.DeltaAttached + result.DeltaAbsentFromSidecar +
+		result.DeltaDroppedSensitive + result.DeltaDroppedUnrecoverable
+	assert.Equal(t, result.Injected, total,
+		"every injected resource must land in exactly one delta bucket")
+}

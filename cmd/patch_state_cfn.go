@@ -207,9 +207,15 @@ Example:
 			}
 			fmt.Fprintf(os.Stderr, "  No fields to patch: %d\n", result.NoFields)
 			fmt.Fprintf(os.Stderr, "  Digest mapped:      %d\n", result.DigestMapped)
-			fmt.Fprintf(os.Stderr, "  Delta validated:    %d\n", result.DeltaValidated)
+			// Qualified the same way as the tf command: these count PATCHED
+			// (imported) resources, whose deltas the bridge wrote during
+			// import. CFN has no injection path today, so there is no second
+			// population here yet — the label says which one this is anyway,
+			// so adding one later cannot silently change what the number
+			// means.
+			fmt.Fprintf(os.Stderr, "  Deltas validated (imported): %d\n", result.DeltaValidated)
 			if result.DeltaFailed > 0 {
-				fmt.Fprintf(os.Stderr, "  Delta FAILED:       %d (outputs reverted)\n", result.DeltaFailed)
+				fmt.Fprintf(os.Stderr, "  Deltas failed (imported):    %d (outputs reverted)\n", result.DeltaFailed)
 			}
 
 			return nil

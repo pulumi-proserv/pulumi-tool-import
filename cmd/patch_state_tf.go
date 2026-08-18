@@ -392,14 +392,21 @@ values out of stack config.
 			}
 			fmt.Fprintf(os.Stderr, "  No fields to patch: %d\n", result.NoFields)
 			fmt.Fprintf(os.Stderr, "  Digest mapped:      %d\n", result.DigestMapped)
-			fmt.Fprintf(os.Stderr, "  Delta validated:    %d\n", result.DeltaValidated)
+			// "(imported)" is load-bearing, not decoration. These count PATCHED
+			// resources, whose deltas the bridge wrote during "pulumi import";
+			// the injected resources counted below are a different population
+			// with a different producer, and an unqualified "Delta validated"
+			// next to "Injected: N" reads as though it described them.
+			fmt.Fprintf(os.Stderr, "  Deltas validated (imported): %d\n", result.DeltaValidated)
 			if result.DeltaFailed > 0 {
-				fmt.Fprintf(os.Stderr, "  Delta FAILED:       %d (outputs reverted)\n", result.DeltaFailed)
+				fmt.Fprintf(os.Stderr, "  Deltas failed (imported):    %d (outputs reverted)\n", result.DeltaFailed)
 			}
 
 			if injectResult != nil {
 				fmt.Fprintf(os.Stderr, "  Injected:           %d resources\n", injectResult.Injected)
 				fmt.Fprintf(os.Stderr, "  Secrets resolved:   %d\n", injectResult.SecretsResolved)
+				fmt.Fprintf(os.Stderr, "  Deltas attached (injected):  %d of %d\n",
+					injectResult.DeltaAttached, injectResult.Injected)
 				if injectResult.DeltaAbsentFromSidecar > 0 {
 					fmt.Fprintf(os.Stderr,
 						"  %d resource(s) injected without Terraform raw-state metadata "+

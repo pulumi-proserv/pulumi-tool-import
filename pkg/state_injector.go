@@ -59,6 +59,23 @@ const (
 type InjectResult struct {
 	Injected        int
 	SecretsResolved int
+	// DeltaAttached counts injected resources that ended up WITH a usable raw
+	// state delta.
+	//
+	// Reported positively, rather than left to be inferred from the three
+	// absence counters below all being zero, because those two readings are
+	// not the same: "every injected resource has a delta" and "nothing went
+	// wrong enough to be counted" look identical when the totals are zero, and
+	// only the first is a statement about the artifact.
+	//
+	// It is also deliberately distinct from PatchStateResult.DeltaValidated,
+	// which counts PATCHED resources — those were imported, and their deltas
+	// were written by the bridge itself during "pulumi import" (it calls
+	// RawStateInjectDelta from Create, Read and Update). Injected resources
+	// never go through the provider at all, so nothing would produce a delta
+	// for them and this tool computes it in "digest tf". Two populations, two
+	// producers, two counters.
+	DeltaAttached int
 	// DeltaAbsentFromSidecar counts resources injected without a raw state
 	// delta because the sidecar carried none in the first place — "digest tf"
 	// never produced one. There is nothing here for patch-state to repair;
@@ -183,6 +200,8 @@ func InjectNonImportable(
 		}
 		result.SecretsResolved += secrets
 		switch outcome {
+		case deltaOK:
+			result.DeltaAttached++
 		case deltaAbsent:
 			result.DeltaAbsentFromSidecar++
 			result.DeltaAbsentNotes = append(result.DeltaAbsentNotes, note)
