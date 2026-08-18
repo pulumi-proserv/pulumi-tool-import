@@ -179,17 +179,6 @@ func loadAWSConfigForRegion(ctx context.Context, region string) (aws.Config, err
 	return awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(region))
 }
 
-// isNotFoundErr reports whether err is any of the many differently-named
-// "not found" errors these AWS APIs return (InvalidVpnConnectionID.NotFound,
-// InvalidVpnGatewayID.NotFound, ResourceNotFoundException,
-// NoSuchEntityException, ...). Matching on the substring "NotFound" — every
-// one of them contains it — is deliberately broader than enumerating each
-// service's typed error, so a not-yet-seen "...NotFound..." variant is
-// still treated as "gone" rather than as an unverified survivor.
-func isNotFoundErr(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "NotFound")
-}
-
 func checkVPNConnectionGone(t *testing.T, ctx context.Context, c *ec2.Client, id string) {
 	t.Helper()
 	out, err := c.DescribeVpnConnections(ctx, &ec2.DescribeVpnConnectionsInput{VpnConnectionIds: []string{id}})

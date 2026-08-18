@@ -18,10 +18,17 @@ package e2e
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	iamtypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
+	iottypes "github.com/aws/aws-sdk-go-v2/service/iot/types"
+	lambdatypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
+	"github.com/aws/smithy-go"
 )
 
 // TestJSONPathDiffNamesPathsWithoutValues is the guard on the property that
@@ -315,5 +322,67 @@ func TestLoadFixtureResourceIDsMissingStateIsNotAnError(t *testing.T) {
 	}
 	if ids.vpcID != "" || len(ids.eachIoTCertificateIDs) != 0 {
 		t.Errorf("loadFixtureResourceIDs() on a missing state file = %+v, want zero value", ids)
+	}
+}
+
+// TestIsNotFoundErrRecognisesEveryServicesGoneCode pins the codes the orphan
+// sweep depends on, using each SDK's real typed error rather than a
+// hand-written string — the previous substring implementation was wrong
+// precisely because IAM's actual code was assumed rather than checked.
+//
+// A false positive here silently converts "this resource is still running"
+// into "cleaned up"; a false negative t.Errorf's on every healthy teardown
+// until the noise makes a real orphan unnoticeable. Both are the failure
+// this sweep exists to prevent, so both directions are asserted.
+func TestIsNotFoundErrRecognisesEveryServicesGoneCode(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"iam NoSuchEntity", &iamtypes.NoSuchEntityException{}, true},
+		{"lambda ResourceNotFound", &lambdatypes.ResourceNotFoundException{}, true},
+		{"iot ResourceNotFound", &iottypes.ResourceNotFoundException{}, true},
+		{"ec2 vpn connection", &smithy.GenericAPIError{Code: "InvalidVpnConnectionID.NotFound"}, true},
+		{"ec2 vpn gateway", &smithy.GenericAPIError{Code: "InvalidVpnGatewayID.NotFound"}, true},
+		{"ec2 customer gateway", &smithy.GenericAPIError{Code: "InvalidCustomerGatewayID.NotFound"}, true},
+		{"wrapped", fmt.Errorf("verifying role: %w", &iamtypes.NoSuchEntityException{}), true},
+
+		// The safe direction. An auth or throttling failure means the check
+		// could not run, NOT that the resource is gone — treating it as gone
+		// is how a billing orphan goes unreported.
+		{"access denied", &smithy.GenericAPIError{Code: "AccessDenied"}, false},
+		{"throttled", &smithy.GenericAPIError{Code: "Throttling"}, false},
+		{"nil", nil, false},
+		{"not an API error", errors.New("dial tcp: no such host"), false},
+
+		// The old substring implementation would have said true here: a
+		// message mentioning another resource's code is not a status.
+		{"code named only in the message", errors.New("peer returned InvalidVpnGatewayID.NotFound"), false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isNotFoundErr(tt.err); got != tt.want {
+				t.Errorf("isNotFoundErr(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestIsNotFoundErrCoversEveryCheckedService guards against a service being
+// added to the sweep without its gone-code being registered, which would make
+// that check fail on every clean teardown.
+func TestIsNotFoundErrCoversEveryCheckedService(t *testing.T) {
+	t.Parallel()
+
+	for _, code := range []string{
+		"InvalidVpnConnectionID.NotFound", "InvalidVpnGatewayID.NotFound",
+		"InvalidCustomerGatewayID.NotFound", "ResourceNotFoundException", "NoSuchEntity",
+	} {
+		if !goneErrorCodes[code] {
+			t.Errorf("goneErrorCodes is missing %q — the check using it will "+
+				"report a correctly destroyed resource as an unverified survivor", code)
+		}
 	}
 }

@@ -21,12 +21,15 @@ package e2e
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/aws/smithy-go"
 )
 
 // expectedURN builds the URN "pulumi preview --json" would emit for an
@@ -313,4 +316,45 @@ func loadFixtureResourceIDs(tfDir string) (fixtureResourceIDs, error) {
 		}
 	}
 	return ids, nil
+}
+
+// goneErrorCodes are the AWS API error codes that mean "this resource does
+// not exist", keyed by the exact ErrorCode() the SDK returns.
+//
+// Enumerated rather than substring-matched. The previous implementation
+// tested strings.Contains(err.Error(), "NotFound") and its comment claimed
+// "every one of them contains it" — IAM's does not. NoSuchEntityException
+// formats as "NoSuchEntity: ...", so a correctly destroyed role read as an
+// unverified survivor and t.Errorf'd on every clean teardown, which also
+// means a genuinely orphaned role was indistinguishable from a healthy one.
+// That is the same false signal this whole file exists to prevent, so the
+// codes are now listed explicitly and covered by a test.
+var goneErrorCodes = map[string]bool{
+	// ec2: VPN connection, VPN gateway, customer gateway.
+	"InvalidVpnConnectionID.NotFound":   true,
+	"InvalidVpnGatewayID.NotFound":      true,
+	"InvalidCustomerGatewayID.NotFound": true,
+	// iot, lambda, vpclattice.
+	"ResourceNotFoundException": true,
+	// iam. Note the code is "NoSuchEntity", NOT "NoSuchEntityException" —
+	// the type is named ...Exception but ErrorCode() drops the suffix.
+	"NoSuchEntity": true,
+}
+
+// isNotFoundErr reports whether err is an AWS "this resource is gone" error.
+//
+// It reads the typed smithy error code rather than formatting the error and
+// searching the text, so a message that happens to contain a code substring
+// cannot be mistaken for one. An unrecognised code returns false, which is
+// the safe direction: the caller then reports the resource as unverified
+// rather than silently assuming it was cleaned up.
+func isNotFoundErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		return goneErrorCodes[apiErr.ErrorCode()]
+	}
+	return false
 }
