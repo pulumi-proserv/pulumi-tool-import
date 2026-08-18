@@ -467,14 +467,6 @@ func TestInjectNonImportable_DropsMaskedSecretWithNoTerraformValue(t *testing.T)
 				"shared_key":     nil,
 			},
 		},
-		{
-			// The attribute is not in the Terraform state at all.
-			name: "absent",
-			attrs: map[string]interface{}{
-				"route_table_id": "rtb-0e370d1fdde0890b3",
-				"vpn_gateway_id": "vgw-0cdee3deb918b1983",
-			},
-		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -644,4 +636,121 @@ func TestInjectNonImportable_OrdersDependenciesFirst(t *testing.T) {
 	assert.Contains(t, secondLast["urn"], "VpnGatewayRoutePropagation", "dependency must come first")
 
 	require.NoError(t, VerifyDeploymentIntegrity(out))
+}
+
+// TestResolveSecretInputs_AbsentAttributeDependsOnNameTrust covers the
+// distinction that decides whether dropping a masked input is safe.
+//
+// A masked input whose Terraform attribute is ABSENT is the write-only case
+// only if the Terraform name is trustworthy. When it came from the provider
+// schema it is; when it came from PulumiToTerraformName it is a guess, and a
+// wrong guess looks exactly the same — the bridge pluralises list and set
+// names, which that transform cannot invert, so hundreds of real properties do
+// not round-trip. Dropping on a guess silently deletes a program-declared
+// input, and in file mode no preview ever runs to notice.
+func TestResolveSecretInputs_AbsentAttributeDependsOnNameTrust(t *testing.T) {
+	t.Parallel()
+
+	newResource := func() *NonImportableResource {
+		return &NonImportableResource{
+			Type: "aws:ec2/x:X", Name: "r",
+			Attributes:         map[string]interface{}{"other": "v"},
+			RedactedAttributes: map[string]string{},
+		}
+	}
+
+	t.Run("schema-mapped name is trusted, so the input is dropped", func(t *testing.T) {
+		t.Parallel()
+		inputs := map[string]interface{}{"subnetMappings": secretPlaceholder}
+		fields := map[string]*SchemaFieldInfo{
+			"subnet_mapping": {TFName: "subnet_mapping", PulumiName: "subnetMappings"},
+		}
+		n, err := resolveSecretInputs(newResource(), inputs, fields, nil)
+		require.NoError(t, err)
+		assert.Equal(t, 0, n)
+		_, present := inputs["subnetMappings"]
+		assert.False(t, present, "a schema-mapped name with no attribute is genuinely write-only")
+	})
+
+	t.Run("guessed name is not trusted, so it is an error", func(t *testing.T) {
+		t.Parallel()
+		// No schema: PulumiToTerraformName("subnetMappings") yields
+		// "subnet_mappings", which the real attribute "subnet_mapping" does
+		// not match. Previously this silently deleted the input.
+		inputs := map[string]interface{}{"subnetMappings": secretPlaceholder}
+		_, err := resolveSecretInputs(newResource(), inputs, nil, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no provider schema was loaded")
+		assert.Contains(t, inputs, "subnetMappings", "the input must not be dropped on a guess")
+	})
+
+	t.Run("nil Attributes cannot support any conclusion", func(t *testing.T) {
+		t.Parallel()
+		r := newResource()
+		r.Attributes = nil
+		inputs := map[string]interface{}{"password": secretPlaceholder}
+		_, err := resolveSecretInputs(r, inputs, nil, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no Terraform attributes")
+	})
+}
+
+// TestCheckNoPlaceholders_RejectsUnknownSentinel guards the value the engine
+// writes for something not yet known at preview time. An injected resource can
+// depend on another injected resource — orderInjected exists because those
+// edges occur, and the e2e fixture has one — so at the injecting preview the
+// dependency's outputs are unknown and the dependent's inputs carry this
+// sentinel. Copied into state it becomes an ordinary-looking string that no
+// later operation can tell from a real value.
+func TestCheckNoPlaceholders_RejectsUnknownSentinel(t *testing.T) {
+	t.Parallel()
+
+	r := &NonImportableResource{Type: "aws:iam/x:X", Name: "attach"}
+
+	err := checkNoPlaceholders(r, "input", map[string]interface{}{
+		"target": unknownPlaceholder,
+	}, "inputs")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown-value sentinel")
+	assert.Contains(t, err.Error(), "inputs.target", "the path must be reported")
+
+	// Nested, to confirm the walk reaches it.
+	err = checkNoPlaceholders(r, "output", map[string]interface{}{
+		"a": []interface{}{map[string]interface{}{"b": unknownPlaceholder}},
+	}, "outputs")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "outputs.a[0].b")
+
+	// A real value must still pass.
+	require.NoError(t, checkNoPlaceholders(r, "input", map[string]interface{}{
+		"target": "arn:aws:iot:us-west-2:1234:cert/abc",
+	}, "inputs"))
+}
+
+// TestFormatImportID_NullIsEmptyNotAngleNil pins the other half of the
+// empty-ID guard: fmt.Sprintf("%v", nil) yields the literal "<nil>", which
+// would be injected as though it were a real ID.
+func TestFormatImportID_NullIsEmptyNotAngleNil(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, "", formatImportID(nil))
+	assert.Equal(t, "vpc-123", formatImportID("vpc-123"))
+}
+
+// TestInjectNonImportable_EmptyIDIsRejected guards the deployment invariant
+// nothing else checks. VerifyDeploymentIntegrity only rejects the inverse case
+// (a non-custom resource that HAS an ID), so an injected custom resource with
+// an empty ID passed every check and then panicked the engine on the next
+// operation — contract.Assertf(req.ID != "", "Diff requires an ID"). Some
+// resource types are simultaneously id-less and non-importable, which is
+// exactly the population injected here.
+func TestInjectNonImportable_EmptyIDIsRejected(t *testing.T) {
+	t.Parallel()
+
+	preview := propagationPreview(t)
+	sidecar := propagationSidecar()
+	sidecar.Resources[0].ID = ""
+
+	_, _, err := InjectNonImportable(minimalState(goodProviderRef), sidecar, preview, nil, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no import ID")
 }

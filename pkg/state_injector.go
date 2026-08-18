@@ -30,6 +30,22 @@ import (
 // never reach state.
 const secretPlaceholder = "[secret]"
 
+// unknownPlaceholder is how the engine serializes a value that is not yet known
+// at preview time (plugin.UnknownStringValue; the engine writes it out via
+// pulumi/pkg/v3 resource/stack/deployment.go, and preview steps are built with
+// stack.SerializeResource).
+//
+// It reaches injection because an injected resource can depend on another
+// injected resource: at the preview that drives injection the dependency is not
+// in state yet, so its outputs are unknown and the dependent's create-step
+// inputs carry this sentinel. The e2e fixture does exactly this — a policy
+// attachment referencing a certificate, both non-importable. orderInjected
+// exists precisely because those edges occur, so the shape is expected rather
+// than exotic; what is not acceptable is copying the sentinel into state, where
+// it becomes an ordinary-looking string that no later operation can distinguish
+// from a real value.
+const unknownPlaceholder = "04da6b54-80e4-46f7-96ec-b56ff0331ba9"
+
 // rawStateDeltaKey and metaKey mirror the bridge's reserved output keys
 // (reservedkeys.RawStateDelta, reservedkeys.Meta). Hardcoded here to match the
 // rest of this package (see pkg/state_patcher.go), which does the same rather
@@ -225,6 +241,23 @@ func buildInjectedResource(
 		obj[k] = v
 	}
 	obj["custom"] = true
+	// A custom resource with no ID passes every check this tool makes and then
+	// panics the engine on the NEXT operation: VerifyDeploymentIntegrity only
+	// rejects the inverse case (a non-custom resource that HAS an ID), and the
+	// provider plugin asserts on it — contract.Assertf(req.ID != "", "Diff
+	// requires an ID"). That is reachable, not theoretical: some resource types
+	// are simultaneously id-less (plugin-framework types with no implicit "id"
+	// attribute) and non-importable, which is exactly the population injected
+	// here. In file mode nothing previews the result, so the corrupt state is
+	// simply written out.
+	if r.ID == "" {
+		return nil, 0, deltaOK, "", fmt.Errorf(
+			"%s %q has no import ID: the sidecar records no top-level \"id\" attribute for it, "+
+				"and a custom resource without an ID corrupts the deployment — the next "+
+				"operation against this stack fails inside the engine rather than reporting "+
+				"the missing value. Set the resource's ID in the sidecar by hand, or exclude it",
+			r.Type, r.Name)
+	}
 	obj["id"] = r.ID
 
 	// Field info lets attributes be renamed with the provider's own mapping
@@ -342,6 +375,15 @@ func checkNoPlaceholders(r *NonImportableResource, kind string, v interface{}, p
 				"%s %q %s %s still contains the placeholder %q after secret resolution; "+
 					"the sidecar or stack config is missing the real value",
 				r.Type, r.Name, kind, path, val)
+		}
+		if val == unknownPlaceholder {
+			return fmt.Errorf(
+				"%s %q %s %s is the engine's unknown-value sentinel, which means the preview "+
+					"could not resolve it — typically a reference to another resource this run "+
+					"is injecting. Injecting it would write a placeholder into state that no "+
+					"later operation can tell from a real value. Re-run \"patch-state\" after "+
+					"the dependency is in state, or set the value by hand",
+				r.Type, r.Name, kind, path)
 		}
 	case map[string]interface{}:
 		keys := make([]string, 0, len(val))
@@ -591,8 +633,8 @@ func resolveSecretInputs(
 			continue
 		}
 
-		tfName, ok := pulumiToTF[name]
-		if !ok {
+		tfName, schemaMapped := pulumiToTF[name]
+		if !schemaMapped {
 			// No loaded schema (or the schema does not describe this field):
 			// fall back to the bridge's own generic PascalCase/camelCase to
 			// underscore_case conversion, the same transform it uses when it
@@ -614,14 +656,51 @@ func resolveSecretInputs(
 			// the attribute, a missing config key means the digest and the
 			// sidecar genuinely disagree, and dropping it would silently
 			// discard a real secret — so that stays a hard error below.
-			if value, present := r.Attributes[tfName]; !present || value == nil {
+			//
+			// "Terraform has no value" is only a conclusion the sidecar can
+			// support. With no Attributes at all there is nothing to consult,
+			// so every masked input would look valueless and be dropped.
+			if r.Attributes == nil {
+				return 0, fmt.Errorf(
+					"%s %q input %q is a masked secret, but the sidecar records no Terraform "+
+						"attributes for this resource, so there is no way to tell whether a real "+
+						"secret is being lost; re-run \"resolve tf\" to regenerate the sidecar",
+					r.Type, r.Name, name)
+			}
+			value, present := r.Attributes[tfName]
+			if present {
+				if value != nil {
+					return 0, fmt.Errorf(
+						"%s %q input %q is a masked secret but the sidecar records no config key "+
+							"for Terraform attribute %q; re-run \"resolve tf\" or set the value "+
+							"by hand",
+						r.Type, r.Name, name, tfName)
+				}
+				// Present and explicitly null — Terraform genuinely holds no
+				// value, so there is no secret to recover. Finding the key at
+				// all corroborates tfName even when it was guessed, which is
+				// what makes dropping safe here.
 				delete(inputs, name)
 				continue
 			}
-			return 0, fmt.Errorf(
-				"%s %q input %q is a masked secret but the sidecar records no config key for "+
-					"Terraform attribute %q; re-run \"resolve tf\" or set the value by hand",
-				r.Type, r.Name, name, tfName)
+			// tfName matches nothing in the sidecar. That is the write-only
+			// case ONLY if tfName is trustworthy. When it came from
+			// PulumiToTerraformName rather than the provider schema it is a
+			// guess, and a wrong guess produces exactly this — the bridge
+			// pluralises list and set names and that transform cannot invert
+			// them, so hundreds of real properties do not round-trip. Dropping
+			// here would silently delete a program-declared input.
+			if !schemaMapped {
+				return 0, fmt.Errorf(
+					"%s %q input %q is a masked secret and no provider schema was loaded to map "+
+						"it to a Terraform attribute name; the fallback guess %q matches nothing "+
+						"in the sidecar, which is indistinguishable from a wrong guess. Load the "+
+						"provider (pass --project-dir/--stack so the digest's providers resolve) "+
+						"or set the value by hand",
+					r.Type, r.Name, name, tfName)
+			}
+			delete(inputs, name)
+			continue
 		}
 		value, ok := configSecrets[configKey]
 		if !ok || value == "" {

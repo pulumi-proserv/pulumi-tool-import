@@ -471,6 +471,13 @@ func decodeAttrs(data []byte) (map[string]interface{}, error) {
 // so formatting a json.Number with %v prints the original digits rather
 // than the scientific notation fmt would produce for a float64.
 func formatImportID(v interface{}) string {
+	// A JSON null must not stringify to the literal "<nil>", which is what
+	// fmt.Sprintf produces and which would then be injected as if it were a
+	// real ID. Returning "" instead lets the empty-ID guard in
+	// buildInjectedResource reject it with an actionable message.
+	if v == nil {
+		return ""
+	}
 	return fmt.Sprintf("%v", v)
 }
 
