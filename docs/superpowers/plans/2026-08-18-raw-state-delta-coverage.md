@@ -1,26 +1,62 @@
 # Raw state delta — test coverage plan
 
-Status: proposed, 2026-08-18. Nothing here is implemented.
+Status: revised 2026-08-18 after measuring several of its own first-draft assumptions and finding
+them wrong. Tier 1 and Tier 2 partly implemented; the rest proposed.
 
 ## Why this needs a plan
 
 The delta is not what this repo's issues have said it is. `makeTerraformStateViaUpgradeEnabled`
 is consulted in `Diff`, `Read` **and** `Update` (`tfbridge/provider.go:1129`, `:1442`, `:1651`),
 and `makeTerraformStateWithOpts` is documented as *"the old method used when
-makeTerraformStateViaUpgrade is not available"*. So the delta is the **primary
-Pulumi → Terraform state conversion path for every operation** on a resource that has one, with
-the legacy lossy conversion as fallback. Surviving a provider version upgrade is a consequence,
-not the purpose.
+makeTerraformStateViaUpgrade is not available"*. The delta is the **primary Pulumi → Terraform
+state conversion path for every operation** on a resource that has one, with the legacy lossy
+conversion as fallback. Surviving a provider version upgrade is a consequence, not the purpose.
 
-Two things follow, and they set the bar for coverage:
+Two things follow, and they set the bar:
 
-1. **Delta correctness is a per-operation concern.** A wrong delta produces wrong Terraform
-   state on every `pulumi preview`, not at some future upgrade.
-2. **The failure mode is a crash, not a degradation.** `makeTerraformStateViaUpgrade` wraps both
-   `UnmarshalRawStateDelta` and `Recover` in `contract.AssertNoErrorf`. A delta that will not
-   parse or will not apply **panics the provider process**. The `validateRecover` call injection
-   performs before writing a delta is the only thing between a bad delta and that crash — it is
-   load-bearing, and should be treated as such.
+1. **Delta correctness is a per-operation concern.** A wrong delta produces wrong Terraform state
+   on every `pulumi preview`, not at some future upgrade.
+2. **The failure mode is a crash.** `makeTerraformStateViaUpgrade` wraps both
+   `UnmarshalRawStateDelta` and `Recover` in `contract.AssertNoErrorf`, which panics
+   unconditionally. The `validateRecover` call injection performs before writing a delta is the
+   only thing between a bad delta and that crash — load-bearing, not belt-and-braces.
+
+## Scope: this tool is not AWS-only
+
+AWS is the only provider with an e2e fixture today, and **Azure, GCP and Kubernetes are planned**.
+Coverage must be driven by what the delta format can express, not by what one provider happens to
+exercise. An earlier draft of this plan made that mistake — it dismissed cases as unreachable
+after measuring only `terraform-provider-aws`.
+
+Concretely, measured against terraform-provider-aws 5.100.0 and worth recording as *context*
+rather than as scope:
+
+| Case | AWS 5.100.0 | Why it still needs coverage |
+|---|---|---|
+| `DynamicPseudoType` (→ `replace` node) | **0** of 1526 resource types | Kubernetes is built on it — `kubernetes_manifest` is dynamic by design |
+| Large integers | rare | GCP project numbers, quotas, byte counts |
+| Deep `MaxItems=1` nesting | present | Azure is dense with it |
+| Large maps / set semantics | tags only | Kubernetes labels and annotations |
+
+### The vehicle: synthetic schemas, not provider hunting
+
+`ComputeInjectionState` needs exactly one thing from the provider — `GetProviderSchema`. So a test
+fake can embed `providers.Interface` and override that single method:
+
+```go
+type fakeProvider struct {
+    providers.Interface   // embedded: satisfies the type, panics if anything else is called
+    schema providers.GetProviderSchemaResponse
+}
+func (f *fakeProvider) GetProviderSchema(context.Context) providers.GetProviderSchemaResponse
+func (f *fakeProvider) Name() string
+func (f *fakeProvider) Version() string
+```
+
+That is ~8 lines and unlocks arbitrary shapes — including dynamic types AWS does not have —
+with **no provider binary, no network and no cloud**. It is also how the bridge tests its own
+delta code. Real-provider tests stay for the cases where the real schema is the point (nested
+blocks, `timeouts`), but they should not be the only tool available.
 
 ## What the bridge already tests — do not duplicate
 
@@ -32,158 +68,126 @@ Two things follow, and they set the bar for coverage:
 | `Test_rawstate_against_MakeTerraformOutputs` | 20 | autogold snapshots of the produced delta |
 | `Test_rawstate_delta_serialization` | 7 | JSON shape of each node kind |
 | `Test_rawStateReducePrecision`, `Test_isSimilarNumber` | — | number handling |
-| `Test_rawStateDelta_PropertyValue_serialization` | — | PropertyValue round trip |
 
-Its turnaround cases already cover: nulls; numbers including unequal and big-int-as-string vs
-as-f64; empty and unequal strings; bools; MaxItems=1 for object and set including nil variants;
-empty set/list/map; nil-list-as-empty; null-vs-empty-map in both directions; values inside
-list/set/map; objects with nulls missing on the Pulumi side; and objects with ignored Pulumi keys.
+Its cases already cover nulls; numbers including big-int-as-string vs as-f64; empty and unequal
+strings; bools; `MaxItems=1` for object and set; empty set/list/map; null-vs-empty-map both ways;
+values inside list/set/map; objects with nulls missing on the Pulumi side; and ignored Pulumi keys.
 
-**That is the primitive/schema-shape space, and it is well covered.** Re-testing it here would
-add maintenance cost and no signal.
+**That primitive space is well covered.** Re-testing it costs maintenance and yields nothing.
 
 ## What is ours to cover — the seam
 
-The bridge tests its own function against hand-built schemas. Nothing tests **our pipeline**:
-
 ```
-Terraform state JSON  →  cty value  →  pulumiOutputsFromCty (MakeTerraformOutputs,
-  supportsSecrets=false, assets=nil)  →  RawStateComputeDelta  →  json.Marshal
-  →  SIDECAR FILE  →  LoadNonImportableFile  →  attachRawStateDelta (+ redaction,
-  + envelope)  →  deployment JSON  →  engine  →  bridge Diff/Read/Update
+Terraform state JSON → cty → pulumiOutputsFromCty (MakeTerraformOutputs, supportsSecrets=false,
+  assets=nil) → RawStateComputeDelta → json.Marshal → SIDECAR → LoadNonImportableFile →
+  attachRawStateDelta (+redaction, +envelope) → deployment JSON → engine → bridge Diff/Read/Update
 ```
 
-Every arrow is ours. Failures found today lived at those arrows, not inside `RawStateComputeDelta`:
-the `timeouts` type/value mismatch, `Marshal().Mappable()` corrupting Replace nodes, and the
-missing secret envelope.
+Every arrow is ours, and every failure found this week lived at one: the `timeouts` type/value
+mismatch, `Marshal().Mappable()` corrupting Replace nodes, the missing secret envelope.
 
 ### Acceptance criterion
 
-For every case: **the recovered raw state must equal the original attribute JSON exactly**, not
-merely apply without error. `TestComputeInjectionState_NestedBlockDeltaRecovers` already sets this
-standard; it should be the standard everywhere.
+**The recovered raw state must equal the original attributes exactly**, not merely apply without
+error. Where affordable, a second gate: the real provider's `UpgradeResourceState` must accept the
+reconstruction. Measured scope of that gate — it rejects wrong attribute types, non-object JSON and
+malformed JSON, but **accepts an empty object and one missing required attributes**. Structural and
+type checking, not exhaustive, and it should not be described as more.
 
-A second gate where affordable: hand the recovered raw state to the real provider's
-`UpgradeResourceState` and require acceptance. Measured scope of that check —
-it rejects wrong attribute types, non-object JSON and malformed JSON, but **accepts an empty
-object and one missing required attributes**. A structural and type check, not an exhaustive one,
-and it should not be described as more than that.
+### On comparators — this went wrong twice in one sitting
 
-### On comparators — learned the hard way
+The shared helper `assertDeltaRecoversExactly` was wrong two different ways before it was right,
+and both would have produced **passing tests that proved nothing**:
 
-A first pass at a breadth sweep reported 5 mismatches out of 10 resource types. A careful
-per-attribute comparison of one of them showed **0 differing attributes of 23**. The finding was
-an artifact of the comparator, not a defect. Before any sweep lands, its comparison must be
-verified against a case known to be correct, and must report *which* attribute differs rather
-than a boolean — a sweep that cries wolf is worse than no sweep.
+1. It compared a 4-attribute fixture against schema-complete recovered state, so it failed on
+   absent-but-null attributes rather than on anything real.
+2. It decoded both sides with plain `json.Unmarshal`, turning `9007199254740993` into a float64 on
+   *both* sides — silently destroying the precision the test existed to check.
+
+The two rules that fixed it, and that any future sweep must also follow: **decode with `UseNumber`
+on both sides**, and **compare against schema-complete state** — every attribute the fixture
+specifies must match exactly, any extra recovered attribute must be null. A comparator must also
+name the differing attribute, never return a boolean: a first breadth-sweep prototype reported 5
+mismatches of 10 types, and careful per-attribute comparison of one showed 0 differing attributes
+of 23. That finding was withdrawn, not filed.
 
 ## Tier 1 — one case per delta node kind
 
-The node kinds, from `RawStateDelta`: `plu` (pluralize/MaxItems=1), `map`, `obj` (with `ignored`
-and `renamed`), `arr`, `asset`, `num`, `replace`. Plus the absence of a node, which routes to
-`rawStateRecoverNatural`.
+Node kinds: `plu` (MaxItems=1), `map`, `obj` (with `ignored`/`renamed`), `arr`, `asset`, `num`,
+`replace`, plus absence-of-node routing to `rawStateRecoverNatural`.
 
-Current coverage, measured:
-
-| Node kind | Covered today | By what |
+| Node kind | State | Notes |
 |---|---|---|
-| `obj` | yes | RandomPet, nested-block, patch-group |
-| `plu` | yes | nested-block (two levels of MaxItems=1) |
-| `arr` | partial | nested-block (empty lists only) |
+| `obj` | covered | RandomPet, nested-block, patch-group |
+| `plu` | covered | nested-block, two levels |
+| `map` | **done** | populated tags; every earlier fixture had empty maps |
+| `arr` | partial | only empty lists so far |
+| `replace` | **partly done** | reached via precision loss, NOT via JSON strings — a policy document is a `TypeString` and round-trips naturally, producing `{"obj":{}}`. The plan's first draft named policy documents as the trigger; that was wrong. The other trigger, `schType.IsDynamicType()`, needs a **synthetic schema** — see below |
+| `num` | not covered | needs a number-typed TF value against a string-typed Pulumi value; ordinary integers round-trip naturally |
+| `asset` | not covered | `pulumiOutputsFromCty` passes `assets: nil`; establish reachability before writing a test |
 | `renamed` | incidental | observed in 4 of 10 probed types, never asserted |
-| `map` | no | `tags` is empty `{}` in every fixture |
-| `num` | no | never asserted |
-| `asset` | unknown | `pulumiOutputsFromCty` passes `assets: nil` — **first establish whether our path can produce one at all** |
-| `replace` | synthetic only | marshalling test uses a hand-written node |
-| natural (no node) | yes | RandomPet |
+| natural | covered | RandomPet |
 
-Each gap gets one test at the seam: real 5.100.0 schema, realistic attributes, full sidecar JSON
-round trip, exact-equality assertion.
-
-`replace` deserves particular care — it is the node that carries verbatim provider bytes, it is
-the one the bridge secrets, and it is produced when natural recovery *cannot* reproduce a value.
-A realistic trigger is a JSON-valued string attribute such as an IAM policy document. We have
-never produced one from a real computation.
+**`replace` via dynamic types is the highest-value gap**, because Kubernetes is coming and
+`kubernetes_manifest` is dynamic throughout. A synthetic schema with a `cty.DynamicPseudoType`
+attribute tests it today, without waiting for a Kubernetes fixture.
 
 ## Tier 2 — the properties that have actually bitten
 
-These are regressions-in-waiting, each traceable to a real incident:
-
-1. **Large integers.** > 2^53 through the whole pipeline. Related: #29, and the measured table in
-   the ledger (2^53+1 silently becomes 9007199254740992).
-2. **Secrets and the delta.** A redacted attribute must never leave `(sensitive)` in a delta
-   (covered by `attachRawStateDelta`'s `bytes.Contains` screen — assert it), and a `replace` node
-   must arrive in state enveloped (covered by `envelopeReplaceNodes` — assert the round trip
-   through `RemoveSecrets`).
-3. **`ignored` / the `region` case.** A property present in Pulumi outputs but absent from
-   Terraform. This is what #30's original theory was about, and the mechanism was ultimately shown
-   to be handled naturally — pin that behaviour so it cannot silently change.
-4. **`timeouts`.** Already covered in three subtests; keep, and extend to a type where timeouts
-   are populated *and* nested blocks are present.
-5. **Empty vs null**, at our seam specifically: JSON `null` vs absent key vs `[]` vs `{}` vs `""`,
-   after the sidecar round trip. The bridge covers this at the schema level; we need it after
-   `json.Marshal`/`Unmarshal`, which is where `omitempty` lives.
+1. **Large integers — done, and it refined #29.** Above 2^53 the *sidecar* keeps exact digits (the
+   bridge emits a Replace node carrying them), but *recovery* loses them either way: plain decode
+   gives a rounded number, `UseNumber` gives an exact **string**, because `json.Number` has no
+   `PropertyValue` case. Neither reproduces a Terraform number. So #29 needs a representation
+   change, not a decoding change — adding `UseNumber` downstream cannot help.
+2. **Secrets and the delta.** Assert `attachRawStateDelta`'s `(sensitive)` screen, and assert a
+   `replace` node arrives in state enveloped and survives `RemoveSecrets`.
+3. **`ignored` / the `region` case.** Pin the behaviour #30 theorised about, so it cannot silently
+   change.
+4. **`timeouts`.** Covered in three subtests; extend to a type with populated timeouts *and*
+   nested blocks.
+5. **Empty vs null at our seam** — `null` vs absent key vs `[]` vs `{}` vs `""` *after* the sidecar
+   round trip, which is where `omitempty` lives. The bridge covers this at schema level, not after
+   JSON.
 
 ## Tier 3 — breadth sweep over injectable types
 
-The population that matters is *non-importable* types, since those are the only ones this tool
-computes deltas for. That set is enumerable offline: probe each type with `importsupport.Prober`.
+Population: non-importable types, enumerable offline via `importsupport.Prober`. For each,
+synthesize a value from `sch.Block.ImpliedType()`, compute, round-trip, recover, compare per
+attribute, report differing attribute names.
 
-Shape: for each type, synthesize a value from `sch.Block.ImpliedType()`, compute the delta,
-round-trip through JSON, recover, compare per attribute, and report the differing attribute names.
+Prerequisites, both now met or known: the comparator rules above, and honest accounting of what was
+skipped (types that fail to marshal, or have no bridged schema, must be counted and reported).
+Populate values from the schema rather than using all-null — an all-null value exercises the walk
+but almost nothing else. Run behind a build tag or a cap; it needs the provider binary but no cloud.
 
-Two known caveats before building it:
-
-- **Synthetic values are weak evidence.** An all-null value exercises the walk but not the
-  interesting shapes. Populating from the schema (a string for strings, one element for lists,
-  one entry for maps) is more work and much better signal.
-- **It must be honest about what it skipped.** Types that fail to marshal, or have no bridged
-  schema, must be counted and reported, not silently dropped.
-
-Run it behind a build tag or with an explicit cap, so it does not slow the default suite. It needs
-no cloud credentials — only the provider binary — so it can run in CI alongside the existing
-provider-cache job.
+Worth running per provider as Azure, GCP and Kubernetes are added — it is the cheapest way to learn
+what a new provider's schemas do to this pipeline.
 
 ## Tier 4 — end to end
 
-**The e2e already exercises delta consumption, and this was initially understated here.** The
-post-injection preview runs `Diff` on every injected resource, `Diff` is one of the three sites
-that consume the delta, and `contract.AssertNoErrorf` → `failfast` → `panic` is unconditional
-(no build tag). The sdk-v2 shim implements `ProviderWithRawStateSupport`
-(`sdk-v2/provider2.go:540`), so the path is available to bridged AWS resources rather than
-silently skipped.
+**The e2e already exercises delta consumption**, which the first draft understated: the
+post-injection preview runs `Diff`, `Diff` consumes the delta, the sdk-v2 shim implements
+`ProviderWithRawStateSupport` (`sdk-v2/provider2.go:540`), and the assertion panics unconditionally.
+Runs 16 and 17 (`Deltas attached (injected): 11 of 11`, all `same`, no crash) are real evidence.
 
-So runs 16 and 17 — `Deltas attached (injected): 11 of 11`, every non-importable resource
-previewing `same`, no provider crash — are real evidence that all 11 deltas parse, apply, and
-produce Terraform state that diffs clean. That is a stronger existing signal than the rest of this
-plan assumed.
-
-What it should add:
-
-1. **Assert `Deltas attached (injected): X of Y` equals `Y of Y`.** Run 17 reports `11 of 11` and
-   nothing checks it, so a regression to `0 of 11` would pass silently — every scenario would
-   still go green, because a missing delta degrades to the legacy conversion rather than failing.
-2. **Prove the mechanism is live, by deliberately corrupting a delta.** This is the load-bearing
-   one. Without it, "previews as `same`" is consistent with the delta path never being taken at
-   all — the same vacuity trap as the orphan sweep that silently checked nothing. A scenario that
-   writes a knowingly-bad delta into injected state and asserts the next preview *fails* converts
-   every other delta assertion from "consistent with correctness" to "sensitive to it".
-   Expect a provider crash rather than a clean error, and assert on the failure, not its wording.
+1. **Assert `Deltas attached (injected): X of Y` equals `Y of Y`.** Nothing checks it, so a
+   regression to `0 of 11` would pass silently — a missing delta degrades to the legacy conversion
+   rather than failing.
+2. **`CorruptDeltaFailsPreview` — done.** Corrupts one injected resource's delta and requires the
+   next preview to fail. Without it, "previews as same" was equally consistent with the delta path
+   never being taken. The payload's potency is pinned offline so the scenario cannot quietly become
+   a false alarm.
 3. **A resource type whose delta is non-trivial.** Every fixture non-importable type is schema
    version 0 and structurally flat. `aws_ssm_patch_group` is the only AWS type that is both
-   non-importable and schema-versioned (measured: 1 of 1526 in 5.100.0), and it is free and
-   trivial to create — a good fixture addition.
+   non-importable and schema-versioned, and is free and trivial to create.
 
 ## Explicitly out of scope
 
 - Re-testing the bridge's primitive turnaround space.
-- A real provider-version-pair upgrade test. `aws_ssm_patch_group` already had `SchemaVersion: 1`
+- A real provider-version-pair upgrade test: `aws_ssm_patch_group` already had `SchemaVersion: 1`
   at terraform-provider-aws v4.0.0 (Feb 2022), so no modern `pulumi-aws` pair straddles the bump.
-  Synthesizing the version gap is the only buildable form, and Tier 1/4 cover the reconstruction
-  it would depend on.
 
 ## Order
 
-Tier 1 first (cheapest, closes named gaps), then Tier 2 (regressions with known incidents),
-then Tier 4 items 1–2 (small e2e assertions), then Tier 3 (most work, needs the comparator
-solved first).
+Remaining, cheapest first: Tier 1 `num`/`asset`/`renamed`/`arr` and the **dynamic-type `replace`
+case** (synthetic schemas, no cloud) → Tier 2 items 2–5 → Tier 4 item 1 → Tier 3.
