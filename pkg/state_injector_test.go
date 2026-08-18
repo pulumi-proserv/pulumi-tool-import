@@ -321,7 +321,6 @@ func TestInjectNonImportable_FillWrapsSecretInput(t *testing.T) {
 // targeted resolvers only look at top-level properties, so a placeholder
 // buried inside a nested block is exactly what this is here to catch. No test
 // went deeper than one level before — recorded as a unit-level gap in
-// docs/superpowers/plans/2026-08-14-remaining-test-coverage.md.
 //
 // The path in the error matters as much as the detection: an operator given
 // only "a placeholder is somewhere in this resource" cannot act on it.

@@ -1088,8 +1088,7 @@ func testComponentParent(t *testing.T, ctx context.Context, fx *fixture) {
 //
 // Every other scenario here starts from a stack whose baseline is clean, so
 // the comparison has only ever been exercised in its 0-before case. This one
-// makes the baseline genuinely dirty first — recorded as gap 4 in
-// docs/superpowers/plans/2026-08-14-remaining-test-coverage.md.
+// makes the baseline genuinely dirty first.
 //
 // The drift is introduced in the PROGRAM rather than in state, because that is
 // what a real mid-migration stack looks like: the operator has written more of
@@ -1627,7 +1626,6 @@ func testSecretInjectedEndToEnd(t *testing.T, ctx context.Context, fx *fixture) 
 	// and _FillWrapsSecretInput); closing the e2e gap needs a non-importable
 	// resource with a Sensitive INPUT that holds a real value, which this
 	// fixture does not currently have. Recorded in
-	// docs/superpowers/plans/2026-08-14-remaining-test-coverage.md.
 
 	// --- 3b. the raw-state delta must not smuggle secret material into
 	// state. Unlike the properties above, the delta is written as a plain

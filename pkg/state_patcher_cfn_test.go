@@ -176,8 +176,7 @@ func decodeWithUseNumber(t *testing.T, doc string) map[string]interface{} {
 	return out
 }
 
-// TestPatchStateFromCFN_LargeIntegerKeepsExactDigits closes the unit-level gap
-// recorded in docs/superpowers/plans/2026-08-14-remaining-test-coverage.md:
+// TestPatchStateFromCFN_LargeIntegerKeepsExactDigits closes a unit-level gap:
 // 6ac03f6 changed the decode and 8d94094 fixed isSimpleValue, but no CFN test
 // carried a large integer through patchAndValidateResource.
 //

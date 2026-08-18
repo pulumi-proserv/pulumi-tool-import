@@ -15,8 +15,7 @@ says that instead of guessing. Line numbers are against
 
 Background that is *not* repeated here:
 [`docs/non-importable-resources.md`](non-importable-resources.md),
-[`docs/aws-import-diff-fields.md`](aws-import-diff-fields.md), and the design
-spec `docs/superpowers/specs/2026-08-13-non-importable-state-injection-design.md`.
+and [`docs/aws-import-diff-fields.md`](aws-import-diff-fields.md).
 
 ## Orientation
 

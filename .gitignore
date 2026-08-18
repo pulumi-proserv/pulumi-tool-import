@@ -15,3 +15,8 @@ go.work.sum
 test-results/
 .clj-kondo/
 .lsp/
+
+# Superpowers working documents (plans, specs) are session artefacts, not
+# repo content. The SDD ledger under .superpowers/ is already ignored; these
+# were committed by oversight.
+docs/superpowers/

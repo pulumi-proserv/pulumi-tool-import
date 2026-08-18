@@ -28,8 +28,7 @@ import (
 // TestInjectNonImportable_OrdersDependenciesFirst covers a single edge.
 //
 // These tests supply the work: transitive chains, parent edges, cycles, and
-// edges pointing outside the batch. Recorded as gap 2 in
-// docs/superpowers/plans/2026-08-14-remaining-test-coverage.md.
+// edges pointing outside the batch.
 
 const orderURNPrefix = "urn:pulumi:dev::proj::aws:ec2/x:X::"
 
