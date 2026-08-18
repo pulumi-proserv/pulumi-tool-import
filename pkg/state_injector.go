@@ -557,7 +557,65 @@ func attachRawStateDelta(r *NonImportableResource, obj, outputs map[string]inter
 			"%s (%s %q): raw-state delta dropped, failed validation: %v",
 			r.TerraformAddress, r.Type, r.Name, err)
 	}
+
+	// Enveloped only now, AFTER validation: validateRecover builds its
+	// PropertyValue with deltaPropertyValue, which deliberately does not
+	// interpret Pulumi sentinel maps, so it must see the plain form. What gets
+	// persisted is the enveloped one.
+	outputs[rawStateDeltaKey] = envelopeReplaceNodes(r.RawStateDelta)
 	return deltaOK, ""
+}
+
+// envelopeReplaceNodes wraps every Replace node in a raw state delta in the
+// Pulumi secret envelope, so the engine encrypts it at rest.
+//
+// This is what the bridge does for the deltas it writes itself: Marshal()
+// returns a PropertyValue in which any map carrying a "replace" key has been
+// wrapped in resource.MakeSecret (rawstate.go), and the engine then persists
+// that as ciphertext. Injection cannot store a PropertyValue — a sidecar is
+// JSON — so the equivalent has to be re-applied here, or the same payload ends
+// up encrypted when the bridge writes it and plaintext when we do.
+//
+// It round-trips: UnmarshalRawStateDelta calls propertyvalue.RemoveSecrets on
+// the value before decoding, so a secreted node is unwrapped on read. That is
+// not incidental — it is the bridge accommodating its own Marshal.
+//
+// A Replace node carries the provider's verbatim raw state for an attribute,
+// which is why the bridge treats it as sensitive: it is the one part of a delta
+// that can hold real values rather than structural information.
+func envelopeReplaceNodes(v interface{}) interface{} {
+	switch val := v.(type) {
+	case map[string]interface{}:
+		// Mirrors the bridge's own test — a map carrying "replace", checked
+		// before recursing so a nested Replace inside one is not double-wrapped.
+		if _, isReplace := val["replace"]; isReplace {
+			encoded, err := json.Marshal(val)
+			if err != nil {
+				// Unreachable in practice: this value was decoded from the
+				// sidecar's JSON moments ago. Returning it unchanged keeps the
+				// delta correct and merely unencrypted, which is what the
+				// previous behaviour was for every node.
+				return val
+			}
+			return map[string]interface{}{
+				sigKey:      secretSig,
+				"plaintext": string(encoded),
+			}
+		}
+		out := make(map[string]interface{}, len(val))
+		for k, elem := range val {
+			out[k] = envelopeReplaceNodes(elem)
+		}
+		return out
+	case []interface{}:
+		out := make([]interface{}, len(val))
+		for i, elem := range val {
+			out[i] = envelopeReplaceNodes(elem)
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 // metaPayload builds the bridge's __meta JSON string from a schema version,
@@ -643,7 +701,7 @@ func resolveOutputSecrets(
 			return 0, fmt.Errorf("encoding secret for %s: %w", configKey, err)
 		}
 		outputs[pulumiName] = map[string]interface{}{
-			sigKey:      "1b47061264138c4ac30d75fd1eb44270",
+			sigKey:      secretSig,
 			"plaintext": string(encoded),
 		}
 		resolved++
@@ -757,7 +815,7 @@ func resolveSecretInputs(
 			return 0, fmt.Errorf("encoding secret for %s: %w", configKey, err)
 		}
 		inputs[name] = map[string]interface{}{
-			sigKey:      "1b47061264138c4ac30d75fd1eb44270",
+			sigKey:      secretSig,
 			"plaintext": string(encoded),
 		}
 		resolved++

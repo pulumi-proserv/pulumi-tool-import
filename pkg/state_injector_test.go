@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -901,4 +902,71 @@ func TestInjectResult_DeltaAttachedIsReportedPositively(t *testing.T) {
 		result.DeltaDroppedSensitive + result.DeltaDroppedUnrecoverable
 	assert.Equal(t, result.Injected, total,
 		"every injected resource must land in exactly one delta bucket")
+}
+
+// TestEnvelopeReplaceNodes_MatchesWhatTheBridgeDoes pins the encryption
+// parity between the two delta producers.
+//
+// The bridge wraps every Replace node in resource.MakeSecret before handing the
+// delta to the engine, which then persists it as ciphertext. Injection writes
+// JSON, so it cannot hand over a PropertyValue and has to re-apply the envelope
+// itself — otherwise the identical payload is encrypted when the bridge writes
+// it and plaintext when we do. A Replace node carries the provider's verbatim
+// raw state for an attribute, which is the one part of a delta that can hold
+// real values rather than structural information.
+func TestEnvelopeReplaceNodes_MatchesWhatTheBridgeDoes(t *testing.T) {
+	t.Parallel()
+
+	delta := map[string]interface{}{
+		"obj": map[string]interface{}{
+			"ps": map[string]interface{}{
+				"policy": map[string]interface{}{
+					"replace": map[string]interface{}{"raw": `{"secretish":"value"}`},
+				},
+				"plain": map[string]interface{}{"obj": map[string]interface{}{}},
+			},
+			"ignored": []interface{}{"region"},
+		},
+	}
+
+	got := envelopeReplaceNodes(delta).(map[string]interface{})
+	ps := got["obj"].(map[string]interface{})["ps"].(map[string]interface{})
+
+	// The Replace node is enveloped...
+	policy := ps["policy"].(map[string]interface{})
+	assert.Equal(t, secretSig, policy[sigKey], "a Replace node must carry the secret envelope")
+	assert.NotContains(t, policy, "replace", "the raw payload must be inside the envelope")
+	assert.Contains(t, policy["plaintext"], "secretish")
+
+	// ...and nothing else is.
+	assert.NotContains(t, ps["plain"], sigKey, "structural nodes must stay plain")
+	assert.Equal(t, []interface{}{"region"},
+		got["obj"].(map[string]interface{})["ignored"], "non-map values pass through")
+
+	// The whole point: it must survive the trip back. UnmarshalRawStateDelta
+	// calls propertyvalue.RemoveSecrets before decoding, which is the bridge
+	// accommodating its own Marshal — so a secreted node is unwrapped on read.
+	pv := propertyValueFromState(got)
+	recovered, err := tfbridge.UnmarshalRawStateDelta(pv)
+	require.NoError(t, err)
+	roundTripped, err := json.Marshal(recovered)
+	require.NoError(t, err)
+	original, err := json.Marshal(delta)
+	require.NoError(t, err)
+
+	var a, b interface{}
+	require.NoError(t, json.Unmarshal(roundTripped, &a))
+	require.NoError(t, json.Unmarshal(original, &b))
+	assert.Equal(t, b, a, "enveloping must not change what the bridge reads back")
+}
+
+func TestEnvelopeReplaceNodes_LeavesADeltaWithoutReplaceUntouched(t *testing.T) {
+	t.Parallel()
+
+	delta := map[string]interface{}{"obj": map[string]interface{}{"ps": map[string]interface{}{}}}
+	before, err := json.Marshal(delta)
+	require.NoError(t, err)
+	after, err := json.Marshal(envelopeReplaceNodes(delta))
+	require.NoError(t, err)
+	assert.JSONEq(t, string(before), string(after))
 }

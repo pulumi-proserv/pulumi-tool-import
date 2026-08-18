@@ -558,8 +558,8 @@ func patchResourceFields(
 					return nil, fmt.Errorf("encoding secret value for %s: %w", configKey, err)
 				}
 				digVal = map[string]interface{}{
-					"4dabf18193072939515e22adb298388d": "1b47061264138c4ac30d75fd1eb44270",
-					"plaintext":                        string(jsonEncoded),
+					sigKey:      secretSig,
+					"plaintext": string(jsonEncoded),
 				}
 				digEmpty = false
 				digSensitive = false
@@ -902,6 +902,11 @@ const (
 	assetSig   = "c44067f5952c0a294b673a41bacd8c17"
 	archiveSig = "0def7320c3a5731c473e5ecbe6d01bc7"
 	sigKey     = "4dabf18193072939515e22adb298388d"
+	// secretSig is the sig value marking a Pulumi secret envelope. Named
+	// rather than repeated: it appeared as a bare literal at four
+	// construction/recognition sites, and a typo in one of them would produce
+	// a plain object that reads as data instead of failing.
+	secretSig = "1b47061264138c4ac30d75fd1eb44270"
 )
 
 // buildAssetSentinel constructs a Pulumi asset/archive sentinel from a file path.
@@ -1534,7 +1539,7 @@ func propertyValueFromState(v interface{}) resource.PropertyValue {
 			return resource.PropertyValue{}, false
 		}
 		switch s {
-		case "1b47061264138c4ac30d75fd1eb44270": // secret
+		case secretSig: // secret
 			// Two on-disk shapes carry this sig in this codebase: the engine's
 			// own state-serialization form, {sig, "value": <PropertyValue>},
 			// and the "plaintext" form this package writes when it resolves a

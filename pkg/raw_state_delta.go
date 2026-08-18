@@ -119,6 +119,30 @@ func ComputeInjectionState(
 	delete(props, "timeouts")
 	outputs = props.Mappable()
 
+	// Mirrors the bridge's own first act in RawStateInjectDelta: bail before
+	// computing a delta when the property map contains unknowns, because "the
+	// code for deltas cannot process unknowns" (its words).
+	//
+	// UNREACHABLE TODAY, and deliberately kept anyway. pulumiOutputsFromCty
+	// above starts with ctyjson.Marshal, which rejects an unknown value
+	// outright ("value is not known" — measured), so an unknown cannot survive
+	// to this point and this branch cannot currently fire. The guard exists
+	// because that protection is incidental: it belongs to a conversion step
+	// that could reasonably be rewritten, and nothing about it announces that
+	// a delta invariant depends on it.
+	//
+	// Worth the three lines because "unknowns cannot reach here" was exactly
+	// the claim that proved false for injected INPUTS — a resource referencing
+	// another injected resource carries the engine's unknown sentinel, which
+	// the code asserted was unreachable "by construction". Different path, same
+	// class of assumption. Here the degradation is a resource without a delta,
+	// rather than a delta computed from a placeholder.
+	if resource.NewObjectProperty(props).ContainsUnknowns() {
+		return outputs, nil, fmt.Sprintf(
+			"raw state delta for %s skipped: outputs contain unknown values, which the bridge's "+
+				"delta computation cannot process", tfType), sch.Version, nil
+	}
+
 	// The cty value itself is passed through unstripped: props has no
 	// "timeouts" key (above), so RawStateComputeDelta removes "timeouts" from
 	// the value on our behalf (v.Remove("timeouts")) before encoding raw
