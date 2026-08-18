@@ -790,3 +790,63 @@ func TestInjectNonImportable_EmptySidecarStillVerifies(t *testing.T) {
 	assert.Equal(t, 0, result.Injected)
 	assert.NotEmpty(t, out)
 }
+
+// TestResolveUnknownInputs_SubstitutesFromOutputs covers the case the e2e
+// fixture actually produces: an injected resource referencing another injected
+// resource. At the preview that drives injection the dependency is not in state
+// yet, so the engine serializes the referring input as its unknown sentinel.
+//
+// Before the guard that rejects the sentinel existed, this was written into
+// state verbatim and twelve green e2e scenarios never noticed — it is an
+// ordinary-looking string. The guard alone is not enough though: the value is
+// knowable, because Terraform already created both resources and the real value
+// is in the sidecar as this resource's own output.
+func TestResolveUnknownInputs_SubstitutesFromOutputs(t *testing.T) {
+	t.Parallel()
+
+	r := &NonImportableResource{Type: "aws:iot/policyAttachment:PolicyAttachment", Name: "policy_attach"}
+	inputs := map[string]interface{}{
+		"target": unknownPlaceholder,
+		"policy": "my-policy",
+	}
+	outputs := map[string]interface{}{
+		"target": "arn:aws:iot:us-west-2:123456789012:cert/abc123",
+		"policy": "my-policy",
+	}
+
+	require.NoError(t, resolveUnknownInputs(r, inputs, outputs))
+	assert.Equal(t, "arn:aws:iot:us-west-2:123456789012:cert/abc123", inputs["target"])
+	assert.Equal(t, "my-policy", inputs["policy"], "a resolved input must not be disturbed")
+
+	// And the result now passes the placeholder screen.
+	require.NoError(t, checkNoPlaceholders(r, "input", inputs, "inputs"))
+}
+
+// TestResolveUnknownInputs_UnresolvableIsLeftForTheScreen pins the degradation.
+// An unknown with no corresponding output means the program references
+// something Terraform has no record of, so injection would be inventing the
+// value. It stays unresolved and checkNoPlaceholders reports it with the path.
+func TestResolveUnknownInputs_UnresolvableIsLeftForTheScreen(t *testing.T) {
+	t.Parallel()
+
+	r := &NonImportableResource{Type: "aws:iot/policyAttachment:PolicyAttachment", Name: "attach"}
+	for _, tc := range []struct {
+		name    string
+		outputs map[string]interface{}
+	}{
+		{"no such output", map[string]interface{}{"other": "v"}},
+		{"output is null", map[string]interface{}{"target": nil}},
+		{"output is itself unknown", map[string]interface{}{"target": unknownPlaceholder}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			inputs := map[string]interface{}{"target": unknownPlaceholder}
+			require.NoError(t, resolveUnknownInputs(r, inputs, tc.outputs))
+			assert.Equal(t, unknownPlaceholder, inputs["target"])
+
+			err := checkNoPlaceholders(r, "input", inputs, "inputs")
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "unknown-value sentinel")
+		})
+	}
+}

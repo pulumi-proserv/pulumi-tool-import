@@ -316,6 +316,12 @@ func buildInjectedResource(
 	}
 	secretsResolved += inputSecrets
 
+	// Resolve any input the preview could not evaluate. Must run BEFORE
+	// checkNoPlaceholders, which is what turns an unresolved one into an error.
+	if err := resolveUnknownInputs(r, inputs, outputs); err != nil {
+		return nil, 0, deltaOK, "", err
+	}
+
 	// __defaults records which properties came from schema defaults. The engine's
 	// Check usually supplies it already; only add it when missing, since an empty
 	// list would otherwise discard what Check worked out.
@@ -738,6 +744,58 @@ func resolveSecretInputs(
 		resolved++
 	}
 	return resolved, nil
+}
+
+// resolveUnknownInputs replaces inputs the preview reported as unknown with
+// the resource's real value, taken from its Terraform-derived outputs.
+//
+// An injected resource may reference another injected resource — the fixture's
+// IoT policy attachment takes its target from a certificate that is also
+// non-importable — and at the preview that drives injection the dependency is
+// not in state yet, so the engine serializes the referring input as its
+// unknown sentinel. Injecting that verbatim writes a placeholder into state
+// that nothing downstream can distinguish from a real value.
+//
+// The value is nonetheless knowable, and from the most authoritative source
+// available: Terraform already created both resources, so the dependency's
+// real value is recorded in the sidecar as this resource's own output. That is
+// the same substitution fillOutputsFromInputs performs in the other direction,
+// and it is why the sidecar carries outputs at all.
+//
+// Falling back to the output rather than chasing the dependency edge also
+// sidesteps a problem the edge cannot solve: a preview step records WHICH
+// resources a property depends on, but not which of their properties produced
+// the value, so "target came from the certificate" does not say whether it was
+// the certificate's arn or its id.
+//
+// An unknown with no corresponding output stays unresolved, and
+// checkNoPlaceholders then rejects it. That is the correct stop: it means the
+// program references something Terraform has no record of, so injection would
+// be inventing the value.
+func resolveUnknownInputs(r *NonImportableResource, inputs, outputs map[string]interface{}) error {
+	names := make([]string, 0, len(inputs))
+	for name := range inputs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		s, ok := inputs[name].(string)
+		if !ok || s != unknownPlaceholder {
+			continue
+		}
+		value, ok := outputs[name]
+		if !ok || value == nil {
+			// Left in place deliberately: checkNoPlaceholders reports it with
+			// the full path, which is more useful than a second error here.
+			continue
+		}
+		if sv, ok := value.(string); ok && sv == unknownPlaceholder {
+			continue
+		}
+		inputs[name] = value
+	}
+	return nil
 }
 
 // orderInjected sorts injected resources so that one depending on another
