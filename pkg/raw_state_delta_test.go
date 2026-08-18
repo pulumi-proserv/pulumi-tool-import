@@ -653,6 +653,32 @@ func TestComputeInjectionState_DeltaServesAProviderStateUpgrade(t *testing.T) {
 	assert.Equal(t, "pb-0123456789abcdef0", upgraded["baseline_id"].AsString())
 	assert.Equal(t, "patch-group-1", upgraded["patch_group"].AsString())
 
+	// The provider tolerates attributes its schema does not declare. That is
+	// load-bearing elsewhere: a Pulumi-only property such as "region" — added
+	// to outputs by fillOutputsFromInputs after the delta was computed — is
+	// recovered "naturally" and therefore rides into the reconstructed raw
+	// state rather than being dropped. See
+	// TestSyntheticDelta_PulumiOnlyPropertyPassesThroughRawState. It is
+	// harmless only because of this tolerance, so the tolerance is asserted
+	// rather than assumed.
+	t.Run("an undeclared attribute is tolerated", func(t *testing.T) {
+		var withExtra map[string]interface{}
+		require.NoError(t, json.Unmarshal(recovered, &withExtra))
+		withExtra["region"] = "us-west-2"
+		extraJSON, err := json.Marshal(withExtra)
+		require.NoError(t, err)
+
+		resp := prov.UpgradeResourceState(ctx, providers.UpgradeResourceStateRequest{
+			TypeName:     tfType,
+			Version:      version,
+			RawStateJSON: extraJSON,
+		})
+		assert.False(t, resp.Diagnostics.HasErrors(),
+			"a provider that rejects undeclared attributes would make fillOutputsFromInputs "+
+				"corrupt raw state on every operation: %v", resp.Diagnostics.Err())
+		assert.False(t, resp.UpgradedState.IsNull())
+	})
+
 	// Non-vacuity: a corrupt delta must NOT sail through this same path. Without
 	// this the test would pass on any delta the provider happens to tolerate.
 	t.Run("a corrupt delta does not survive", func(t *testing.T) {
