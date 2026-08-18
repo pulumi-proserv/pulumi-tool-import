@@ -56,6 +56,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -619,7 +620,11 @@ func testPreviewGoesFromCreateToSame(t *testing.T, ctx context.Context, fx *fixt
 		"--non-importable", p.sidecarPath,
 		"--backup-dir", p.backupDir,
 	)
-	runTool(t, ctx, fx.binPath, fx.repoRoot, fx.env, args...)
+	out, err := runToolAllowFail(t, ctx, fx.binPath, fx.repoRoot, fx.env, args...)
+	if err != nil {
+		t.Fatalf("patch-state tf --non-importable failed: %v\n%s", err, out)
+	}
+	assertEveryInjectedResourceGotADelta(t, out)
 
 	after := runPreviewJSON(t, ctx, p.pulumiDir, fx.env, p.stackName)
 	afterOps := after.OpsByURN()
@@ -2352,4 +2357,45 @@ func testCorruptDeltaFailsPreview(t *testing.T, ctx context.Context, fx *fixture
 	t.Logf("confirmed the delta is load-bearing: preview failed against a corrupt delta on %s "+
 		"(%v). Every other delta assertion in this file is therefore sensitive to delta "+
 		"correctness, not merely consistent with it.", corruptedURN, previewErr)
+}
+
+// deltasAttachedRe matches patch-state's "Deltas attached (injected): X of Y"
+// summary line.
+var deltasAttachedRe = regexp.MustCompile(`Deltas attached \(injected\):\s+(\d+) of (\d+)`)
+
+// assertEveryInjectedResourceGotADelta requires that every injected resource
+// carried a raw-state delta into state.
+//
+// Nothing asserted this before, and a regression to "0 of 11" would pass every
+// scenario silently: a missing delta does not fail, it degrades the resource to
+// the bridge's legacy Pulumi->Terraform conversion, which still previews as
+// "same". The delta is the primary conversion path for Diff, Read and Update
+// (tfbridge/provider.go:1129/:1442/:1651), so losing it costs correctness on
+// every later operation without costing anything visible here.
+//
+// This is why the summary reports X of Y positively rather than leaving it to
+// be inferred from three absence counters being zero — those two readings look
+// identical at zero, and only one of them is a statement about the artifact.
+func assertEveryInjectedResourceGotADelta(t *testing.T, patchStateOutput string) {
+	t.Helper()
+
+	m := deltasAttachedRe.FindStringSubmatch(patchStateOutput)
+	if m == nil {
+		t.Errorf("patch-state output has no \"Deltas attached (injected)\" line — the summary "+
+			"changed and this assertion is now blind. Output:\n%s", patchStateOutput)
+		return
+	}
+	attached, injected := m[1], m[2]
+	if injected == "0" {
+		t.Errorf("patch-state reports 0 injected resources, so this assertion proves nothing")
+		return
+	}
+	if attached != injected {
+		t.Errorf("only %s of %s injected resources carried a raw-state delta. A resource without "+
+			"one still previews as \"same\" — it silently falls back to the bridge's legacy state "+
+			"conversion — so this will not surface anywhere else. Output:\n%s",
+			attached, injected, patchStateOutput)
+		return
+	}
+	t.Logf("confirmed all %s injected resource(s) carried a raw-state delta", attached)
 }
