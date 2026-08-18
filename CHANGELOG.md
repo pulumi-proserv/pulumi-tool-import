@@ -22,6 +22,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   provider it already starts for the import-support probe is open. `patch-state`
   consumes them, so it needs no provider of its own.
 
+### Fixed
+
+- **Secrets could reach state in plaintext, three ways.** State in
+  `tofu show -json` format got no redaction at all — the format is selected
+  automatically on the presence of a `format_version` key, with no flag to
+  indicate it — because `AttrSensitivePaths` was never populated for it.
+  Sensitive attributes nested below the top level were never redacted at any
+  depth. And a raw state delta's Replace nodes, which carry the provider's
+  verbatim values, were written without the secret envelope the bridge applies
+  to the deltas it writes itself.
+- **Colliding stack config keys wrote one resource's secret into another.**
+  Two sensitive attributes that flatten to the same config key were deduped
+  with a `_2` suffix, but nothing could read a suffixed key back, so the second
+  resource resolved to the first one's secret — nondeterministically, since the
+  discovery walk was unsorted. `digest tf` now **fails** and names both
+  addresses, and the walk is sorted. This is a behaviour change: a digest that
+  previously warned now errors.
+- **A large sensitive integer was corrupted in stack config.**
+  `DiscoverSensitiveSecrets` decoded with a plain `json.Unmarshal` and
+  stringified with `%v`, turning `1234567890123456789` into
+  `"1.2345678901234568e+18"` — which injection then wrote into state as the
+  resource's real secret.
+- **Verification could pass on a stack it had made worse.** An operation
+  escalating from `update` to `replace` or `delete` was invisible, because the
+  check compared only counts and newly-dirty resources. Since many `not_read`
+  fields are ForceNew, a wrongly patched value produces exactly that, and the
+  next `pulumi up` would destroy and recreate a live resource.
+- **`--non-importable` with an empty sidecar verified nothing**, then imported
+  the result into the live stack. It was the only path through `patch-state`
+  that ran no integrity check at all.
+- **A secret exported without `--show-secrets` reverted every patch.** The
+  `{sig, ciphertext}` shape produced by the documented file-mode workflow
+  (`pulumi stack export > state.json`) recovered as a plain object, so the
+  bridge's `Recover` failed and the run discarded its own patches while
+  reporting success.
+- **Injection could write values nothing could distinguish from real ones.** A
+  resource with no import ID was accepted and later panicked the engine; the
+  engine's unknown-value sentinel was copied into state verbatim when an
+  injected resource referenced another injected resource; and a masked input
+  whose Terraform name could not be derived was silently deleted rather than
+  reported.
+- **A raw state delta containing a Replace node was silently corrupted.** It was
+  serialized via `Marshal().Mappable()`, which emits SDK-internal field names;
+  reading it back produced no error and an *empty* delta, so the resource
+  reconstructed the wrong Terraform state on every operation.
+- **A hung or crashed provider was classified as importable** (#31).
+  `"Plugin did not respond"` — what OpenTofu emits when a plugin stops
+  answering — was missing from the transport-failure list, and the fallthrough
+  is "importable". Since every probe after a crash fails identically, one
+  downed plugin could mark a whole run's resources importable.
+- Duplicate `create` steps for the same type and name no longer block injection
+  outright; the ambiguity is reported only if a sidecar entry actually needs it.
+  Two same-named resources under different components are legal.
+- `resolve tf` no longer mis-parses a resource name containing `::`, such as a
+  `for_each` key derived from an ARN.
+
+### Changed
+
+- `patch-state` now reports `Deltas validated (imported)` and
+  `Deltas attached (injected): X of Y` rather than an unqualified
+  `Delta validated`. The two count different populations with different
+  producers — the bridge writes deltas during `pulumi import`, while injected
+  resources never reach the provider — and the previous labels made them look
+  like one number.
+- `make vet` and `make lint` now also check the `e2e`-tagged build, which no
+  target or CI job previously compiled.
+
 ## [0.2.0] - 2026-08-12
 
 ### Added

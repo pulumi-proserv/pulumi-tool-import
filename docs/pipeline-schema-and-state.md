@@ -156,26 +156,51 @@ Pulumi stack config as secrets. So after `digest tf`:
   recomputed key up in `r.RedactedAttributes`.
 
 `flattenAddress` is therefore a load-bearing pure function whose output is a
-cross-command contract. It also dedups colliding keys by appending `_2`, `_3`
-(`pkg/module_map.go:803`) — and the dedup counter lives only in
-`DiscoverSensitiveSecrets`. The later call sites recompute the *undeduped*
-key, so **the second and later resources that collide on a key can never have
-their secret resolved.** A warning is printed at digest time (`:804`) and
-nothing checks later. Injection at least fails loudly when this happens
-(`pkg/state_injector.go:401`, `:453`); `patch-state`'s patching half silently
-counts it as `SkippedSensitive`.
+cross-command contract.
 
-`DiscoverSensitiveSecrets` still decodes with plain `json.Unmarshal` (`:757`)
-and stringifies with `fmt.Sprintf("%v", value)` (`:777`), so a numeric secret
-loses fidelity the way `ImportID` used to. It was not covered by the branch's
-`UseNumber` fix.
+**Colliding keys are now a hard error.** They used to be deduped by appending
+`_2`, `_3`, with the counter living only in `DiscoverSensitiveSecrets` — but
+every later call site recomputes the *undeduped* key, so nothing could ever read
+a suffixed one back. The second and later colliding resources therefore resolved
+to the **first one's secret**: a real secret written into the wrong resource's
+state, silently, and nondeterministically, since the state maps were never
+sorted. Suffixing did not handle the collision, it hid it. `digest tf` now fails
+and names both addresses, and the discovery walk is sorted so the result is
+reproducible.
+
+Collisions are easy to reach because `flattenAddress` drops the resource type
+and collapses punctuation: `module.db.aws_db_instance.this` and
+`module.db.aws_rds_cluster.this` both flatten to `db_password`, as do
+`ssm_parameters["/develop/api/key"]` and `ssm_parameters["/develop/api_key"]`.
+The cause-level fix — recording the resolved key on the digest so `resolve tf`
+consumes it instead of recomputing — needs the digest written after secret
+discovery, which is a pipeline reorder rather than a fix.
+
+`DiscoverSensitiveSecrets` now decodes with `decodeAttrs` (`UseNumber`) before
+stringifying with `fmt.Sprintf("%v", value)`. It previously used a plain
+`json.Unmarshal`, which turned a sensitive `1234567890123456789` into
+`"1.2345678901234568e+18"` in stack config — and injection then resolved that
+key and wrote the corrupted, retyped value into state as the resource's real
+secret. `json.Number` is itself a string type, so `%v` prints the original
+digits.
 
 `BuildSensitivityMap` / `RedactSensitiveAttributes` (`pkg/provider_schema.go:44`,
 `:235`) implement a second, schema-driven redaction mechanism that reads
-`Sensitive` off the *live* provider schema and handles nested paths
-(`findSensitiveAttributes`, `:155`). Nothing outside tests calls either. It is
-the mechanism that would fix the nested-path and `tofu show -json` gaps above.
+`Sensitive` off the *live* provider schema. Nothing outside tests calls either.
 See [#28](https://github.com/pulumi-proserv/pulumi-tool-import/issues/28).
+
+The nested-path and `tofu show -json` gaps this used to be proposed as the fix
+for are **now closed in the primary mechanism instead**: `redactAtPath` walks a
+sensitive path to any depth, and `rawStateFromTfjson` populates
+`AttrSensitivePaths` from the format's own `sensitive_values` document. Before
+that, `tofu show -json` state — which `DetectStateFormatBytes` selects
+automatically on the presence of a `format_version` key, with no flag to warn
+you — got **no redaction at all**, and a nested sensitive attribute was left in
+plaintext at any depth below the first.
+
+A nested secret still gets no stack config key, because the key format is an
+address plus one attribute name. That is deliberate: injection then meets the
+placeholder and hard-fails in `checkNoPlaceholders` rather than leaking.
 
 ### S2b — the non-importable enrichment
 
@@ -640,7 +665,7 @@ They disagree in predictable cases:
 | 5 | `AttrsJSON` (redacted, re-marshalled) | `pkg/module_map.go:505` | `cty.Value` | `ctyjson.Unmarshal`, `pkg/raw_state_delta.go:58` |
 | 6 | `cty.Value` | | `resource.PropertyMap` | `MakeTerraformOutputs`, `pkg/raw_state_delta.go:110` |
 | 7 | `cty.Value` + `PropertyMap` | | `RawStateDelta` | `RawStateComputeDelta`, `:69` |
-| 8 | `RawStateDelta` | | `map[string]interface{}` | `delta.Marshal().Mappable()`, `:79` |
+| 8 | `RawStateDelta` | | `map[string]interface{}` | `json.Marshal` + `decodeAttrs`, `:139` |
 | 9 | `ModuleResource` | | `ImportEntry.ID` (string only) | `fillState.assign`, `pkg/import_filler.go:280` |
 | 10 | `ModuleResource` | | `NonImportableResource` | `pkg/import_filler.go:265` |
 | 11 | `ImportFile` | | `[]*optimport.ImportResource` | `pkg/batchimport/file.go:39` |

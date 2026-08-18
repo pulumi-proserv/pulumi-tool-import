@@ -169,10 +169,20 @@ before any mutation:
 - every injected resource's URN must report `same`;
 - no resource that was `same` (or absent) in the baseline may become non-`same`
   afterward;
+- no resource's operation may become **more destructive** than it was — an
+  `update` that turns into a `replace` or a `delete` fails the check even though
+  the resource was already non-`same` and the total count is unchanged;
 - the total count of non-`same` steps outside the injected set must not
   increase.
 
-What must not happen is regression. If either check fails, stack mode reverts
+The third rule exists because many `not_read` fields are ForceNew, so a wrongly
+patched value turns an `update` into a `replace` — and the next `pulumi up`
+would then destroy and recreate a live resource. Counting alone cannot see that:
+the resource is one of the non-`same` steps before and after. An operation whose
+name this comparison does not recognise is reported rather than assumed benign,
+since the engine's vocabulary can grow.
+
+What must not happen is regression. If any check fails, stack mode reverts
 the stack to the pre-mutation export and reports why.
 
 ### Verify with preview, not refresh
