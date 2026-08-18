@@ -228,6 +228,17 @@ type fixtureResourceIDs struct {
 	// for_each-expanded resource appears once per key in state, so these
 	// cannot be a single field.
 	eachIoTCertificateIDs []string
+
+	// The certificate inside modules/certs (module.certs, the component-parent
+	// scenario). Kept distinct from iotCertificateID only because it is a
+	// separate resource: a module resource carries a "module" key in state and
+	// its own resource name, so matching on type and name alone would either
+	// miss it or confuse it with a root-level resource of the same name.
+	//
+	// It has no tags — IoT certificates take none — so the tag scan cannot back
+	// this up. Without an explicit case here the certificate had no orphan
+	// detection at all.
+	moduleIoTCertificateID string
 }
 
 // loadFixtureResourceIDs reads <tfDir>/terraform.tfstate directly (the
@@ -254,6 +265,10 @@ func loadFixtureResourceIDs(tfDir string) (fixtureResourceIDs, error) {
 
 	var state struct {
 		Resources []struct {
+			// Module is absent for root-module resources and holds an address
+			// like "module.certs" otherwise. Decoded so a module resource can
+			// be told apart from a root one with the same type and name.
+			Module    string `json:"module"`
 			Mode      string `json:"mode"`
 			Type      string `json:"type"`
 			Name      string `json:"name"`
@@ -296,6 +311,8 @@ func loadFixtureResourceIDs(tfDir string) (fixtureResourceIDs, error) {
 			ids.iotCertificateID = attrString(attrs, "id")
 		case r.Type == "aws_iot_certificate" && r.Name == "east":
 			ids.eastIoTCertificateID = attrString(attrs, "id")
+		case r.Type == "aws_iot_certificate" && r.Name == "inmodule" && r.Module == "module.certs":
+			ids.moduleIoTCertificateID = attrString(attrs, "id")
 		case r.Type == "aws_iot_certificate" && r.Name == "each":
 			// Every instance, not just the first: main.tf's for_each over
 			// {"alpha","beta"} produces ONE resources entry with two

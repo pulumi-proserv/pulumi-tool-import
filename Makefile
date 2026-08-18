@@ -8,13 +8,15 @@
 #   make fmt       - format the tree (gofmt)
 #   make tidy      - go mod tidy
 #   make check     - fmt-check + vet + lint (what CI enforces, minus the integration tests)
+#                    vet and lint each also cover the "e2e"-tagged build, which is
+#                    otherwise invisible to every target and CI job.
 
 GO      ?= go
 BINARY  ?= pulumi-tool-import
 PKG     ?= ./...
 E2E_TIMEOUT ?= 40m
 
-.PHONY: all build test test-e2e lint fmt fmt-check vet tidy check clean
+.PHONY: all build test test-e2e lint lint-e2e fmt fmt-check vet vet-e2e tidy check clean
 
 all: build
 
@@ -57,8 +59,18 @@ test-e2e:
 	# real infrastructure.
 	$(GO) test -count=1 -tags e2e ./test/e2e/ -v -timeout $(E2E_TIMEOUT)
 
-lint:
+lint: lint-e2e
 	golangci-lint run
+
+# The e2e files are behind "//go:build e2e", so the untagged run above does not
+# see them at all -- 2,500+ lines that were never linted, vetted or even
+# type-checked by any target or CI job. That is not hypothetical: two real bugs
+# lived in test/e2e/orphan_check.go (an ordering error that disabled the whole
+# AWS-side orphan sweep on the success path, and an error-code match that could
+# never fire for IAM), and neither the offline suite nor a green e2e run could
+# surface them. Linting the tagged build costs seconds and needs no AWS.
+lint-e2e:
+	golangci-lint run --build-tags e2e ./test/e2e/...
 
 # gofmt the whole tree in place.
 fmt:
@@ -73,8 +85,14 @@ fmt-check:
 		exit 1; \
 	fi
 
-vet:
+vet: vet-e2e
 	$(GO) vet $(PKG)
+
+# Type-check and vet the e2e build. "go vet" fully type-checks, so this is what
+# catches a compile error in a tagged file before someone spends ~16 minutes and
+# real AWS spend discovering it. See lint-e2e for why this is separate.
+vet-e2e:
+	$(GO) vet -tags e2e ./test/e2e/...
 
 tidy:
 	$(GO) mod tidy

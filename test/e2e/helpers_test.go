@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -227,6 +228,8 @@ const fixtureStateJSON = `{
      "instances":[{"attributes":{"id":"cert-west"}}]},
     {"mode":"managed","type":"aws_iot_certificate","name":"east",
      "instances":[{"attributes":{"id":"cert-east"}}]},
+    {"module":"module.certs","mode":"managed","type":"aws_iot_certificate","name":"inmodule",
+     "instances":[{"attributes":{"id":"cert-inmodule"}}]},
     {"mode":"managed","type":"aws_iot_certificate","name":"each",
      "instances":[
        {"index_key":"alpha","attributes":{"id":"cert-alpha"}},
@@ -300,6 +303,7 @@ func TestLoadFixtureResourceIDsReadsEveryCheckedResource(t *testing.T) {
 		{"vpnConnectionID", ids.vpnConnectionID, "vpn-0abc"},
 		{"iotCertificateID", ids.iotCertificateID, "cert-west"},
 		{"eastIoTCertificateID", ids.eastIoTCertificateID, "cert-east"},
+		{"moduleIoTCertificateID", ids.moduleIoTCertificateID, "cert-inmodule"},
 		{"targetGroupID", ids.targetGroupID, "tg-0abc"},
 		{"lambdaFunctionName", ids.lambdaFunctionName, "tool-import-e2e-lambda"},
 		{"iamRoleName", ids.iamRoleName, "tool-import-e2e-lambda-role"},
@@ -383,6 +387,108 @@ func TestIsNotFoundErrCoversEveryCheckedService(t *testing.T) {
 		if !goneErrorCodes[code] {
 			t.Errorf("goneErrorCodes is missing %q — the check using it will "+
 				"report a correctly destroyed resource as an unverified survivor", code)
+		}
+	}
+}
+
+// TestEveryFixtureResourceIsAccountedForByTheOrphanSweep is a coverage guard on
+// the sweep itself, not on any one resource.
+//
+// It exists because of how modules/certs' certificate was missed: it was added
+// to the fixture, no case was added to loadFixtureResourceIDs, and nothing
+// noticed — the offline fixture omitted it too, so the parser tests could not
+// catch it, and IoT certificates carry no tags, so the VPC tag scan could not
+// either. The result was a billable-in-principle resource with no orphan
+// detection at all, on a fixture whose whole point is that teardown is
+// verified.
+//
+// So: every "resource" block in testdata/tf must be either checked by ID or
+// listed below with a reason. Adding a resource to the fixture without doing
+// one of those fails here, offline, in milliseconds.
+func TestEveryFixtureResourceIsAccountedForByTheOrphanSweep(t *testing.T) {
+	t.Parallel()
+
+	// Checked by ID in verifyFixtureResourcesGone.
+	checkedByID := map[string]bool{
+		"aws_vpc.main":                   true,
+		"aws_vpn_gateway.vgw":            true,
+		"aws_customer_gateway.cgw":       true,
+		"aws_vpn_connection.vpn":         true,
+		"aws_iot_certificate.cert":       true,
+		"aws_iot_certificate.east":       true,
+		"aws_iot_certificate.each":       true,
+		"aws_iot_certificate.inmodule":   true,
+		"aws_vpclattice_target_group.tg": true,
+		"aws_lambda_function.target":     true,
+		"aws_iam_role.lambda":            true,
+	}
+
+	// Deliberately not checked by ID, each for a stated reason. A resource
+	// belongs here only when its survival is either impossible or already
+	// detectable another way.
+	exempt := map[string]string{
+		"aws_route_table.rt":                            "inside the VPC; the tag scan reports the VPC, and a route table cannot outlive it",
+		"aws_vpn_connection_route.route":                "a property of the VPN connection, which is checked by ID",
+		"aws_vpn_gateway_route_propagation.prop":        "an association between two resources both checked by ID",
+		"aws_iot_policy.policy":                         "free, and orphaning one is invisible to billing",
+		"aws_iot_policy_attachment.policy_attach":       "an attachment between two resources both checked by ID",
+		"aws_lambda_permission.vpclattice":              "a policy statement on the Lambda, which is checked by ID",
+		"aws_vpclattice_target_group_attachment.attach": "an attachment to the target group, which is checked by ID",
+		"aws_kms_key.secrets":                           "KMS keys cannot be deleted on demand; they enter a 7-day pending-deletion window, so 'gone' is not observable",
+		"aws_kms_alias.secrets":                         "deleted with its key, which is itself unobservable per above",
+	}
+
+	declRe := regexp.MustCompile(`(?m)^resource "([^"]+)" "([^"]+)"`)
+
+	var found []string
+	err := filepath.Walk("testdata/tf", func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() || filepath.Ext(path) != ".tf" {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for _, m := range declRe.FindAllStringSubmatch(string(data), -1) {
+			found = append(found, m[1]+"."+m[2])
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walking testdata/tf: %v", err)
+	}
+	if len(found) == 0 {
+		t.Fatal("found no resource declarations — has testdata/tf moved?")
+	}
+
+	for _, addr := range found {
+		if checkedByID[addr] || exempt[addr] != "" {
+			continue
+		}
+		t.Errorf("fixture resource %q has no orphan check and no exemption.\n"+
+			"Either add a case to loadFixtureResourceIDs and a check to "+
+			"verifyFixtureResourcesGone, or add it to the exempt map above with the "+
+			"reason its survival is impossible or already detectable.", addr)
+	}
+
+	// The lists must not rot in the other direction either: an entry naming a
+	// resource the fixture no longer declares is a check that silently does
+	// nothing.
+	declared := make(map[string]bool, len(found))
+	for _, addr := range found {
+		declared[addr] = true
+	}
+	for addr := range checkedByID {
+		if !declared[addr] {
+			t.Errorf("checkedByID names %q, which testdata/tf no longer declares", addr)
+		}
+	}
+	for addr := range exempt {
+		if !declared[addr] {
+			t.Errorf("exempt names %q, which testdata/tf no longer declares", addr)
 		}
 	}
 }

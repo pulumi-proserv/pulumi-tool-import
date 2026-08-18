@@ -126,6 +126,12 @@ func verifyFixtureResourcesGone(t *testing.T, ctx context.Context, ids fixtureRe
 	for _, id := range ids.eachIoTCertificateIDs {
 		checkIoTCertificateGone(t, ctx, iotClient, id)
 	}
+	// modules/certs' certificate. It lives in fixtureRegion like the root-level
+	// ones, but it is a separate resource and had no check of its own — and IoT
+	// certificates carry no tags, so checkNoTaggedVPCsRemain cannot cover it.
+	if ids.moduleIoTCertificateID != "" {
+		checkIoTCertificateGone(t, ctx, iotClient, ids.moduleIoTCertificateID)
+	}
 
 	// The aliased provider's resources live in another region, and a client
 	// pinned to fixtureRegion would report them as absent — which reads as
