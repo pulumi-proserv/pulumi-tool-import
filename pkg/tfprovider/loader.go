@@ -27,6 +27,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 
 	"github.com/apparentlymart/go-versions/versions"
 	plugin "github.com/hashicorp/go-plugin"
@@ -95,6 +96,23 @@ func getPluginCache() (string, error) {
 	return workspace.GetPulumiPath("dynamic_tf_plugins")
 }
 
+// installLocks serializes concurrent loads of the same provider into the same
+// cache directory. Without it, two callers both see an empty cache and install
+// the same file at once: one writes the binary while the other forks/execs it,
+// and the loser fails — "text file busy" on Linux, a failed go-plugin handshake
+// on a partially written file elsewhere. It also downloads the provider once
+// per caller rather than once. The key is cache directory plus provider and
+// version, which is exactly the path being written.
+var installLocks sync.Map // map[string]*sync.Mutex
+
+func lockProviderInstall(cacheDir string, addr addrs.Provider, version versions.Version) func() {
+	key := cacheDir + "\x00" + addr.String() + "\x00" + version.String()
+	lock, _ := installLocks.LoadOrStore(key, &sync.Mutex{})
+	mu := lock.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
 func getProviderServer(
 	ctx context.Context, addr addrs.Provider, version versions.Version,
 	registryDisco *disco.Disco,
@@ -103,6 +121,11 @@ func getProviderServer(
 	if err != nil {
 		return nil, err
 	}
+
+	// Held across the exec as well as the install: a caller that execs the
+	// binary while another is still writing it fails the same way as two
+	// concurrent writers.
+	defer lockProviderInstall(cacheDir, addr, version)()
 
 	systemCache := providercache.NewDir(cacheDir)
 
