@@ -10,7 +10,7 @@ This is a diagnostic document. Where a stage is lossy or a dependency is
 awkward, it says so; where a claim could not be established from the source, it
 says that instead of guessing.
 
-> **On the line numbers.** This document carries roughly 250 of them, and they
+> **On the line numbers.** This document carries roughly 290 of them, and they
 > rot fast — a single day's changes to `pkg/state_injector.go` invalidated every
 > anchor in the S7 section, several of which then pointed at blank lines and
 > closing braces. **Treat function and identifier names as authoritative and
@@ -103,7 +103,7 @@ That second path loses three things at once:
 2. **Sensitivity.** `sensitivePathsFromTfjson` derives sensitive paths from
    `tfjson.StateResource.SensitiveValues` (`terraform-json@v0.27.1/state.go:164`)
    and `rawStateFromTfjson` sets them on the instance
-   ([pkg/generate_module_map.go:319](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/generate_module_map.go#L319)), nested leaves included.
+   ([pkg/generate_module_map.go:316](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/generate_module_map.go#L316)), nested leaves included.
 
    This matters more than it looks: the format is selected automatically
    whenever the state carries a `format_version` key, with no flag to indicate
@@ -143,7 +143,7 @@ corrupt an attribute, and no guard exists.
 
 **Redaction.** `redactSensitivePaths` ([pkg/module_map.go:1135](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L1135)) replaces each
 sensitive attribute's value with the literal string `(sensitive)`
-([:1211](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L1211)). It walks a sensitive path to **any depth** via
+([:1198](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L1198)). It walks a sensitive path to **any depth** via
 `redactAtPath` ([:1162](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L1162)), following `GetAttrStep` into objects and `IndexStep` into
 lists and maps.
 
@@ -230,13 +230,15 @@ possible without a provider. It needs **both** loaders at once:
 `ComputeInjectionState` ([pkg/raw_state_delta.go:56](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/raw_state_delta.go#L56)) then does:
 
 ```
-sch := prov.GetProviderSchema(ctx).ResourceTypes[tfType]   // :51
-ty  := sch.Block.ImpliedType()                             // :57  cty.Type
-val := ctyjson.Unmarshal(attrsJSON, ty)                    // :58  cty.Value
-props := MakeTerraformOutputs(..., schemaMap, schemaInfos)  // :110 PropertyMap
+sch := prov.GetProviderSchema(ctx).ResourceTypes[tfType]   // :64-65
+ty  := sch.Block.ImpliedType()                             // :70   cty.Type
+val := ctyjson.Unmarshal(attrsJSON, ty)                    // :71   cty.Value
+props := pulumiOutputsFromCty(ctx, val, schemaMap, schemaInfos)  // :115
+                                  // → MakeTerraformOutputs at :228, PropertyMap
 delta := RawStateComputeDelta(ctx, schemaMap, schemaInfos,
-             props, FromCtyType(stripTimeouts(ty)), FromCtyValue(val))  // :69
-version := sch.Version                                     // :76 / :84
+             props, FromCtyType(stripTimeouts(ty)), FromCtyValue(val))  // :153
+version := sch.Version                                     // returned from :143,
+                                  // :160, :184, :189, :199, :202 — one per outcome
 ```
 
 Three notes on this hop:
@@ -254,7 +256,7 @@ Three notes on this hop:
   returns a `deltaUnavailableReason` alongside it ([pkg/raw_state_delta.go:64](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/raw_state_delta.go#L64)), which
   `populateInjectionState` prints and records on the resource as
   `RawStateDeltaReason`. A panic is caught and turned into "no fields"
-  (`safeComputeInjectionState`, [pkg/module_map.go:580](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L580)), and a missing schema
+  (`safeComputeInjectionState`, [pkg/module_map.go:567](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L567)), and a missing schema
   map returns early. The digest is written either way, and a consumer can
   distinguish "needs no delta" from "computing it blew up" because
   `patch-state` names the cause per resource.
@@ -648,7 +650,7 @@ semantics cannot be probed.
 |---|---|---|
 | `tfbridge.TerraformToPulumiNameV2(tfName, schemaMap, fieldInfos)` | [pkg/schema_fields.go:93](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/schema_fields.go#L93) | Schema-aware; handles pluralization from `MaxItems`, and `info.Schema.Name` overrides |
 | `snakeToCamel` | [pkg/state_patcher.go:1661](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_patcher.go#L1661), applied recursively by `camelCaseKeys` ([:1674](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_patcher.go#L1674)) | Pure string transform, no schema |
-| `tfToPulumiField` / `pulumiToTFField` | [pkg/state_patcher.go:121](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_patcher.go#L121), [:147](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_patcher.go#L147) | A 23-entry hand-written table |
+| `tfToPulumiField` / `pulumiToTFField` | [pkg/state_patcher.go:121](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_patcher.go#L121), [:147](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_patcher.go#L147) | A 22-entry hand-written table |
 | `tfbridge.MakeTerraformOutputs` | via [pkg/raw_state_delta.go:228](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/raw_state_delta.go#L228) | The bridge's own conversion, schema-driven at every nested level |
 | `tfbridge.PulumiToTerraformName` | [pkg/state_injector.go:742](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_injector.go#L742) | The bridge's generic reverse transform, used only when no schema describes the field |
 
@@ -672,7 +674,7 @@ They disagree in predictable cases:
 - **Pluralization.** `TerraformToPulumiNameV2` turns a `MaxItems != 1` list
   attribute `ingress_rule` into `ingressRules`; `snakeToCamel` yields
   `ingressRule`. `patchResourceFields` uses `camelCaseKeys` for *nested* digest
-  values ([pkg/state_patcher.go:515](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_patcher.go#L515)), so nested list-of-object fields patched
+  values ([pkg/state_patcher.go:514](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_patcher.go#L514)), so nested list-of-object fields patched
   from the digest get unpluralized names inside a correctly-named top-level
   property.
 - **Name overrides.** `info.Schema.Name` (an explicit rename in the provider's
@@ -800,9 +802,9 @@ Two directions worth evaluating, neither traced here:
 ### 3. Sensitivity handling has three independent implementations
 
 - `redactSensitivePaths` ([pkg/module_map.go:1135](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L1135)) delegates to `redactAtPath`
-  ([:1144](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L1144)), which walks a sensitive path to any depth.
+  ([:1162](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L1162)), which walks a sensitive path to any depth.
 - The `tofu show -json` path gets its paths from the format's own
-  `sensitive_values` document ([pkg/generate_module_map.go:319](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/generate_module_map.go#L319)).
+  `sensitive_values` document ([pkg/generate_module_map.go:316](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/generate_module_map.go#L316)).
 - `BuildSensitivityMap` ([pkg/provider_schema.go:44](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/provider_schema.go#L44)) is a third, schema-driven
   implementation, reading `Sensitive` off the live provider schema. Nothing
   outside tests calls it. It is the one that could serve **both** of the above
@@ -811,8 +813,11 @@ Two directions worth evaluating, neither traced here:
   ([pkg/module_map.go:932](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L932)), recomputed at four sites
   ([:855](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L855), [pkg/import_filler.go:114](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/import_filler.go#L114), [pkg/state_patcher.go:554](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_patcher.go#L554), and
   indirectly via `RedactedAttributes` in [pkg/state_injector.go:665](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_injector.go#L665)), and only
-  the first applies dedup suffixes ([:865](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L865)). Colliding keys are therefore
-  unresolvable downstream, with only a digest-time warning.
+  the first could apply a dedup suffix ([:865](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L865)) — which is exactly why a
+  collision is a hard error instead: a suffixed key would be unresolvable at the
+  other three sites. `DiscoverSensitiveSecrets` returns an error
+  ([:897-906](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L897-L906)) and `GenerateModuleMap` propagates it
+  ([pkg/generate_module_map.go:205-207](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/generate_module_map.go#L205-L207)), so `digest tf` fails. See S2.
 - The **second placeholder is now live**, not just designed: `[secret]`, from
   `MassageSecrets` on the preview path, arrives in injected *inputs* while
   `(sensitive)` arrives in injected *outputs*, and each is resolved by a
@@ -853,8 +858,9 @@ policy, and the stricter policy is the one that produces an actionable error.
 - `conformToDelta` ([:1421](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_patcher.go#L1421)): tests only.
 - `PatchStateFromSchema` ([:1785](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_patcher.go#L1785)): tests only, and its default path is
   unreachable in production (see §2).
-- `BuildSensitivityMap`, `RedactSensitiveAttributes` (`pkg/provider_schema.go`):
-  tests only.
+- `BuildSensitivityMap` (`pkg/provider_schema.go`): **no callers at all**, not
+  even tests — only its declaration and doc comment.
+  `RedactSensitiveAttributes` (same file): tests only.
 
 **Resolved for the #22 group.** `ParsePreviewJSON`, `VerifyDeploymentIntegrity`,
 `LoadNonImportableFile`, `MapTFAttributesToPulumi` and `PulumiToTFNames` were
