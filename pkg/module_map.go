@@ -96,6 +96,18 @@ type ModuleResource struct {
 	// carry: it never echoes attribute values, only structural detail (see
 	// ComputeInjectionState).
 	RawStateDeltaReason string `json:"rawStateDeltaReason,omitempty"`
+	// InjectionStateReason explains why this resource has NO injection state at
+	// all — no PulumiOutputs, no RawStateDelta, no SchemaVersion — as distinct
+	// from having outputs but no delta, which RawStateDeltaReason covers.
+	//
+	// Without it, `PulumiOutputs == nil` means two different things that need
+	// different responses: "nobody tried" (the digest ran without the
+	// import-support probe, so there was no live provider) and "we tried and
+	// could not" (the two provider loaders disagreed, or the computation
+	// failed). The first is expected; the second means the resource will be
+	// injected from raw attribute renaming instead, losing the schema-aware
+	// conversion, and an operator can act on that.
+	InjectionStateReason string `json:"injectionStateReason,omitempty"`
 	// SchemaVersion is the Terraform resource type's schema version, read from
 	// the live provider. Written into state as __meta so that a later provider
 	// upgrade runs the right state upgraders.
@@ -481,6 +493,18 @@ func formatImportID(v interface{}) string {
 	return fmt.Sprintf("%v", v)
 }
 
+// warnInjectionState reports, once per resource, that a non-importable resource
+// will be injected without the schema-aware conversion.
+//
+// Printed at digest time because that is where the cause is visible: by the
+// time patch-state sees the sidecar, all it knows is that the fields are
+// absent. The reason travels on the resource as well, so the later command can
+// name it too.
+func warnInjectionState(mr *ModuleResource) {
+	fmt.Fprintf(os.Stderr, "Warning: no injection state for %s: %s\n",
+		mr.TerraformAddress, mr.InjectionStateReason)
+}
+
 // populateInjectionState fills mr's PulumiOutputs, RawStateDelta and
 // SchemaVersion for a resource matchResources has already flagged
 // NonImportable. attrs must already be redacted.
@@ -500,12 +524,25 @@ func populateInjectionState(
 	resourceType string,
 	attrs map[string]interface{},
 ) {
+	// Every path out of this function that leaves the injection fields empty
+	// records WHY. Without that, an under-populated digest is indistinguishable
+	// from one where there was simply nothing to compute, and the difference
+	// matters: a resource with no PulumiOutputs is injected from raw attribute
+	// renaming instead of the schema-aware conversion, which is a real
+	// downgrade an operator can act on.
 	accessor, ok := importChecker.(ProviderAccessor)
 	if !ok {
+		// Expected, not a fault: "digest tf --skip-import-check" has no probe
+		// and therefore no live provider. Recorded anyway so the reason is
+		// never simply absent.
+		mr.InjectionStateReason = "no live Terraform provider (import-support probe not run)"
 		return
 	}
 	prov, ok := accessor.Provider(ctx, providerName)
 	if !ok {
+		mr.InjectionStateReason = fmt.Sprintf(
+			"the import-support probe holds no open provider for %s", providerName)
+		warnInjectionState(mr)
 		return
 	}
 
@@ -532,18 +569,30 @@ func populateInjectionState(
 		// RawStateComputeDelta cannot resolve nested attribute names and, for
 		// a nested-block type, panics rather than erroring — so there is
 		// nothing safe to compute here. Leaving the new fields empty is the
-		// correct degradation, not an error.
+		// correct degradation, not an error — but it must be a LOUD one, since
+		// it means the two loaders disagreed about a provider that the probe
+		// itself loaded successfully.
+		mr.InjectionStateReason = fmt.Sprintf(
+			"no bridged Pulumi schema for %s, though the import-support probe loaded %s: "+
+				"the provider loaders disagree (see issue #26)", resourceType, providerName)
+		warnInjectionState(mr)
 		return
 	}
 
 	attrsJSON, err := json.Marshal(attrs)
 	if err != nil {
+		mr.InjectionStateReason = fmt.Sprintf("re-marshalling redacted attributes: %v", err)
+		warnInjectionState(mr)
 		return
 	}
 
 	outputs, delta, deltaReason, version, ok := safeComputeInjectionState(
 		ctx, prov, resourceType, attrsJSON, schemaMap, schemaInfos)
 	if !ok {
+		mr.InjectionStateReason = fmt.Sprintf(
+			"computing injection state for %s panicked or failed; the resource will be "+
+				"injected from raw attribute renaming instead", resourceType)
+		warnInjectionState(mr)
 		return
 	}
 	mr.PulumiOutputs = outputs

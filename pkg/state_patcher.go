@@ -1185,13 +1185,6 @@ func DownloadLambdaCodeToFile(ctx context.Context, functionName, arn, region, de
 	return nil
 }
 
-// patchedOutputFieldInfo tracks an output field that was modified by the patcher.
-type patchedOutputFieldInfo struct {
-	pulumiField string
-	oldValue    interface{}
-	newValue    interface{}
-}
-
 // assetFieldDeltaInfo holds info needed to inject an asset delta entry.
 type assetFieldDeltaInfo struct {
 	pulumiField string
@@ -1234,57 +1227,6 @@ func injectAssetDeltas(deltaRaw interface{}, fields []assetFieldDeltaInfo) inter
 		}
 		ps[f.pulumiField] = map[string]interface{}{
 			"asset": assetDelta,
-		}
-	}
-
-	return delta
-}
-
-// updateDeltaForPatchedOutputs updates the __pulumi_raw_state_delta when the patcher
-// changes output fields that are referenced by the delta. When an array goes from
-// empty to populated (or changes element count), the delta's element entries must
-// be updated to match, otherwise the bridge's Recover panics with
-// "rawStateRecoverNatural cannot process Object values due to map vs object confusion".
-func updateDeltaForPatchedOutputs(deltaRaw interface{}, fields []patchedOutputFieldInfo) interface{} {
-	delta, ok := deltaRaw.(map[string]interface{})
-	if !ok || delta == nil {
-		return deltaRaw
-	}
-
-	obj, ok := delta["obj"].(map[string]interface{})
-	if !ok {
-		return deltaRaw
-	}
-	ps, ok := obj["ps"].(map[string]interface{})
-	if !ok {
-		return deltaRaw
-	}
-
-	for _, f := range fields {
-		existing, inDelta := ps[f.pulumiField]
-		if !inDelta {
-			continue // field not in delta, no update needed
-		}
-
-		// Check if the existing delta entry is an array type.
-		existingMap, ok := existing.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		arrDelta, isArr := existingMap["arr"]
-		if !isArr {
-			continue
-		}
-
-		// Rebuild the array delta to match the new value's structure.
-		newArr, ok := f.newValue.([]interface{})
-		if !ok {
-			continue
-		}
-
-		newArrDelta := buildArrayDelta(arrDelta, newArr)
-		ps[f.pulumiField] = map[string]interface{}{
-			"arr": newArrDelta,
 		}
 	}
 

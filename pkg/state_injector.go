@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strconv"
 
@@ -314,7 +315,24 @@ func buildInjectedResource(
 			outputs[k] = v
 		}
 	} else {
+		// The fallback: rename raw Terraform attributes rather than use the
+		// schema-aware conversion "digest tf" would have computed. It works,
+		// but it is a downgrade — nested shapes and MaxItems=1 flattening are
+		// approximated rather than replayed — so say so, and say WHY when the
+		// digest recorded a reason.
 		outputs = MapTFAttributesToPulumi(r.Attributes, fields)
+		if r.InjectionStateReason != "" {
+			fmt.Fprintf(os.Stderr,
+				"  WARNING: %s (%s %q) injected from raw attribute renaming, not the "+
+					"schema-aware conversion: %s\n",
+				r.TerraformAddress, r.Type, r.Name, r.InjectionStateReason)
+		} else {
+			fmt.Fprintf(os.Stderr,
+				"  WARNING: %s (%s %q) injected from raw attribute renaming: the sidecar "+
+					"carries no Pulumi outputs and no reason. Re-run \"digest tf\" without "+
+					"--skip-import-check to compute them.\n",
+				r.TerraformAddress, r.Type, r.Name)
+		}
 	}
 
 	secretsResolved, err := resolveOutputSecrets(r, outputs, fields, configSecrets)

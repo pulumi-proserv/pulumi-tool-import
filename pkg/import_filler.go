@@ -91,6 +91,13 @@ type NonImportableResource struct {
 	// through to this sidecar entry so "patch-state" can report the reason
 	// downstream instead of only "digest tf" ever seeing it.
 	RawStateDeltaReason string `json:"rawStateDeltaReason,omitempty"`
+	// InjectionStateReason explains why this resource has no injection state at
+	// all. Distinct from RawStateDeltaReason, which covers having outputs but
+	// no delta. See the identical field on ModuleResource
+	// (pkg/module_map.go) for the full contract. Carried through so
+	// "patch-state" can say why a resource is being injected from raw
+	// attribute renaming rather than the schema-aware conversion.
+	InjectionStateReason string `json:"injectionStateReason,omitempty"`
 	// SchemaVersion is the Terraform resource type's schema version, read from
 	// the live provider. Written into state as __meta so that a later provider
 	// upgrade runs the right state upgraders.
@@ -275,17 +282,18 @@ func (s *fillState) assign(entry *ImportEntry, tfRes *ModuleResource) {
 	}
 	if tfRes.NonImportable {
 		s.result.NonImportable = append(s.result.NonImportable, NonImportableResource{
-			Type:                entry.Type,
-			Name:                entry.Name,
-			Parent:              entry.Parent,
-			TerraformAddress:    tfRes.TerraformAddress,
-			ID:                  tfRes.ImportID,
-			Attributes:          tfRes.Attributes,
-			RedactedAttributes:  redactedAttributeKeys(tfRes.TerraformAddress, tfRes.Attributes),
-			PulumiOutputs:       tfRes.PulumiOutputs,
-			RawStateDelta:       tfRes.RawStateDelta,
-			RawStateDeltaReason: tfRes.RawStateDeltaReason,
-			SchemaVersion:       tfRes.SchemaVersion,
+			Type:                 entry.Type,
+			Name:                 entry.Name,
+			Parent:               entry.Parent,
+			TerraformAddress:     tfRes.TerraformAddress,
+			ID:                   tfRes.ImportID,
+			Attributes:           tfRes.Attributes,
+			RedactedAttributes:   redactedAttributeKeys(tfRes.TerraformAddress, tfRes.Attributes),
+			PulumiOutputs:        tfRes.PulumiOutputs,
+			RawStateDelta:        tfRes.RawStateDelta,
+			RawStateDeltaReason:  tfRes.RawStateDeltaReason,
+			InjectionStateReason: tfRes.InjectionStateReason,
+			SchemaVersion:        tfRes.SchemaVersion,
 		})
 		s.dropped[entry] = true
 		return
