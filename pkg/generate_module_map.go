@@ -125,6 +125,15 @@ func GenerateModuleMap(ctx context.Context, tfDir, stateFilePath, outputPath, st
 
 	case StateFormatTofuShowJSON:
 		var tfjsonState tfjson.State
+		// Without this the whole "tofu show -json" entry path silently rounds
+		// every large integer before the digest is even built. tfjson.State has
+		// a custom UnmarshalJSON that runs its own decoder, so setting
+		// UseNumber on a decoder here would be ignored — this is the only hook
+		// that reaches it. Beyond 2^53 the result is a different integer that
+		// is still valid JSON, so nothing downstream can detect it: decodeAttrs
+		// cannot help, because rawStateFromTfjson has already re-marshalled a
+		// float64 by the time it runs.
+		tfjsonState.UseJSONNumber(true)
 		if err := json.Unmarshal(stateData, &tfjsonState); err != nil {
 			return fmt.Errorf("parsing tofu show JSON state: %w", err)
 		}
