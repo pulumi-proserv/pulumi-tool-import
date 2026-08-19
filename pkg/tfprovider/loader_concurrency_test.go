@@ -44,6 +44,9 @@ func testVersion(t *testing.T, s string) versions.Version {
 // failure against a half-written binary elsewhere — see
 // TestLoadProviderIsSafeForConcurrentCallers (build tag "providerload") for the
 // end-to-end reproduction against a real download.
+//
+// pkg/pathlock covers the locking itself; what is specific here is that the
+// key names the path this loader writes.
 func TestProviderInstallLockExcludesTheSamePath(t *testing.T) {
 	t.Parallel()
 
