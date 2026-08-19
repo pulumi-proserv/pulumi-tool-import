@@ -799,16 +799,18 @@ Two directions worth evaluating, neither traced here:
   the protocol schema, and it is not obvious that `MaxItems`/`Elem` survive
   that translation faithfully.
 
-### 3. Sensitivity handling has three independent implementations
+### 3. Sensitivity is walked twice, independently
 
 - `redactSensitivePaths` ([pkg/module_map.go:1135](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L1135)) delegates to `redactAtPath`
   ([:1162](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L1162)), which walks a sensitive path to any depth.
 - The `tofu show -json` path gets its paths from the format's own
   `sensitive_values` document ([pkg/generate_module_map.go:316](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/generate_module_map.go#L316)).
-- `BuildSensitivityMap` ([pkg/provider_schema.go:44](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/provider_schema.go#L44)) is a third, schema-driven
-  implementation, reading `Sensitive` off the live provider schema. Nothing
-  outside tests calls it. It is the one that could serve **both** of the above
-  from a single source, which is what [#28](https://github.com/pulumi-proserv/pulumi-tool-import/issues/28) is about.
+- Both of the above walk `AttrSensitivePaths` independently — one to redact,
+  one to discover config keys — and must agree about which attributes are
+  sensitive and what key each maps to. That duplication is
+  [#28](https://github.com/pulumi-proserv/pulumi-tool-import/issues/28). A third, schema-driven implementation
+  (`BuildSensitivityMap`) existed with no callers at all and has been deleted:
+  it read as a working alternative and was not one.
 - The digest↔config link is the pure function `flattenAddress`
   ([pkg/module_map.go:932](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L932)), recomputed at four sites
   ([:855](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L855), [pkg/import_filler.go:114](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/import_filler.go#L114), [pkg/state_patcher.go:554](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_patcher.go#L554), and
@@ -831,7 +833,7 @@ in `resolve tf` from a string match against `"(sensitive)"`,
 [pkg/import_filler.go:110](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/import_filler.go#L110)) would make the link explicit and dedup-safe. See
 [#28](https://github.com/pulumi-proserv/pulumi-tool-import/issues/28).
 
-### 4. `patch-state` can only repair what the digest kept, and only by name
+### 4. `patch-state` can only repair what the digest kept, and only by name ([#37](https://github.com/pulumi-proserv/pulumi-tool-import/issues/37))
 
 `PatchState` matches state resources to digest resources by Pulumi resource
 *name* ([pkg/state_patcher.go:819](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_patcher.go#L819), built by `BuildDigestNameMap` at [:307](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_patcher.go#L307)),
@@ -854,13 +856,9 @@ policy, and the stricter policy is the one that produces an actionable error.
 
 ### 5. Dead and half-wired code obscures which path is real
 
-- `updateDeltaForPatchedOutputs` ([pkg/state_patcher.go:1248](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_patcher.go#L1248)): no callers.
 - `conformToDelta` ([:1421](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_patcher.go#L1421)): tests only.
 - `PatchStateFromSchema` ([:1785](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_patcher.go#L1785)): tests only, and its default path is
   unreachable in production (see §2).
-- `BuildSensitivityMap` (`pkg/provider_schema.go`): **no callers at all**, not
-  even tests — only its declaration and doc comment.
-  `RedactSensitiveAttributes` (same file): tests only.
 
 **Resolved for the #22 group.** `ParsePreviewJSON`, `VerifyDeploymentIntegrity`,
 `LoadNonImportableFile`, `MapTFAttributesToPulumi` and `PulumiToTFNames` were
@@ -871,7 +869,7 @@ What remains is the first four, and `PatchStateFromSchema` in particular still
 reads like a supported alternative to the curated fields file when it cannot
 currently work.
 
-### 6. The digest is the only inter-command contract, and it is untyped at the boundaries
+### 6. The digest is the only inter-command contract, and it is untyped at the boundaries ([#38](https://github.com/pulumi-proserv/pulumi-tool-import/issues/38))
 
 `ModuleMap` is decoded into a struct whose `Attributes` is
 `map[string]interface{}`. There is no schema version on the file, no checksum,
@@ -891,12 +889,14 @@ property names come from whatever version `RecommendPulumiProvider` picks today.
 recorded, and `resolve tf` uses it well ([cmd/import_id_match.go:174](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/cmd/import_id_match.go#L174)). The
 same treatment for provider versions and for "injection state was computed /
 was attempted and failed" would let consumers tell absence from failure —
-today `PulumiOutputs == nil` means both. The delta side does distinguish them:
+`PulumiOutputs == nil` now carries an `InjectionStateReason` where one is
+known, so absence and failure are distinguishable; provider versions still are
+not. The delta side distinguishes them too:
 `InjectResult` carries `DeltaAttached` alongside three separate absence causes
 ([pkg/state_injector.go:78-92](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_injector.go#L78-L92)), and `patch-state` names the resource behind
 each. `PulumiOutputs` has no equivalent.
 
-### 7. Verification is structural, except in stack mode
+### 7. Verification is structural, except in stack mode ([#39](https://github.com/pulumi-proserv/pulumi-tool-import/issues/39))
 
 **Partly fixed on this branch.** `validateRecover`
 ([pkg/state_patcher.go:1625](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_patcher.go#L1625)) checks delta↔outputs consistency;
