@@ -77,6 +77,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Two same-named resources under different components are legal.
 - `resolve tf` no longer mis-parses a resource name containing `::`, such as a
   `for_each` key derived from an ARN.
+- **`tofu show -json` state silently rounded every integer above 2^53.**
+  `tfjson.State` has a custom unmarshaller running its own decoder, so setting
+  `UseNumber` at the call site had no effect; `State.UseJSONNumber(true)` is the
+  only hook that reaches it. The value became a different integer that is still
+  valid JSON, so nothing downstream could detect it (#27).
+- **A resource could be injected without its schema-aware conversion, silently.**
+  `digest tf` computes Pulumi outputs and a raw state delta using a live
+  provider, but five separate paths could leave those fields empty — most
+  seriously when the two provider loaders disagree, so the import-support probe
+  flags a resource non-importable using a provider that the Pulumi bridge then
+  fails to resolve. Each path now records why, warns at digest time, and carries
+  the reason into the sidecar, so `patch-state` says which resources fell back
+  to raw attribute renaming and for what reason (#26).
 
 ### Changed
 
@@ -88,6 +101,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   like one number.
 - `make vet` and `make lint` now also check the `e2e`-tagged build, which no
   target or CI job previously compiled.
+
+### Removed
+
+- The unused schema-driven sensitivity subsystem (`BuildSensitivityMap` and
+  everything behind it). It had no callers at all, tests included, and was
+  repeatedly cited as the mechanism that would fix the nested-path and
+  `tofu show -json` redaction gaps — both of which are now closed in the
+  redaction path that actually runs. Keeping it meant 249 lines that read as a
+  working alternative and were not one.
 
 ## [0.2.0] - 2026-08-12
 

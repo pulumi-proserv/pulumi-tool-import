@@ -55,6 +55,29 @@ line-level trace of that computation and how the pieces move between commands,
 see [docs/pipeline-schema-and-state.md](pipeline-schema-and-state.md) (the
 non-importable enrichment section).
 
+### When that computation does not happen
+
+It needs two things at once: the live Terraform provider, for the resource's
+cty type, and the Pulumi bridge's schema, for property naming. Either can be
+missing, and the resource is still injectable without them — `patch-state`
+falls back to renaming the raw Terraform attributes instead. That fallback
+approximates nested shapes and `MaxItems=1` flattening rather than replaying
+what the provider would do, so it is a real downgrade.
+
+`digest tf` warns when it happens and records the reason, and `patch-state`
+repeats it per resource when it takes the fallback:
+
+```
+Warning: no injection state for aws_iot_certificate.cert: no bridged Pulumi
+schema for aws_iot_certificate, though the import-support probe loaded
+registry.terraform.io/hashicorp/aws: the provider loaders disagree (see issue #26)
+```
+
+The common and expected case is `digest tf --skip-import-check`: with no probe
+there is no live provider, so nothing is computed and nothing is flagged
+non-importable either. The case worth acting on is the one above — the probe
+loaded a provider that the Pulumi bridge could not resolve.
+
 ## What each command does
 
 `digest tf` sets `"nonImportable": true` on the flagged resources in
@@ -133,6 +156,36 @@ suitable.
 
 Stack mode needs a runnable program and live credentials, because it runs
 `pulumi preview` itself, twice.
+
+### Reading the summary
+
+```
+  Deltas validated (imported): 2
+  Injected:           11 resources
+  Secrets resolved:   15
+  Deltas attached (injected):  11 of 11
+```
+
+The two delta lines count **different resources with different producers**, and
+are labelled that way because an unqualified pair reads as one number:
+
+- *validated (imported)* — resources brought in by `pulumi import`. The bridge
+  wrote their raw state deltas itself during the import, and `patch-state`
+  checked that its own patches still apply cleanly to them.
+- *attached (injected)* — the non-importable resources this tool wrote into
+  state. Nothing else would produce a delta for them, since they never reach the
+  provider, so `digest tf` computes it.
+
+**`X of Y` should be `Y of Y`.** A resource injected without a delta is not an
+error and will still preview as `same` — it falls back to the bridge's older
+state conversion — so nothing else will tell you. Any shortfall is reported
+with the resource named and one of three causes: the sidecar carried no delta,
+the delta embedded an unresolvable `(sensitive)` placeholder, or it failed to
+apply to the resource's outputs.
+
+The delta matters beyond the migration itself: the bridge uses it to reconstruct
+Terraform state on **every** later `preview` and `up` for that resource, not
+only across provider upgrades.
 
 ### File mode — offline; you run the pulumi steps
 
