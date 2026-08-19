@@ -36,6 +36,29 @@ For general migration guidance, see the
 
 ## Installation and invocation
 
+Install the plugin from this repository's GitHub releases:
+
+```bash
+# latest release
+pulumi plugin install tool import \
+  --server github://api.github.com/pulumi-proserv/pulumi-tool-import
+
+# a specific version
+pulumi plugin install tool import v0.2.0 \
+  --server github://api.github.com/pulumi-proserv/pulumi-tool-import
+```
+
+The `github://api.github.com/<owner>/<repo>` form matters: it tells Pulumi to
+resolve the release asset through the GitHub API. A plain
+`https://github.com/<owner>/<repo>` server is treated as a raw file host, and
+the download 404s because release assets live under `/releases/download/<tag>/`.
+
+Check what is installed with `pulumi plugin ls`, or:
+
+```bash
+pulumi plugin run import -- version
+```
+
 Every command runs through the Pulumi plugin runner:
 
 ```bash
@@ -44,6 +67,9 @@ pulumi plugin run import -- <command> [flags]
 # e.g.
 pulumi plugin run import -- digest tf --help
 ```
+
+To build from source instead: `go build -o bin/pulumi-tool-import .` and call
+the binary directly.
 
 The plugin reads cloud credentials from the environment (for the AWS lookups in
 `digest cfn` and `patch-state`). Wrap the command with `pulumi env run <esc-env> --`

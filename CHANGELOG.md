@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `version` command, printing the version stamped into the binary at release
+  time. Previously `pkg/version.Version` was set via ldflags but no command
+  surfaced it, so an installed plugin could not identify itself.
+- Install instructions in the README and in the skills that use the tool. The
+  plugin installs from GitHub releases with
+  `pulumi plugin install tool import --server github://api.github.com/pulumi-proserv/pulumi-tool-import`
+  (omit the version for the latest release). The `github://` server form is
+  required; a plain `https://github.com/...` server 404s because Pulumi then
+  looks for the archive at the repo root rather than under
+  `/releases/download/<tag>/`.
 - `patch-state tf --non-importable <sidecar>` writes resources that cannot be
   imported into the stack's state, closing the loop opened in v0.2.0 when
   `resolve tf` began detecting them (#22).

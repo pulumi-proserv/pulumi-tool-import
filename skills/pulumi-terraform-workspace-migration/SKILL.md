@@ -16,10 +16,23 @@ program code, then import and drive each node to zero diff.
 ## Prerequisites
 
 - `pulumi` CLI, with ESC access if the org uses it.
-- **`pulumi-tool-import`** — invoke as
-  `pulumi plugin run import -- <cmd>`, or build from the repo
-  (`go build -o bin/pulumi-tool-import .`) and call the binary
-  directly. Provides `tf-digest`, `import-id-match`, `patch-state`, `set-secrets`.
+- **`pulumi-tool-import`** — install it from the repo's GitHub releases, then
+  invoke as `pulumi plugin run import -- <cmd>`:
+
+  ```bash
+  pulumi plugin install tool import \
+    --server github://api.github.com/pulumi-proserv/pulumi-tool-import
+  ```
+
+  With no version it installs the latest release; append a version (e.g.
+  `tool import v0.2.0`) to pin one. The `github://api.github.com/<owner>/<repo>`
+  form is required — a plain `https://github.com/...` server 404s, because
+  Pulumi then looks for the archive at the repo root rather than under
+  `/releases/download/<tag>/`. Confirm with `pulumi plugin run import -- version`.
+
+  Alternatively build from the repo (`go build -o bin/pulumi-tool-import .`) and
+  call the binary directly. Provides `tf-digest`, `import-id-match`,
+  `patch-state`, `set-secrets`.
 - `pulumi-linter` (`pulumi plugin install tool linter`), optional but used in the
   final checklist.
 - Terraform state — a local `.tfstate` **or** remote backend credentials
