@@ -24,21 +24,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestLoadProviderIsSafeForConcurrentCallers is the end-to-end reproduction of
-// the install/exec race: several callers load one provider into an empty cache
-// directory, which is what a package of t.Parallel() tests does on a cold
-// cache. Reverting the lock in getProviderServer fails it.
-//
-// Run with: go test -tags providerload ./pkg/tfprovider/
-//
-// It is tagged rather than run by default because it downloads the aws
-// provider (~650MB) into a temporary directory, deliberately bypassing the
-// shared cache. The size is not incidental: the same test against
-// hashicorp/random (~17MB) passed even without the lock, because the window
-// between writing the binary and exec-ing it is too narrow to lose reliably.
 func TestLoadProviderIsSafeForConcurrentCallers(t *testing.T) {
-	// An empty cache directory is the whole point: a warm cache takes the
-	// early-return path in getProviderServer and never races.
 	t.Setenv(envPluginCache, t.TempDir())
 
 	const callers = 4

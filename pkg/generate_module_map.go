@@ -125,14 +125,6 @@ func GenerateModuleMap(ctx context.Context, tfDir, stateFilePath, outputPath, st
 
 	case StateFormatTofuShowJSON:
 		var tfjsonState tfjson.State
-		// Without this the whole "tofu show -json" entry path silently rounds
-		// every large integer before the digest is even built. tfjson.State has
-		// a custom UnmarshalJSON that runs its own decoder, so setting
-		// UseNumber on a decoder here would be ignored — this is the only hook
-		// that reaches it. Beyond 2^53 the result is a different integer that
-		// is still valid JSON, so nothing downstream can detect it: decodeAttrs
-		// cannot help, because rawStateFromTfjson has already re-marshalled a
-		// float64 by the time it runs.
 		tfjsonState.UseJSONNumber(true)
 		if err := json.Unmarshal(stateData, &tfjsonState); err != nil {
 			return fmt.Errorf("parsing tofu show JSON state: %w", err)
@@ -312,16 +304,7 @@ func rawStateFromTfjson(tfjsonState *tfjson.State) *states.State {
 		module.SetResourceInstanceCurrent(
 			addrs.ResourceInstance{Resource: resAddr, Key: addrs.NoKey},
 			&states.ResourceInstanceObjectSrc{
-				AttrsJSON: attrsJSON,
-				// Without this the whole sensitivity model is inert for this
-				// state format, and the format is selected AUTOMATICALLY — a
-				// "format_version" key is all DetectStateFormatBytes needs, so
-				// an operator passing "tofu show -json" output gets no
-				// redaction and no flag ever mentions it. redactSensitivePaths
-				// and DiscoverSensitiveSecrets both read AttrSensitivePaths, so
-				// leaving it empty meant plaintext secrets in the digest, and
-				// on this branch that flows on into PulumiOutputs and into the
-				// injected resource's state outputs.
+				AttrsJSON:          attrsJSON,
 				AttrSensitivePaths: sensitivePathsFromTfjson(r.SensitiveValues),
 			},
 			providerConfig,
@@ -334,16 +317,6 @@ func rawStateFromTfjson(tfjsonState *tfjson.State) *states.State {
 	return state
 }
 
-// sensitivePathsFromTfjson converts a "tofu show -json" resource's
-// "sensitive_values" document into the cty paths the rest of this package
-// reads.
-//
-// The document mirrors the attribute structure with `true` at every sensitive
-// leaf — {"password": true, "user": [{"password": true}]} — so a walk of it
-// yields exactly the paths OpenTofu would have recorded in raw state. Nested
-// paths are emitted as well as top-level ones; redactSensitivePaths handles
-// both, and a nested secret with no stack config key fails loudly at injection
-// rather than leaking.
 func sensitivePathsFromTfjson(raw json.RawMessage) []cty.PathValueMarks {
 	if len(raw) == 0 {
 		return nil
@@ -357,17 +330,12 @@ func sensitivePathsFromTfjson(raw json.RawMessage) []cty.PathValueMarks {
 	return paths
 }
 
-// walkSensitiveValues appends a path for every `true` leaf in a
-// "sensitive_values" document.
 func walkSensitiveValues(node interface{}, prefix cty.Path, out *[]cty.PathValueMarks) {
 	switch v := node.(type) {
 	case bool:
 		if !v || len(prefix) == 0 {
 			return
 		}
-		// The path is copied: cty.Path is a slice, and append below reuses its
-		// backing array, so every recorded path would otherwise alias the last
-		// one written.
 		p := make(cty.Path, len(prefix))
 		copy(p, prefix)
 		*out = append(*out, cty.PathValueMarks{

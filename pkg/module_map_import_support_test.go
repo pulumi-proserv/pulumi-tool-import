@@ -123,9 +123,6 @@ func TestBuildModuleMapRecordsThatTheCheckWasSkipped(t *testing.T) {
 	assert.False(t, mm.ImportSupportChecked)
 }
 
-// checkerWithProvider adds ProviderAccessor to stubChecker, so tests can
-// exercise matchResources' non-importable state computation without needing
-// a real importsupport.Prober.
 type checkerWithProvider struct {
 	*stubChecker
 	prov tfprovider.Provider
@@ -135,15 +132,6 @@ func (c *checkerWithProvider) Provider(context.Context, string) (tfprovider.Prov
 	return c.prov, true
 }
 
-// A provider that answers Check is not enough on its own: matchResources
-// also needs the Pulumi-bridged mock schema (pulumiProviders) to compute a
-// nested-block delta, and that map can legitimately have no entry for a
-// provider the checker loaded just fine (they are two different loaders with
-// different failure modes). Without a schema there is nothing safe to
-// compute — the fix is to skip, not to hand tfbridge a nil SchemaMap and let
-// it panic. This exercises exactly that path end-to-end through
-// BuildModuleMap/matchResources/populateInjectionState, with pulumiProviders
-// left nil to force it.
 func TestBuildModuleMapSkipsInjectionStateWithoutBridgedSchema(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -168,11 +156,6 @@ func TestBuildModuleMapSkipsInjectionStateWithoutBridgedSchema(t *testing.T) {
 		prov: prov,
 	}
 
-	// pulumiProviders is nil: no bridged schema is available for
-	// populateInjectionState to use, so it must degrade to leaving the new
-	// fields empty rather than passing a nil SchemaMap into
-	// ComputeInjectionState (which panics for nested-block types) or, worse,
-	// crashing the whole digest.
 	require.NotPanics(t, func() {
 		mm, err := BuildModuleMap(ctx, config, nil, rawState, nil, "test-stack", "test-project", checker)
 		require.NoError(t, err)
@@ -187,8 +170,6 @@ func TestBuildModuleMapSkipsInjectionStateWithoutBridgedSchema(t *testing.T) {
 	})
 }
 
-// With a bridged schema available, matchResources populates the new fields
-// for a resource it flags non-importable, end to end through BuildModuleMap.
 func TestBuildModuleMapPopulatesInjectionStateWithBridgedSchema(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

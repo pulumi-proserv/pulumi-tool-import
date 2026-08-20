@@ -546,20 +546,6 @@ func TestDiscoverSensitiveSecrets_MarksEntriesAsSecret(t *testing.T) {
 	assert.True(t, entries[0].Secret, "entries from DiscoverSensitiveSecrets should have Secret=true")
 }
 
-// TestDiscoverSensitiveSecrets_NullAttributeNotRedacted reproduces the
-// aws_iot_certificate.ca_pem bug: a resource with one sensitive attribute
-// AWS populated (certificate_pem) and one it left null (ca_pem), both marked
-// sensitive by the provider schema and recorded in AttrSensitivePaths.
-//
-// Before the fix, redactSensitivePaths turned the null ca_pem into the
-// literal "(sensitive)" placeholder even though DiscoverSensitiveSecrets —
-// walking the very same AttrsJSON — skips nil values and never writes a
-// stack config entry for it. redactedAttributeKeys then recorded a
-// redactedAttributes entry pointing at that never-written config key, which
-// is exactly what makes "patch-state --non-importable" hard-fail: it tries
-// to resolve a config key that does not exist. This test asserts both
-// halves of that failure mode are gone: no placeholder for the null
-// attribute, and no dangling redactedAttributes entry for it.
 func TestDiscoverSensitiveSecrets_NullAttributeNotRedacted(t *testing.T) {
 	t.Parallel()
 
@@ -571,9 +557,6 @@ func TestDiscoverSensitiveSecrets_NullAttributeNotRedacted(t *testing.T) {
 		{Path: cty.GetAttrPath("certificate_pem"), Marks: cty.NewValueMarks("sensitive")},
 	}
 
-	// Build the config side of the pipeline exactly as generate_module_map.go
-	// does: DiscoverSensitiveSecrets walks state and decides what actually
-	// gets written to stack config.
 	state := states.NewState()
 	rootModule := state.RootModule()
 	rootModule.SetResourceInstanceCurrent(
@@ -600,25 +583,18 @@ func TestDiscoverSensitiveSecrets_NullAttributeNotRedacted(t *testing.T) {
 	require.Len(t, configEntries, 1, "only the populated attribute should produce a config entry")
 	assert.Equal(t, "cert_certificate_pem", configEntries[0].ConfigKey)
 
-	// Build the digest side exactly as BuildModuleMap does: decode the same
-	// AttrsJSON, then redact using the same AttrSensitivePaths.
 	attrs, err := decodeAttrs(attrsJSON)
 	require.NoError(t, err)
 	redactSensitivePaths(attrs, sensitivePaths)
 
-	// Half 1: no "(sensitive)" placeholder for the null attribute.
 	assert.Nil(t, attrs["ca_pem"], "null sensitive attribute must remain null in the digest, not become the redaction placeholder")
 	assert.Equal(t, "(sensitive)", attrs["certificate_pem"], "populated sensitive attribute must still be redacted")
 
-	// Half 2: no redactedAttributes entry pointing at a config key that was
-	// never written.
 	redacted := redactedAttributeKeys(address, attrs)
 	assert.NotContains(t, redacted, "ca_pem",
 		"must not record a redactedAttributes entry for a null attribute; DiscoverSensitiveSecrets never wrote a config key for it")
 	require.Contains(t, redacted, "certificate_pem")
 
-	// The redactedAttributes entry that does exist must point at a config
-	// key DiscoverSensitiveSecrets actually created.
 	configKeys := make(map[string]bool, len(configEntries))
 	for _, e := range configEntries {
 		configKeys[e.ConfigKey] = true
@@ -772,7 +748,6 @@ func TestRawStateFromTfjson_DataSources(t *testing.T) {
 	require.NotNil(t, managedRes, "expected aws_s3_bucket.example in root module")
 }
 
-// sensitiveResource is a helper for the sensitivity tests below.
 func sensitiveResource(m *states.Module, typ, name, attrsJSON string, paths []cty.PathValueMarks) {
 	m.SetResourceInstanceCurrent(
 		addrs.ResourceInstance{
@@ -790,11 +765,6 @@ func sensitiveResource(m *states.Module, typ, name, attrsJSON string, paths []ct
 	)
 }
 
-// TestRedactSensitivePaths_NestedPathIsRedacted covers the depth gap. OpenTofu
-// records nested sensitive paths — a NestingSet block with a sensitive
-// attribute (aws_mq_broker's user[].password) yields a length-3 path — and
-// skipping them left plaintext in the digest, which on this branch flows into
-// PulumiOutputs and into the injected resource's state outputs unmarked.
 func TestRedactSensitivePaths_NestedPathIsRedacted(t *testing.T) {
 	t.Parallel()
 
@@ -819,11 +789,6 @@ func TestRedactSensitivePaths_NestedPathIsRedacted(t *testing.T) {
 	assert.Equal(t, "b", attrs["broker_name"])
 }
 
-// TestRedactSensitivePaths_UnresolvableIndexRedactsEveryElement pins the
-// direction the ambiguity is resolved. A SET index is the element value, not an
-// ordinal, so it cannot address a slot in a decoded JSON array — over-redacting
-// costs a placeholder the operator must supply, under-redacting writes a secret
-// into state.
 func TestRedactSensitivePaths_UnresolvableIndexRedactsEveryElement(t *testing.T) {
 	t.Parallel()
 
@@ -836,7 +801,6 @@ func TestRedactSensitivePaths_UnresolvableIndexRedactsEveryElement(t *testing.T)
 	redactSensitivePaths(attrs, []cty.PathValueMarks{{
 		Path: cty.Path{
 			cty.GetAttrStep{Name: "user"},
-			// A set index: the element value rather than an ordinal.
 			cty.IndexStep{Key: cty.ObjectVal(map[string]cty.Value{"password": cty.StringVal("A")})},
 			cty.GetAttrStep{Name: "password"},
 		},
@@ -849,11 +813,6 @@ func TestRedactSensitivePaths_UnresolvableIndexRedactsEveryElement(t *testing.T)
 	}
 }
 
-// TestDiscoverSensitiveSecrets_LargeIntegerKeepsItsDigits guards the config
-// value against the float64 round trip. The value is stringified with %v and
-// written into stack config, and injection later resolves that key and writes
-// it into state as the resource's real secret — so a plain decode turned a
-// sensitive 1234567890123456789 into "1.2345678901234568e+18" there.
 func TestDiscoverSensitiveSecrets_LargeIntegerKeepsItsDigits(t *testing.T) {
 	t.Parallel()
 
@@ -870,19 +829,11 @@ func TestDiscoverSensitiveSecrets_LargeIntegerKeepsItsDigits(t *testing.T) {
 	assert.Equal(t, "1234567890123456789", secrets[0].Value)
 }
 
-// TestDiscoverSensitiveSecrets_CollisionIsAnError pins the replacement for the
-// old _2 suffixing. The suffixed key was written to config but nothing could
-// read it back: the sidecar records the config key as a bare
-// flattenAddress(address, attribute), so both colliding resources pointed at
-// the un-suffixed key and the second silently resolved to the FIRST one's
-// secret — a real secret written into the wrong resource's state.
 func TestDiscoverSensitiveSecrets_CollisionIsAnError(t *testing.T) {
 	t.Parallel()
 
 	state := states.NewState()
 	root := state.RootModule()
-	// flattenAddress drops the resource type, so two resources named "this"
-	// collide on "this_password".
 	sensitiveResource(root, "aws_db_instance", "this", `{"id":"1","password":"SECRET-A"}`,
 		[]cty.PathValueMarks{{Path: cty.GetAttrPath("password"), Marks: cty.NewValueMarks("sensitive")}})
 	sensitiveResource(root, "aws_rds_cluster", "this", `{"id":"2","password":"SECRET-B"}`,
@@ -893,10 +844,6 @@ func TestDiscoverSensitiveSecrets_CollisionIsAnError(t *testing.T) {
 	assert.Contains(t, err.Error(), "collision")
 }
 
-// TestSensitivePathsFromTfjson covers the state format that had NO redaction at
-// all. It is selected automatically — a "format_version" key is all
-// DetectStateFormatBytes needs — so an operator passing "tofu show -json"
-// output got plaintext secrets in the digest with nothing to indicate it.
 func TestSensitivePathsFromTfjson(t *testing.T) {
 	t.Parallel()
 

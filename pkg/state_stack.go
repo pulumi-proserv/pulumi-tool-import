@@ -25,15 +25,12 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
 )
 
-// StackSession wraps the Automation API calls injection needs: export the
-// current deployment, import a rewritten one, and preview.
 type StackSession struct {
 	stack      auto.Stack
 	projectDir string
 	stackName  string
 }
 
-// NewStackSession selects an existing stack in the given project directory.
 func NewStackSession(ctx context.Context, projectDir, stackName string) (*StackSession, error) {
 	ws, err := auto.NewLocalWorkspace(ctx, auto.WorkDir(projectDir))
 	if err != nil {
@@ -46,15 +43,6 @@ func NewStackSession(ctx context.Context, projectDir, stackName string) (*StackS
 	return &StackSession{stack: s, projectDir: projectDir, stackName: stackName}, nil
 }
 
-// Export returns the stack's current deployment in the same shape
-// "pulumi stack export" writes: the full {"version":…,"deployment":{…}} envelope.
-//
-// auto.Stack.Export returns an apitype.UntypedDeployment whose Deployment field
-// is only the inner object, so it must be re-marshalled whole. Returning
-// dep.Deployment alone would fail every consumer here — PatchState,
-// InjectNonImportable and VerifyDeploymentIntegrity all read the envelope — with
-// a misleading "state missing deployment". Marshalling the struct also preserves
-// Version and Features, which Import needs back.
 func (s *StackSession) Export(ctx context.Context) ([]byte, error) {
 	dep, err := s.stack.Export(ctx)
 	if err != nil {
@@ -67,7 +55,6 @@ func (s *StackSession) Export(ctx context.Context) ([]byte, error) {
 	return data, nil
 }
 
-// Import replaces the stack's deployment.
 func (s *StackSession) Import(ctx context.Context, state []byte) error {
 	var untyped apitype.UntypedDeployment
 	if err := json.Unmarshal(state, &untyped); err != nil {
@@ -79,12 +66,6 @@ func (s *StackSession) Import(ctx context.Context, state []byte) error {
 	return nil
 }
 
-// PreviewJSON runs "pulumi preview --json" and parses the result.
-//
-// auto.Stack.Preview cannot be used: it tails an --event-log stream whose
-// StepEventStateMetadata carries no dependency edges, and optpreview has no JSON
-// option. Running the CLI through the workspace's own PulumiCommand keeps the
-// binary, working directory, and environment the Automation API resolved.
 func (s *StackSession) PreviewJSON(ctx context.Context) (*PreviewDigest, error) {
 	stdout, stderr, code, err := s.stack.Workspace().PulumiCommand().Run(
 		ctx, s.projectDir, nil, nil, nil, nil, previewJSONArgs(s.stackName)...)
@@ -94,28 +75,10 @@ func (s *StackSession) PreviewJSON(ctx context.Context) (*PreviewDigest, error) 
 	return ParsePreviewJSON([]byte(stdout))
 }
 
-// previewJSONArgs builds the CLI args for "pulumi preview --json".
-//
-// --show-sames is required, not cosmetic: shouldShow (pulumi/pkg/v3's
-// backend/display/display.go) returns opts.ShowSameResources for OpSame, and
-// cmd/pulumi's preview command (operations/preview.go) defaults
-// --show-sames to false with nothing forcing it under --json. Without this
-// flag "same" steps are absent from preview.json entirely — every URN
-// CheckInjectedOps looks up then misses, and a correct injection is reported
-// as unverified and reverted. Do not remove this flag as "redundant": it is
-// the only thing making "same" steps appear at all. Split out as its own
-// function so a test can assert on it without shelling out to the real CLI.
 func previewJSONArgs(stackName string) []string {
 	return []string{"preview", "--json", "--show-sames", "--stack", stackName}
 }
 
-// CheckInjectedOps reports every injected resource the preview does not show as
-// unchanged. An empty result means the injection verified.
-//
-// "pulumi preview" reporting zero operations is the only check that validates
-// injected values. "pulumi refresh" is not: for these resource types Read either
-// sets no attributes or re-derives them from the resource ID, so refresh reports
-// "unchanged" even when the values in state are wrong.
 func CheckInjectedOps(preview *PreviewDigest, injectedURNs []string) []string {
 	ops := preview.OpsByURN()
 	reasons := preview.DiffReasonsByURN()
@@ -135,17 +98,8 @@ func CheckInjectedOps(preview *PreviewDigest, injectedURNs []string) []string {
 	return problems
 }
 
-// maxDiffReasonsShown caps how many property keys formatDiffReasons lists
-// inline, so one resource with a huge diff cannot flood the terminal.
 const maxDiffReasonsShown = 8
 
-// formatDiffReasons renders the property keys behind an unexpected preview
-// op as a trailing parenthetical for a one-line failure message, e.g.
-// " (differs on: routeTableId, vpnGatewayId)". When the preview reported an
-// op but no per-property reasons for it, that absence is itself a clue —
-// it points at metadata (e.g. resource options, provider version) rather
-// than a property value — so it is called out explicitly instead of being
-// rendered as an empty "()".
 func formatDiffReasons(reasons []string) string {
 	if len(reasons) == 0 {
 		return " (no property-level diff reported)"
@@ -159,12 +113,6 @@ func formatDiffReasons(reasons []string) string {
 	return fmt.Sprintf(" (differs on: %s%s)", strings.Join(shown, ", "), more)
 }
 
-// CheckPreviewClean reports every step of the preview whose operation is not
-// "same". It is a diagnostic — how many operations remain outstanding — not a
-// pass/fail gate: patch-state runs iteratively against a stack mid-migration,
-// which nearly always still has diffs after a single patch pass, so demanding
-// zero remaining operations would revert almost every legitimate run. Gating
-// is CheckInjectionVerification's job.
 func CheckPreviewClean(preview *PreviewDigest) []string {
 	var problems []string
 	for _, step := range preview.Steps {
@@ -176,22 +124,6 @@ func CheckPreviewClean(preview *PreviewDigest) []string {
 	return problems
 }
 
-// CheckInjectionVerification is the verification gate for a stack-mode run.
-// It compares the preview taken before any mutation (baseline) against the
-// preview taken after import (verify), per the design's Verification section:
-// injected URNs must all settle to "same", and the mutation must not make
-// anything else worse.
-//
-// "Worse" is judged by comparison, not an absolute bar, because patch-state is
-// run iteratively against a stack mid-migration — that is why the operator is
-// running it — so the preview taken before a patch-only run almost always has
-// outstanding diffs already. Requiring a perfectly clean preview after every
-// pass would revert nearly every legitimate run. What must not happen is
-// regression: a resource that reported "same" (or was entirely absent) in the
-// baseline must not turn non-"same" afterward, and the total count of
-// non-"same" steps outside the injected set must not increase.
-//
-// An empty result means the mutation verified and should be kept.
 func CheckInjectionVerification(baseline, verify *PreviewDigest, injectedURNs []string) []string {
 	problems := CheckInjectedOps(verify, injectedURNs)
 
@@ -221,23 +153,10 @@ func CheckInjectionVerification(baseline, verify *PreviewDigest, injectedURNs []
 		verifyNonSame++
 		baseOp, ok := baseOps[urn]
 		if !ok || baseOp == "same" {
-			// Named with the properties behind the diff, the same as
-			// CheckInjectedOps does for injected resources. Without them a
-			// failure here reports only a URN, which is not enough to act on:
-			// the e2e run of 2026-08-15 hit exactly this on a patched Lambda
-			// and the cause could not be recovered from the log afterwards.
 			newlyDirty = append(newlyDirty, fmt.Sprintf(
 				"%s reports %q%s", urn, op, formatDiffReasons(verifyReasons[urn])))
 			continue
 		}
-		// Already non-"same" before the run, so neither check above fires and
-		// the aggregate count below cannot see it either — the resource is one
-		// of baseNonSame AND one of verifyNonSame, so the totals match. But an
-		// operation can get WORSE while staying non-"same": many not_read
-		// fields are ForceNew, so a wrongly patched value turns "update" into
-		// "replace", and the next "pulumi up" then destroys and recreates a
-		// live resource. Comparing severity is what makes "must not make
-		// things worse" mean the operation as well as the count.
 		if opGotWorse(baseOp, op) {
 			escalated = append(escalated, fmt.Sprintf(
 				"%s escalated from %q to %q%s", urn, baseOp, op,
@@ -266,14 +185,6 @@ func CheckInjectionVerification(baseline, verify *PreviewDigest, injectedURNs []
 	return problems
 }
 
-// opSeverity ranks preview operations by how much of the live resource they
-// destroy, so "must not make things worse" can be judged on the operation and
-// not only on how many resources report one.
-//
-// The ranking is what matters, not the absolute numbers: "same" is no change,
-// an update mutates in place, a create means the resource is missing from
-// state entirely, and the replace/delete family destroys something that
-// exists.
 var opSeverity = map[string]int{
 	"same":    0,
 	"refresh": 0,
@@ -294,14 +205,6 @@ var opSeverity = map[string]int{
 	"remove-pending-replace": 4,
 }
 
-// opGotWorse reports whether a resource's operation became more destructive
-// between the baseline and the verifying preview.
-//
-// An operation this table does not know is reported rather than assumed
-// benign: guessing wrong in that direction keeps a stack whose verification
-// silently failed, while guessing wrong the other way costs one revert of a
-// run the operator can repeat. The engine's op vocabulary can grow, so an
-// unrecognised value is a reason to stop, not to continue.
 func opGotWorse(before, after string) bool {
 	if before == after {
 		return false

@@ -266,13 +266,6 @@ func TestResolveProperties_FnSelect(t *testing.T) {
 	require.Equal(t, "<unresolved-intrinsic:Fn::Select>", got["Unres"])
 }
 
-// TestToIndex_JSONNumber covers the case a UseNumber-decoded digest (see
-// cmd/patch_state_cfn.go and cmd/patch_state_tf.go) sends into toIndex: an
-// Fn::Select index arriving as json.Number rather than float64. Before
-// toIndex had this case, a json.Number index fell through to (0, false) —
-// not a wrong branch, since Go type switches match concrete types, but it
-// did make a resolvable index fail to resolve. This is a robustness fix, not
-// a correctness-under-silent-failure fix.
 func TestToIndex_JSONNumber(t *testing.T) {
 	t.Parallel()
 	i, ok := toIndex(json.Number("2"))

@@ -22,13 +22,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestDigestPreservesLargeIntegers guards the whole chain that ends in Pulumi
-// state. A float64 round trip turns an AWS account ID or a snapshot ID into
-// scientific notation, which Pulumi's state parser rejects.
 func TestDigestPreservesLargeIntegers(t *testing.T) {
 	t.Parallel()
 
-	// A 19-digit ID, beyond float64's exact integer range.
 	attrsJSON := []byte(`{"id":1234567890123456789,"owner_id":52848974346}`)
 
 	attrs, err := decodeAttrs(attrsJSON)
@@ -38,7 +34,5 @@ func TestDigestPreservesLargeIntegers(t *testing.T) {
 	require.True(t, ok, "numbers must decode as json.Number, got %T", attrs["id"])
 	assert.Equal(t, "1234567890123456789", id.String())
 
-	// ImportID is built with %v; json.Number is a string type, so this must
-	// print the original digits rather than 1.2345678901234568e+18.
 	assert.Equal(t, "1234567890123456789", formatImportID(attrs["id"]))
 }

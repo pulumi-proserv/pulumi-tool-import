@@ -32,69 +32,17 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/vpclattice"
 )
 
-// fixtureRegion is the AWS region testdata/tf/main.tf's "provider \"aws\""
-// block hard-codes. It is duplicated here, as a constant, rather than
-// parsed out of main.tf, so this file has no HCL-parsing dependency — but
-// it must be kept in sync with that file by hand.
-//
-// Pinning it explicitly matters: the ESC-brokered credentials this test
-// runs under default to us-east-1, not us-west-2. During the incident that
-// prompted this file, every ad-hoc orphan check run by hand against the
-// default region silently queried the wrong region and reported "clean"
-// while a VPN connection was actually running in us-west-2. Every AWS call
-// below passes fixtureRegion explicitly so this test cannot repeat that
-// mistake.
 const fixtureRegion = "us-west-2"
 
-// secondaryRegion is the region testdata/tf/main.tf's aliased
-// 'provider "aws" { alias = "east" }' block hard-codes. Same
-// keep-in-sync-by-hand caveat as fixtureRegion.
-//
-// A second region is not merely more surface to sweep — it is a second way
-// for the sweep to report a false "clean". A client pinned to fixtureRegion
-// asking about a us-east-1 certificate is told it does not exist, which is
-// indistinguishable from "torn down". That happened on 2026-08-17: a DNS
-// failure broke teardown, and a fixtureRegion-only sweep missed the
-// certificate left behind in us-east-1.
 const secondaryRegion = "us-east-1"
 
-// fixtureManagedByTag is the tag value testdata/tf/main.tf's local.tags
-// sets on every taggable resource it creates ("ManagedBy" key). Used as an
-// independent, ID-free way to find leftover VPCs — independent because it
-// does not depend on this run's Terraform state having recorded the VPC's
-// ID before whatever failed.
 const fixtureManagedByTag = "pulumi-tool-import-e2e"
 
-// terraformDoneStates are the states EC2's VPN/gateway "State" fields use
-// to mean "gone" without having actually disappeared from a Describe call
-// yet — EC2 keeps a deleted VPN connection/gateway/customer gateway
-// describable for a while after deletion, with its state set to one of
-// these rather than removing it outright.
 var terraformDoneStates = map[string]bool{
 	"deleted":  true,
 	"deleting": true,
 }
 
-// verifyFixtureResourcesGone is the second line of defense this test's
-// teardown needed and never had: previously, the cleanup checked only
-// "tofu destroy"'s exit code, and a destroy that exits zero while leaving
-// resources behind — or one that never ran at all, e.g. because tfDir has
-// no state — was indistinguishable from success. This queries AWS
-// directly (never Terraform state, which is exactly what a broken destroy
-// would leave looking clean) for the resource types this fixture is known
-// to create, and t.Errors, by name, anything still around.
-//
-// The IDs it looks up are passed in, NOT read here: they must be captured
-// before "tofu destroy" runs, because destroy removes each resource from
-// state as it destroys it and the caller then deletes the state directory
-// outright. Reading them here instead — which this function used to do —
-// found an empty state on every successful teardown, skipped every
-// ID-gated check below, and left only the tag scan running. Taking them as
-// a parameter makes that ordering the caller's explicit responsibility
-// rather than an invisible precondition.
-//
-// Note this is still "trusting state" only to the extent of learning an ID
-// to double check independently, never to conclude something is gone.
 func verifyFixtureResourcesGone(t *testing.T, ctx context.Context, ids fixtureResourceIDs) {
 	t.Helper()
 
@@ -126,18 +74,10 @@ func verifyFixtureResourcesGone(t *testing.T, ctx context.Context, ids fixtureRe
 	for _, id := range ids.eachIoTCertificateIDs {
 		checkIoTCertificateGone(t, ctx, iotClient, id)
 	}
-	// modules/certs' certificate. It lives in fixtureRegion like the root-level
-	// ones, but it is a separate resource and had no check of its own — and IoT
-	// certificates carry no tags, so checkNoTaggedVPCsRemain cannot cover it.
 	if ids.moduleIoTCertificateID != "" {
 		checkIoTCertificateGone(t, ctx, iotClient, ids.moduleIoTCertificateID)
 	}
 
-	// The aliased provider's resources live in another region, and a client
-	// pinned to fixtureRegion would report them as absent — which reads as
-	// "cleaned up" and is exactly the false negative this file exists to
-	// prevent. On 2026-08-17 a failed teardown left a certificate in
-	// us-east-1 that a fixtureRegion-only sweep did not see.
 	if ids.eastIoTCertificateID != "" {
 		eastCfg, err := loadAWSConfigForRegion(ctx, secondaryRegion)
 		if err != nil {
@@ -157,26 +97,13 @@ func verifyFixtureResourcesGone(t *testing.T, ctx context.Context, ids fixtureRe
 		checkIAMRoleGone(t, ctx, iamClient, ids.iamRoleName)
 	}
 
-	// Independent of whatever IDs state did or didn't have recorded (in
-	// particular: covers a run where "tofu apply" failed before the VPC
-	// itself finished, or where state was never written at all), tag-scan
-	// for any VPC this fixture could have created.
 	checkNoTaggedVPCsRemain(t, ctx, ec2Client)
 }
 
-// loadRegionalAWSConfig loads an AWS SDK config pinned to fixtureRegion,
-// with the same AWS_PROFILE trap sanitizedEnv (helpers.go) works around for
-// subprocess calls: a shell-exported AWS_PROFILE shadows the ESC-brokered
-// credentials this test otherwise gets from its environment, so it is
-// unset here for the duration of the SDK's own credential resolution
-// (which reads os.Environ() directly, in-process, unlike the subprocess
-// calls elsewhere in this test).
 func loadRegionalAWSConfig(ctx context.Context) (aws.Config, error) {
 	return loadAWSConfigForRegion(ctx, fixtureRegion)
 }
 
-// loadAWSConfigForRegion is loadRegionalAWSConfig for an arbitrary region,
-// needed since the fixture gained an aliased provider in secondaryRegion.
 func loadAWSConfigForRegion(ctx context.Context, region string) (aws.Config, error) {
 	if prev, ok := os.LookupEnv("AWS_PROFILE"); ok {
 		os.Unsetenv("AWS_PROFILE")
@@ -295,11 +222,6 @@ func checkIAMRoleGone(t *testing.T, ctx context.Context, c *iam.Client, name str
 	}
 }
 
-// checkNoTaggedVPCsRemain scans for any VPC tagged ManagedBy=<fixtureManagedByTag>
-// still present in fixtureRegion, independent of any ID captured from
-// Terraform state. This is the catch-all: it finds a leftover VPC even in a
-// run where state was never written, or was written but never reached the
-// point of recording the VPC's ID.
 func checkNoTaggedVPCsRemain(t *testing.T, ctx context.Context, c *ec2.Client) {
 	t.Helper()
 	out, err := c.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{

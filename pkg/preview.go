@@ -21,44 +21,23 @@ import (
 	"strings"
 )
 
-// PreviewKey identifies a resource by Pulumi type token and resource name. It
-// is how a sidecar entry is matched to the preview step that describes it.
 type PreviewKey struct {
 	Type string
 	Name string
 }
 
-// PreviewStep is one step from "pulumi preview --json". NewState is kept as a
-// raw map rather than apitype.ResourceV3 so that every field is carried through
-// verbatim — including ones this tool does not interpret — and so that numbers
-// survive as json.Number.
-//
-// DiffReasons is decoded so that a verification failure can say *what*
-// differed, not just that something did — pulumi/pkg/v3's own PreviewStep
-// also carries DetailedDiff alongside it, but this tool has no consumer for
-// per-property diff kinds (only the list of differing property keys, via
-// DiffReasonsByURN), so DetailedDiff is not decoded here.
 type PreviewStep struct {
-	Op       string                 `json:"op"`
-	URN      string                 `json:"urn"`
-	NewState map[string]interface{} `json:"newState"`
-	// DiffReasons lists the property keys causing a diff (update steps only).
-	DiffReasons []string `json:"diffReasons,omitempty"`
+	Op          string                 `json:"op"`
+	URN         string                 `json:"urn"`
+	NewState    map[string]interface{} `json:"newState"`
+	DiffReasons []string               `json:"diffReasons,omitempty"`
 }
 
-// PreviewDigest is the "pulumi preview --json" document. It mirrors the
-// previewDigest type in pulumi/pkg/v3/display/json.go, decoding only the fields
-// this tool consumes.
 type PreviewDigest struct {
 	Steps         []PreviewStep  `json:"steps"`
 	ChangeSummary map[string]int `json:"changeSummary"`
 }
 
-// ParsePreviewJSON decodes "pulumi preview --json" output.
-//
-// UseNumber is required: preview steps carry resource inputs, and without it a
-// large integer such as an AWS account ID becomes a float64 that re-serializes
-// as scientific notation, which Pulumi's state parser rejects.
 func ParsePreviewJSON(data []byte) (*PreviewDigest, error) {
 	var digest PreviewDigest
 	dec := json.NewDecoder(bytes.NewReader(data))
@@ -69,27 +48,11 @@ func ParsePreviewJSON(data []byte) (*PreviewDigest, error) {
 	return &digest, nil
 }
 
-// PreviewCreates indexes a preview's create steps by (type, name) — the only
-// identity the sidecar records — while remembering when more than one step
-// shares that identity.
-//
-// Two distinct URNs can legitimately collapse to one key, because a parented
-// URN's type segment is "parentType$childType" and the sidecar stores only the
-// child's own type. A Terraform module instantiated twice and mapped to a
-// Pulumi component produces exactly that: my:mod:CompA$aws:s3/bucket:Bucket
-// and my:mod:CompB$aws:s3/bucket:Bucket, both named "logs". Failing on sight
-// meant one such pair anywhere in the program blocked injection of every
-// unrelated resource, so ambiguity is recorded and reported only if something
-// actually looks the key up.
 type PreviewCreates struct {
 	byKey map[PreviewKey]map[string]interface{}
-	// urns holds every create-step URN behind a key, in preview order.
-	urns map[PreviewKey][]string
+	urns  map[PreviewKey][]string
 }
 
-// Lookup returns the create step's new state for a key. It reports an error
-// when the key is ambiguous, naming the URNs involved, and (nil, nil) when the
-// preview has no create step for it.
 func (c *PreviewCreates) Lookup(key PreviewKey) (map[string]interface{}, error) {
 	if urns := c.urns[key]; len(urns) > 1 {
 		return nil, fmt.Errorf(
@@ -105,9 +68,6 @@ func (c *PreviewCreates) Lookup(key PreviewKey) (map[string]interface{}, error) 
 	return state, nil
 }
 
-// CreatesByTypeName indexes every create step by Pulumi type and resource name.
-// Resources the program would create are the ones injection can supply state
-// for; every other operation is ignored.
 func (d *PreviewDigest) CreatesByTypeName() (*PreviewCreates, error) {
 	result := &PreviewCreates{
 		byKey: make(map[PreviewKey]map[string]interface{}),
@@ -134,8 +94,6 @@ func (d *PreviewDigest) CreatesByTypeName() (*PreviewCreates, error) {
 	return result, nil
 }
 
-// OpsByURN maps each step's URN to its operation, for checking that injected
-// resources report "same" on the verifying preview.
 func (d *PreviewDigest) OpsByURN() map[string]string {
 	ops := make(map[string]string, len(d.Steps))
 	for _, step := range d.Steps {
@@ -144,11 +102,6 @@ func (d *PreviewDigest) OpsByURN() map[string]string {
 	return ops
 }
 
-// DiffReasonsByURN maps each step's URN to the property keys causing its
-// diff. Steps with no diff reasons (creates, deletes, same, or updates the
-// provider reported no per-property reasons for) are omitted rather than
-// mapped to an empty slice, so callers can distinguish "no reasons reported"
-// from "reasons reported but empty" with a single ok check.
 func (d *PreviewDigest) DiffReasonsByURN() map[string][]string {
 	reasons := make(map[string][]string, len(d.Steps))
 	for _, step := range d.Steps {
@@ -159,16 +112,7 @@ func (d *PreviewDigest) DiffReasonsByURN() map[string][]string {
 	return reasons
 }
 
-// splitURN extracts the Pulumi type token and resource name from a URN of the
-// form urn:pulumi:<stack>::<project>::<qualifiedType>::<name>. The qualified
-// type may name a chain of parents separated by "$"; the resource's own type is
-// the last element.
 func splitURN(urn string) (string, string, error) {
-	// SplitN with a limit of 4, matching batchimport.ParseURN, because a
-	// resource NAME may itself contain "::" — a for_each key derived from an
-	// ARN ("arn:aws:iam::123456789012:role/x") is the common case. A plain
-	// Split then puts the name's own segments at the end and taking
-	// parts[len-1]/parts[len-2] reads the wrong fields entirely.
 	parts := strings.SplitN(urn, "::", 4)
 	if len(parts) < 4 {
 		return "", "", fmt.Errorf("malformed URN %q", urn)

@@ -25,24 +25,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestEnsureProviderInstalledIsSafeForConcurrentCallers reproduces the second
-// half of the CI failure: parallel tests each bridge the aws schema, so each
-// installs ~/.pulumi/plugins/resource-aws-v<version>/pulumi-resource-aws and
-// then execs it for its mapping. On a cold plugin directory one caller execs
-// the binary while another is still writing it, and CI reported
-// "fork/exec ...: text file busy".
-//
-// Run with: go test -tags providerload ./pkg/bridgedproviders/
-//
-// Tagged because it points PULUMI_HOME at an empty directory on purpose and so
-// downloads the provider rather than reusing the shared plugin cache.
-//
-// Caveat: this passed on macOS with the lock reverted, so a green run here is
-// not evidence the lock works — the kernels differ. Linux refuses to exec a
-// file another process holds open for writing (ETXTBSY, what CI reported);
-// macOS refuses the write instead, and otherwise lets the exec proceed against
-// whatever bytes are there. pkg/pathlock's tests are the deterministic guard;
-// this exercises the real path on the platform CI runs.
 func TestEnsureProviderInstalledIsSafeForConcurrentCallers(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("PULUMI_HOME", filepath.Join(home, ".pulumi"))
@@ -65,8 +47,6 @@ func TestEnsureProviderInstalledIsSafeForConcurrentCallers(t *testing.T) {
 			if errs[i] != nil {
 				return
 			}
-			// The exec is where the race surfaced in CI, so the
-			// reproduction has to run it, not just the install.
 			_, mappingErrs[i] = GetMappingFromBinary(ctx, results[i].BinaryPath, GetMappingOptions{
 				Key:      "terraform",
 				Provider: "aws",

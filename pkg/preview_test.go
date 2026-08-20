@@ -66,9 +66,6 @@ func TestParsePreviewJSON_PreservesLargeIntegers(t *testing.T) {
 	t.Parallel()
 	d := loadPreviewFixture(t)
 
-	// The "same" step carries a 19-digit integer, beyond float64's exact
-	// integer range (2^53). Decoding without UseNumber silently turns it
-	// into a different integer with no error and no malformed output.
 	var sameState map[string]interface{}
 	for _, s := range d.Steps {
 		if s.Op == "same" {
@@ -94,13 +91,6 @@ func TestPreviewDigest_OpsByURN(t *testing.T) {
 	assert.Equal(t, map[string]int{"create": 1, "same": 1}, d.ChangeSummary)
 }
 
-// TestCreatesByTypeName_AmbiguousKeyOnlyFailsWhenUsed covers the case that used
-// to block injection outright. A parented URN's type segment is
-// "parentType$childType" while the sidecar records only the child's own type,
-// so two same-named resources under different components collapse to one key —
-// a Terraform module instantiated twice and mapped to a Pulumi component
-// produces exactly that. Failing at index time meant one such pair anywhere in
-// the program stopped every unrelated resource from being injected.
 func TestCreatesByTypeName_AmbiguousKeyOnlyFailsWhenUsed(t *testing.T) {
 	t.Parallel()
 
@@ -114,31 +104,23 @@ func TestCreatesByTypeName_AmbiguousKeyOnlyFailsWhenUsed(t *testing.T) {
 	]}`))
 	require.NoError(t, err)
 
-	// Indexing must succeed even though two steps collide.
 	creates, err := d.CreatesByTypeName()
 	require.NoError(t, err, "an ambiguous key must not block the whole preview")
 
-	// The unrelated resource resolves normally.
 	unrelated, err := creates.Lookup(PreviewKey{Type: "aws:ec2/vpc:Vpc", Name: "main"})
 	require.NoError(t, err)
 	require.NotNil(t, unrelated)
 
-	// The ambiguous one fails only now, naming both URNs.
 	_, err = creates.Lookup(PreviewKey{Type: "aws:s3/bucket:Bucket", Name: "logs"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "CompA")
 	assert.Contains(t, err.Error(), "CompB")
 
-	// A key with no create step at all is not an error, just absent.
 	missing, err := creates.Lookup(PreviewKey{Type: "aws:ec2/vpc:Vpc", Name: "nope"})
 	require.NoError(t, err)
 	assert.Nil(t, missing)
 }
 
-// TestSplitURN_NameContainingDoubleColon pins the parse against a name that
-// carries "::" itself — a for_each key derived from an ARN is the common case.
-// A plain Split put the name's own segments at the end, so the last two fields
-// were read as (type, name) and both were wrong.
 func TestSplitURN_NameContainingDoubleColon(t *testing.T) {
 	t.Parallel()
 
@@ -149,7 +131,6 @@ func TestSplitURN_NameContainingDoubleColon(t *testing.T) {
 	assert.Equal(t, "aws:iam/rolePolicyAttachment:RolePolicyAttachment", typ)
 	assert.Equal(t, "attach-arn:aws:iam::123456789012:role/admin", name)
 
-	// Parented types still reduce to the child's own type.
 	typ, name, err = splitURN("urn:pulumi:dev::proj::my:mod:Certs$aws:iot/certificate:Certificate::cert")
 	require.NoError(t, err)
 	assert.Equal(t, "aws:iot/certificate:Certificate", typ)

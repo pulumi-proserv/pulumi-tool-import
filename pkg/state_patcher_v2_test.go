@@ -638,27 +638,9 @@ func TestPatchState_FalsyDefaultSuppression_DigestMatchesDefault_Skipped(t *test
 	assert.NotContains(t, sgInputs, "revokeRulesOnDelete", "falsy digest value should not be patched")
 }
 
-// TestPatchState_FalsyDefaultSuppression_NumericDigestMatchesDefault_Skipped
-// mirrors TestPatchState_FalsyDefaultSuppression_DigestMatchesDefault_Skipped
-// but with a numeric falsy default (0) instead of a boolean one, and with
-// the digest built by decoding JSON — exactly like the real cmd/patch_state_tf.go
-// and pkg/module_map.go paths — rather than written as a Go literal map.
-//
-// A Go literal map[string]interface{}{"recovery_window_in_days": 0} would
-// store an untyped int, and a plain json.Unmarshal of the fields file
-// default would store a float64; reflect.DeepEqual(int, float64) is always
-// false regardless of whether the digest decode preserves precision, so a
-// literal-built digest cannot catch a regression here. Decoding both sides
-// from JSON, with the digest decoded via UseNumber (as production does),
-// reproduces the actual bug: digVal arrives as json.Number while fd.Default
-// (from a plain json.Unmarshal of the fields file) arrives as float64, and
-// reflect.DeepEqual(json.Number, float64) is also always false even though
-// both represent 0.
 func TestPatchState_FalsyDefaultSuppression_NumericDigestMatchesDefault_Skipped(t *testing.T) {
 	t.Parallel()
 
-	// Field has falsy default (0) and digest also has 0 (TF SDK stored default).
-	// Both should be skipped — patching 0 would cause the same phantom diff.
 	ff := fieldsFileFromJSON(t, `{
 		"falsyDefaultSuppression": {
 			"aws": "7.27.0"
@@ -693,9 +675,6 @@ func TestPatchState_FalsyDefaultSuppression_NumericDigestMatchesDefault_Skipped(
 		}
 	}`
 
-	// Digest has recovery_window_in_days=0 (TF SDK default stored in state).
-	// Decoded via UseNumber, matching cmd/patch_state_tf.go and
-	// pkg/module_map.go's real decode path, so digVal arrives as json.Number.
 	digestJSON := `{
 		"rootResources": [
 			{

@@ -72,36 +72,12 @@ type NonImportableResource struct {
 	// lost — but the copy in Attributes is a placeholder and must be resolved
 	// from config before the resource is written to state, the same way
 	// patch-state resolves sensitive fields.
-	RedactedAttributes map[string]string `json:"redactedAttributes,omitempty"`
-	// PulumiOutputs are the resource's Terraform attributes converted to Pulumi
-	// property names and shapes, computed while a provider was open.
-	PulumiOutputs map[string]interface{} `json:"pulumiOutputs,omitempty"`
-	// RawStateDelta is the bridge's __pulumi_raw_state_delta for those outputs.
-	// Computed from redacted attributes, so it never contains a secret.
-	//
-	// Kept omitempty: see the identical field on ModuleResource
-	// (pkg/module_map.go) for why a whole-resource delta is never both
-	// present-and-empty — an absent RawStateDelta always pairs with either
-	// nothing (injection state wasn't computed at all) or a
-	// RawStateDeltaReason (it was attempted and failed).
-	RawStateDelta map[string]interface{} `json:"rawStateDelta,omitempty"`
-	// RawStateDeltaReason explains why RawStateDelta is absent, when computing
-	// one was attempted but did not succeed. See the identical field on
-	// ModuleResource (pkg/module_map.go) for the full contract. Carried
-	// through to this sidecar entry so "patch-state" can report the reason
-	// downstream instead of only "digest tf" ever seeing it.
-	RawStateDeltaReason string `json:"rawStateDeltaReason,omitempty"`
-	// InjectionStateReason explains why this resource has no injection state at
-	// all. Distinct from RawStateDeltaReason, which covers having outputs but
-	// no delta. See the identical field on ModuleResource
-	// (pkg/module_map.go) for the full contract. Carried through so
-	// "patch-state" can say why a resource is being injected from raw
-	// attribute renaming rather than the schema-aware conversion.
-	InjectionStateReason string `json:"injectionStateReason,omitempty"`
-	// SchemaVersion is the Terraform resource type's schema version, read from
-	// the live provider. Written into state as __meta so that a later provider
-	// upgrade runs the right state upgraders.
-	SchemaVersion int64 `json:"schemaVersion,omitempty"`
+	RedactedAttributes   map[string]string      `json:"redactedAttributes,omitempty"`
+	PulumiOutputs        map[string]interface{} `json:"pulumiOutputs,omitempty"`
+	RawStateDelta        map[string]interface{} `json:"rawStateDelta,omitempty"`
+	RawStateDeltaReason  string                 `json:"rawStateDeltaReason,omitempty"`
+	InjectionStateReason string                 `json:"injectionStateReason,omitempty"`
+	SchemaVersion        int64                  `json:"schemaVersion,omitempty"`
 }
 
 // redactedPlaceholder is the value the digest substitutes for attributes

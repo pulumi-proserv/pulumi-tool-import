@@ -32,25 +32,6 @@ import (
 	"github.com/zclconf/go-cty/cty"
 )
 
-// This file tests delta computation against SYNTHETIC schemas rather than a
-// downloaded provider.
-//
-// The tool is not AWS-only — Azure, GCP and Kubernetes are planned — so
-// coverage has to be driven by what the delta format can express, not by what
-// one provider happens to exercise. Measuring terraform-provider-aws 5.100.0
-// and concluding a case was unreachable is how an earlier draft of the coverage
-// plan went wrong: AWS has ZERO DynamicPseudoType attributes across all 1526
-// resource types, while kubernetes_manifest is dynamic by design.
-//
-// ComputeInjectionState needs exactly one thing from a provider —
-// GetProviderSchema — so a fake that embeds providers.Interface and overrides
-// that single method unlocks arbitrary shapes with no provider binary, no
-// network and no cloud. This is also how the bridge tests its own delta code.
-
-// fakeProvider serves one hand-built schema. Every other method comes from the
-// embedded nil interface and panics if called, which is the point: if
-// ComputeInjectionState ever starts needing more of a provider than its schema,
-// these tests should fail loudly rather than quietly exercising a stub.
 type fakeProvider struct {
 	providers.Interface
 	schema providers.GetProviderSchemaResponse
@@ -62,8 +43,6 @@ func (f *fakeProvider) GetProviderSchema(context.Context) providers.GetProviderS
 func (f *fakeProvider) Name() string    { return "synthetic" }
 func (f *fakeProvider) Version() string { return "0.0.0" }
 
-// syntheticResource builds a provider serving one resource type, from a cty
-// attribute-type map, plus the matching Pulumi-side shim schema.
 func syntheticResource(
 	tfType string, version int64, attrs map[string]*configschema.Attribute, shimAttrs shimschema.SchemaMap,
 ) (*fakeProvider, shim.SchemaMap) {
@@ -76,18 +55,6 @@ func syntheticResource(
 	}, shimAttrs
 }
 
-// TestSyntheticDelta_DynamicTypeProducesReplaceNode covers the delta path that
-// AWS cannot reach at all and that Kubernetes will exercise constantly.
-//
-// rawstate.go:669 emits a Replace node when the schema type at a path is
-// dynamic, because nothing about the Pulumi value records what the Terraform
-// type was — the raw value has to be carried verbatim. kubernetes_manifest is
-// built on exactly this, so the case moves from "unreachable" to "the common
-// case" the moment that provider is supported.
-//
-// It matters beyond mere coverage: a Replace node carries the provider's
-// verbatim raw state, is the node the bridge marks sensitive, and is the node
-// whose marshalling was silently corrupted until today (a37fd8c).
 func TestSyntheticDelta_DynamicTypeProducesReplaceNode(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -102,12 +69,6 @@ func TestSyntheticDelta_DynamicTypeProducesReplaceNode(t *testing.T) {
 			"manifest": (&shimschema.Schema{Type: shim.TypeString, Optional: true}).Shim(),
 		})
 
-	// cty serializes a DynamicPseudoType value in a wrapped {"value","type"}
-	// form, and that is what real Terraform state holds for a dynamic
-	// attribute — carrying the type alongside the value is the whole point,
-	// since the schema does not pin it. That wrapping is also why the bridge
-	// has to emit a Replace node: nothing in the Pulumi property map records
-	// the Terraform type, so the raw value must travel verbatim.
 	attrs := []byte(`{"id":"obj-1","manifest":{"value":{"kind":"ConfigMap","metadata":{"name":"cm"}},` +
 		`"type":["object",{"kind":"string","metadata":["object",{"name":"string"}]}]}}`)
 
@@ -122,17 +83,9 @@ func TestSyntheticDelta_DynamicTypeProducesReplaceNode(t *testing.T) {
 	assert.Contains(t, string(deltaJSON), `"replace"`,
 		"a dynamic-typed attribute should be carried verbatim in a Replace node")
 
-	// And the verbatim payload must survive the sidecar round trip and recover
-	// to exactly what Terraform had.
 	assertDeltaRecoversExactly(t, attrs, outputs, delta)
 }
 
-// TestSyntheticDelta_DynamicReplaceNodeIsEnveloped ties the dynamic case to the
-// secret handling added today. A Replace node carries real provider values, the
-// bridge marks such nodes secret when IT writes them, and injection must do the
-// same — otherwise the identical payload is encrypted via one path and
-// plaintext via the other. For a dynamic attribute the payload is the whole
-// value, which makes this the case where it matters most.
 func TestSyntheticDelta_DynamicReplaceNodeIsEnveloped(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -159,8 +112,6 @@ func TestSyntheticDelta_DynamicReplaceNodeIsEnveloped(t *testing.T) {
 	assert.Contains(t, string(envelopedJSON), secretSig,
 		"a dynamic Replace node carries real values and must be enveloped")
 
-	// It must still read back as the same delta: UnmarshalRawStateDelta strips
-	// secrets before decoding, so enveloping cannot change what the bridge sees.
 	before, err := json.Marshal(delta)
 	require.NoError(t, err)
 	var doc interface{}
@@ -173,15 +124,6 @@ func TestSyntheticDelta_DynamicReplaceNodeIsEnveloped(t *testing.T) {
 		"enveloping must not change what the bridge reads back")
 }
 
-// TestSyntheticDelta_RedactedPlaceholderIsScreenedOut covers the guard that
-// stops a redacted secret riding into state inside a delta.
-//
-// redactSensitivePaths replaces a sensitive attribute with "(sensitive)" before
-// the delta is computed, so a delta computed over redacted attributes can embed
-// that literal — and for a dynamic attribute it embeds the whole value
-// verbatim, placeholder included. attachRawStateDelta screens for it
-// unconditionally rather than only when RedactedAttributes is non-empty,
-// because a nested path the digest never recorded can carry one too.
 func TestSyntheticDelta_RedactedPlaceholderIsScreenedOut(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -196,15 +138,12 @@ func TestSyntheticDelta_RedactedPlaceholderIsScreenedOut(t *testing.T) {
 			"manifest": (&shimschema.Schema{Type: shim.TypeString, Optional: true}).Shim(),
 		})
 
-	// A redacted value, as redactSensitivePaths would leave it.
 	attrs := []byte(`{"id":"obj-1","manifest":{"value":{"token":"` + redactedPlaceholder + `"},` +
 		`"type":["object",{"token":"string"}]}}`)
 	outputs, delta, _, _, err := ComputeInjectionState(ctx, prov, "synthetic_dynamic", attrs, schemaMap, nil)
 	require.NoError(t, err)
 	require.NotEmpty(t, delta)
 
-	// Guard on the premise: the placeholder really is inside the delta, or the
-	// screen below would be tested against nothing.
 	deltaJSON, err := json.Marshal(delta)
 	require.NoError(t, err)
 	require.Contains(t, string(deltaJSON), redactedPlaceholder,
@@ -228,30 +167,6 @@ func TestSyntheticDelta_RedactedPlaceholderIsScreenedOut(t *testing.T) {
 		"the dropped delta must not remain in the outputs")
 }
 
-// TestSyntheticDelta_PulumiOnlyPropertyPassesThroughRawState pins what
-// actually happens to a property that exists on the Pulumi side but not in
-// Terraform — "region" being the live example, per-resource in the Pulumi AWS
-// provider but provider-level config in terraform-provider-aws. This is the
-// mechanism #30 was filed about.
-//
-// It is NOT dropped, which is what both the issue and this test's first draft
-// assumed. objDelta.Ignored records keys that had no Terraform counterpart WHEN
-// THE DELTA WAS COMPUTED; a property added afterwards by fillOutputsFromInputs
-// was not there to be recorded, so it is missing from PropertyDeltas entirely
-// and recovers "naturally" — meaning it is written straight into the
-// reconstructed raw state.
-//
-// That is harmless, but for a reason worth stating rather than assuming: the
-// provider ignores attributes its schema does not declare. Measured against
-// terraform-provider-aws 5.100.0 and asserted in
-// TestComputeInjectionState_DeltaServesAProviderStateUpgrade, where a real
-// provider is available.
-//
-// So #30's first comment reached the right conclusion — filling outputs
-// afterwards does not break Recover — by a different route than it described.
-// Pinned here because "an extra attribute appears in Terraform raw state" is
-// the kind of thing that stays harmless only as long as providers stay
-// permissive.
 func TestSyntheticDelta_PulumiOnlyPropertyPassesThroughRawState(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -270,8 +185,6 @@ func TestSyntheticDelta_PulumiOnlyPropertyPassesThroughRawState(t *testing.T) {
 	outputs, delta, _, _, err := ComputeInjectionState(ctx, prov, "synthetic_flat", attrs, schemaMap, nil)
 	require.NoError(t, err)
 
-	// Add a property Terraform has no knowledge of, exactly as
-	// fillOutputsFromInputs does for "region".
 	withExtra := map[string]interface{}{"region": "us-west-2"}
 	for k, v := range outputs {
 		withExtra[k] = v
@@ -285,21 +198,14 @@ func TestSyntheticDelta_PulumiOnlyPropertyPassesThroughRawState(t *testing.T) {
 
 	got := decodeExact(t, recovered)
 
-	// Everything Terraform did have is unchanged.
 	assert.Equal(t, "r-1", got["id"])
 	assert.Equal(t, "thing", got["name"])
 
-	// And the Pulumi-only property rides along rather than being dropped.
 	assert.Equal(t, "us-west-2", got["region"],
 		"if this is now absent, the delta started dropping Pulumi-only properties and "+
 			"#30 should be revisited — the behaviour changed, for better or worse")
 }
 
-// TestSyntheticDelta_EmptyAndNullSurviveTheSidecar covers the distinctions that
-// live at OUR seam rather than the bridge's: null vs empty string vs empty list
-// vs empty map, after a json.Marshal/Unmarshal round trip. That is where
-// omitempty and Go's zero values blur things the bridge kept separate at the
-// schema level.
 func TestSyntheticDelta_EmptyAndNullSurviveTheSidecar(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -344,28 +250,16 @@ func TestSyntheticDelta_EmptyAndNullSurviveTheSidecar(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, reason)
 
-	// Every distinction must survive the sidecar's JSON round trip: an empty
-	// list that comes back null, or an empty string that comes back absent,
-	// is a diff on the next preview.
 	assertDeltaRecoversExactly(t, attrs, outputs, delta)
 }
 
-// TestSyntheticDelta_RenamedPropertyRoundTrips covers objDelta.Renamed.
-//
-// The bridge derives a Terraform name from a Pulumi one with
-// PulumiToTerraformName when it can, and records an explicit mapping only when
-// that derivation would be wrong. Provider overlays rename attributes freely —
-// this is common across Azure and GCP, where Pulumi names often diverge from
-// Terraform's — so the recorded-rename path is not an edge case, and a lost
-// rename silently reconstructs raw state under the wrong attribute name.
 func TestSyntheticDelta_RenamedPropertyRoundTrips(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
 	prov, schemaMap := syntheticResource("synthetic_renamed", 0,
 		map[string]*configschema.Attribute{
-			"id": {Type: cty.String, Computed: true},
-			// A name no camelCase derivation would produce from "friendlyName".
+			"id":              {Type: cty.String, Computed: true},
 			"obscure_tf_name": {Type: cty.String, Optional: true},
 		},
 		shimschema.SchemaMap{
@@ -383,8 +277,6 @@ func TestSyntheticDelta_RenamedPropertyRoundTrips(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, reason)
 
-	// The Pulumi side really did use the overridden name — otherwise the
-	// rename is never exercised and this test proves nothing.
 	require.Contains(t, outputs, "friendlyName",
 		"the schema override should have renamed the property on the Pulumi side")
 
@@ -396,9 +288,6 @@ func TestSyntheticDelta_RenamedPropertyRoundTrips(t *testing.T) {
 	assertDeltaRecoversExactly(t, attrs, outputs, delta)
 }
 
-// TestSyntheticDelta_PopulatedListRoundTrips covers a list carrying actual
-// elements. Every list in the existing fixtures is empty, so element handling
-// inside arrayOrSetDelta had no coverage at this seam at all.
 func TestSyntheticDelta_PopulatedListRoundTrips(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -428,27 +317,9 @@ func TestSyntheticDelta_PopulatedListRoundTrips(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, reason)
 
-	// Order and emptiness both matter: a reordered list or a dropped empty
-	// string is a diff on the next preview.
 	assertDeltaRecoversExactly(t, attrs, outputs, delta)
 }
 
-// TestSyntheticDelta_NumberSurvivesASchemaTypeMismatch covers a numeric
-// attribute whose Pulumi-side schema disagrees about its type.
-//
-// It does NOT reach the num delta node, and the name says so. num requires the
-// Pulumi VALUE to be a string against a numeric Terraform type
-// (rawstate.go:702), and declaring the shim schema as TypeString is not enough
-// — MakeTerraformOutputs still produces the number 42, so the values agree and
-// no node is emitted. The remaining route to a num node appears to be a value
-// the bridge itself renders as a string, which is the large-integer path
-// already covered (and which produces a replace node rather than num, because
-// the digits do not survive either).
-//
-// Kept because the round trip is worth guarding regardless: a schema
-// disagreement of this shape must not turn a Terraform number into a quoted
-// string in raw state. num itself remains UNREACHED by this tool's pipeline,
-// which is a fact worth recording rather than a gap to paper over.
 func TestSyntheticDelta_NumberSurvivesASchemaTypeMismatch(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -458,8 +329,6 @@ func TestSyntheticDelta_NumberSurvivesASchemaTypeMismatch(t *testing.T) {
 			"id":    {Type: cty.String, Computed: true},
 			"count": {Type: cty.Number, Optional: true},
 		},
-		// Deliberately mismatched: Terraform says number, the Pulumi-side
-		// schema says string.
 		shimschema.SchemaMap{
 			"id":    (&shimschema.Schema{Type: shim.TypeString, Computed: true}).Shim(),
 			"count": (&shimschema.Schema{Type: shim.TypeString, Optional: true}).Shim(),
@@ -473,29 +342,12 @@ func TestSyntheticDelta_NumberSurvivesASchemaTypeMismatch(t *testing.T) {
 
 	deltaJSON, err := json.Marshal(delta)
 	require.NoError(t, err)
-	// Recorded, not asserted: if a num node ever appears here, the bridge's
-	// conversion changed and the comment above is stale.
 	t.Logf("delta=%s outputs.count=%#v (no num node expected; see the comment above)",
 		deltaJSON, outputs["count"])
 
-	// Whatever node kind the bridge chooses, the number must come back a
-	// number — that is the property worth guarding, not the encoding.
 	assertDeltaRecoversExactly(t, attrs, outputs, delta)
 }
 
-// TestSyntheticDelta_SetsRoundTrip covers set-typed attributes, which had zero
-// coverage anywhere in this repo — cty.Set and shim.TypeSet appeared in no
-// delta test at all.
-//
-// Sets are not a niche: AWS security group rules, Kubernetes, and much of Azure
-// use them. They are also the case most likely to break quietly, because
-// Terraform treats a set as unordered while its JSON encoding is an ordered
-// array, so any reordering during the round trip is invisible until it shows up
-// as a diff on the next preview.
-//
-// The delta node is arrayOrSetDelta — one type serving both — so a list test
-// does not stand in for a set test at the schema level, where the shim type
-// differs.
 func TestSyntheticDelta_SetsRoundTrip(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -528,9 +380,6 @@ func TestSyntheticDelta_SetsRoundTrip(t *testing.T) {
 			}).Shim(),
 		})
 
-	// cty normalises set element order on decode, so the fixture is written in
-	// the order ctyjson produces. What is under test is that the round trip
-	// preserves whatever order it started with, not that it sorts.
 	attrs := []byte(`{"id":"sg-1","cidr":["10.0.0.0/8","192.168.0.0/16"],` +
 		`"ports":[22,443],"emptyset":[],"nullset":null}`)
 
@@ -542,20 +391,6 @@ func TestSyntheticDelta_SetsRoundTrip(t *testing.T) {
 	assertDeltaRecoversExactly(t, attrs, outputs, delta)
 }
 
-// TestSyntheticDelta_PluralizedNamesRoundTrip pins the naming transform with the
-// worst track record in this repo.
-//
-// The bridge pluralises list and set attribute names on the Pulumi side — a
-// Terraform "cidr_block" set becomes "cidrBlocks" — and PulumiToTerraformName
-// cannot invert that. 513 attributes in pulumi-aws v7.24.0 fail to round-trip
-// through it, which is exactly what made resolveSecretInputs silently delete
-// program-declared inputs until it was fixed to distinguish a schema-derived
-// name from a guess.
-//
-// The delta records these as objDelta.Renamed. This asserts that it does, and
-// that the raw state comes back under the ORIGINAL Terraform names — the
-// failure mode otherwise is a reconstruction that looks structurally fine while
-// every pluralised attribute sits under the wrong key.
 func TestSyntheticDelta_PluralizedNamesRoundTrip(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -585,8 +420,6 @@ func TestSyntheticDelta_PluralizedNamesRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, reason)
 
-	// Guard the premise: the Pulumi side really did pluralise, or the rename
-	// below is never exercised.
 	require.Contains(t, outputs, "cidrBlocks",
 		"the bridge should have pluralised the set attribute on the Pulumi side")
 	require.Contains(t, outputs, "subnetIds",
@@ -597,25 +430,13 @@ func TestSyntheticDelta_PluralizedNamesRoundTrip(t *testing.T) {
 	assert.Contains(t, string(deltaJSON), "renamed",
 		"a pluralised name cannot be derived back, so it must be recorded explicitly")
 
-	// And the raw state must come back under the ORIGINAL Terraform names.
 	assertDeltaRecoversExactly(t, attrs, outputs, delta)
 }
 
-// TestSyntheticDelta_NestedCombinationsRoundTrip covers the shape where the
-// delta's mechanisms interact rather than appearing one at a time: objects
-// inside lists inside objects, a map nested two levels down, and a set of
-// objects.
-//
-// Every other test here exercises one mechanism at a time, and the real
-// provider tests are the one aws_vpn_connection case. Interaction is where the
-// interesting failures live — naming, pluralization and element deltas all
-// apply at each level, and a mistake at depth 2 is invisible at depth 1. Azure
-// in particular is dense with this shape.
 func TestSyntheticDelta_NestedCombinationsRoundTrip(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	// A list of objects, each containing a map and a nested list of objects.
 	inner := cty.Object(map[string]cty.Type{
 		"port":  cty.Number,
 		"proto": cty.String,
@@ -671,9 +492,6 @@ func TestSyntheticDelta_NestedCombinationsRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, reason, "nesting must not defeat delta computation")
 
-	// Depth is the point: assert the delta reaches inside the list elements,
-	// not just the top level. Without this the test could pass on a delta that
-	// ignored everything below the first level.
 	deltaJSON, err := json.Marshal(delta)
 	require.NoError(t, err)
 	assert.Contains(t, string(deltaJSON), `"arr"`,
@@ -683,28 +501,6 @@ func TestSyntheticDelta_NestedCombinationsRoundTrip(t *testing.T) {
 	assertDeltaRecoversExactly(t, attrs, outputs, delta)
 }
 
-// TestSyntheticSecrets_SensitiveInputResolvesEndToEnd covers the sensitive
-// INPUT path in full: a Terraform-sensitive attribute is redacted out of the
-// digest, its real value is written to stack config, and injection resolves it
-// back into the resource's inputs as a Pulumi secret envelope.
-//
-// This had no coverage at any level. The e2e once exercised it through
-// aws_iot_certificate's caPem, but that was removed in addec9a — caPem is
-// ForceNew and the fixture leaves it unset, so declaring it made the program
-// disagree with the Terraform config it is meant to translate.
-//
-// Written against a SYNTHETIC schema rather than hunting for an AWS resource
-// with the right shape, for the same reason the dynamic-type tests are:
-// this tool is not AWS-only, and Azure, GCP and Kubernetes all have
-// non-importable resources with sensitive inputs. Measuring only
-// terraform-provider-aws would answer a narrower question than the one that
-// matters.
-//
-// For context, and explicitly NOT as a scope limit: of the 14 non-importable
-// types in terraform-provider-aws 5.100.0, exactly one has a Terraform
-// sensitive input (aws_cloudcontrolapi_resource.schema), which is why the e2e
-// fixture has no natural candidate. That says something about AWS, not about
-// the code path.
 func TestSyntheticSecrets_SensitiveInputResolvesEndToEnd(t *testing.T) {
 	t.Parallel()
 
@@ -714,7 +510,6 @@ func TestSyntheticSecrets_SensitiveInputResolvesEndToEnd(t *testing.T) {
 		realValue = "hunter2-the-real-secret"
 	)
 
-	// 1. Terraform state holds the real value, marked sensitive.
 	state := states.NewState()
 	state.RootModule().SetResourceInstanceCurrent(
 		addrs.ResourceInstance{
@@ -735,7 +530,6 @@ func TestSyntheticSecrets_SensitiveInputResolvesEndToEnd(t *testing.T) {
 		nil,
 	)
 
-	// 2. "digest tf" discovers it and writes the real value to stack config.
 	secrets, err := DiscoverSensitiveSecrets(state, "proj")
 	require.NoError(t, err)
 	require.Len(t, secrets, 1, "the sensitive attribute should produce exactly one config entry")
@@ -743,7 +537,6 @@ func TestSyntheticSecrets_SensitiveInputResolvesEndToEnd(t *testing.T) {
 	assert.Equal(t, realValue, secrets[0].Value, "config must carry the REAL value")
 	assert.True(t, secrets[0].Secret, "it must be written as a secret, not plain config")
 
-	// 3. ...and redacts it out of the digest, so the artifact on disk is clean.
 	attrs := map[string]interface{}{"id": "t-1", attrName: realValue}
 	redactSensitivePaths(attrs, []cty.PathValueMarks{
 		{Path: cty.GetAttrPath(attrName), Marks: cty.NewValueMarks("sensitive")},
@@ -751,13 +544,11 @@ func TestSyntheticSecrets_SensitiveInputResolvesEndToEnd(t *testing.T) {
 	require.Equal(t, redactedPlaceholder, attrs[attrName],
 		"the digest must not carry the plaintext")
 
-	// 4. "resolve tf" records where the real value went.
 	keys := redactedAttributeKeys(tfAddr, attrs)
 	require.Equal(t, configKey, keys[attrName],
 		"the sidecar's config key must match the key config was actually written under — "+
 			"a mismatch here silently resolves the wrong secret, or none")
 
-	// 5. Injection resolves the masked input back from config.
 	r := &NonImportableResource{
 		Type: "synthetic:index:Thing", Name: "thing",
 		TerraformAddress:   tfAddr,
@@ -772,20 +563,14 @@ func TestSyntheticSecrets_SensitiveInputResolvesEndToEnd(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, resolved, "one secret should have been resolved")
 
-	// The input is now a Pulumi secret envelope carrying the real value —
-	// enveloped, not bare plaintext, so the engine encrypts it at rest.
 	env, ok := inputs[attrName].(map[string]interface{})
 	require.True(t, ok, "the resolved input should be a secret envelope, got %#v", inputs[attrName])
 	assert.Equal(t, secretSig, env[sigKey], "the envelope must carry the Pulumi secret sig")
 	assert.Contains(t, env["plaintext"], realValue, "the envelope must carry the real value")
 
-	// And no placeholder survives anywhere.
 	require.NoError(t, checkNoPlaceholders(r, "input", inputs, "inputs"))
 }
 
-// TestSyntheticSecrets_SensitiveInputWithNoConfigValueFails pins the other
-// direction. If the sidecar names a config key that stack config does not have,
-// injection must stop rather than write a placeholder or a blank into state.
 func TestSyntheticSecrets_SensitiveInputWithNoConfigValueFails(t *testing.T) {
 	t.Parallel()
 

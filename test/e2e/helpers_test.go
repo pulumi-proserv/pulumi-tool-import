@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// No "e2e" build tag on this file: these are offline unit tests for the pure
-// helpers in helpers.go, and must run under plain "go test ./...".
 package e2e
 
 import (
@@ -32,11 +30,6 @@ import (
 	"github.com/aws/smithy-go"
 )
 
-// TestJSONPathDiffNamesPathsWithoutValues is the guard on the property that
-// makes jsonPathDiff safe to print: the stack exports it compares are taken
-// with --show-secrets, so a reported path must never carry the value at that
-// path. Here the differing leaf is a "secret" string, and the output must
-// locate it without quoting it.
 func TestJSONPathDiffNamesPathsWithoutValues(t *testing.T) {
 	t.Parallel()
 	var a, b interface{}
@@ -75,9 +68,6 @@ func TestJSONPathDiffIdenticalDocuments(t *testing.T) {
 	}
 }
 
-// TestJSONPathDiffReportsPresenceAndShape covers the three non-leaf cases:
-// a key on one side only, a length change, and a type change. Each must be
-// reported once at the point of difference rather than recursed into.
 func TestJSONPathDiffReportsPresenceAndShape(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -202,17 +192,11 @@ func TestCopyDir(t *testing.T) {
 		t.Errorf("nested file content = %q, want %q", got, "module file")
 	}
 
-	// The source fixture must be untouched.
 	if _, err := os.Stat(filepath.Join(src, "main.tf")); err != nil {
 		t.Errorf("source file disappeared: %v", err)
 	}
 }
 
-// fixtureStateJSON is a Terraform state in the shape "tofu apply" writes for
-// testdata/tf/main.tf, trimmed to the resources loadFixtureResourceIDs looks
-// for. The load-bearing detail is aws_iot_certificate.each: a for_each- (or
-// count-) expanded resource is ONE "resources" entry holding one instance per
-// key, which is the shape that has to be got right.
 const fixtureStateJSON = `{
   "version": 4,
   "resources": [
@@ -246,11 +230,6 @@ const fixtureStateJSON = `{
   ]
 }`
 
-// TestLoadFixtureResourceIDsCollectsEveryForEachInstance pins the regression
-// that made this worth testing offline: the loop read Instances[0] only, so
-// the "beta" certificate was never collected and had no detection path at all
-// — IoT certificates carry no tags, so the tag scan cannot back one up. A
-// missed ID here fails nothing; it just silently skips an AWS-side check.
 func TestLoadFixtureResourceIDsCollectsEveryForEachInstance(t *testing.T) {
 	t.Parallel()
 
@@ -276,9 +255,6 @@ func TestLoadFixtureResourceIDsCollectsEveryForEachInstance(t *testing.T) {
 	}
 }
 
-// TestLoadFixtureResourceIDsReadsEveryCheckedResource guards the other half of
-// the same failure mode: every field verifyFixtureResourcesGone gates a check
-// on must actually get populated, since an empty one skips its check silently.
 func TestLoadFixtureResourceIDsReadsEveryCheckedResource(t *testing.T) {
 	t.Parallel()
 
@@ -314,9 +290,6 @@ func TestLoadFixtureResourceIDsReadsEveryCheckedResource(t *testing.T) {
 	}
 }
 
-// TestLoadFixtureResourceIDsMissingStateIsNotAnError covers the path where
-// "tofu init" never wrote state. That must not error — the tag-based VPC scan
-// still has to run — but it must also not be mistaken for "nothing to check".
 func TestLoadFixtureResourceIDsMissingStateIsNotAnError(t *testing.T) {
 	t.Parallel()
 
@@ -329,15 +302,6 @@ func TestLoadFixtureResourceIDsMissingStateIsNotAnError(t *testing.T) {
 	}
 }
 
-// TestIsNotFoundErrRecognisesEveryServicesGoneCode pins the codes the orphan
-// sweep depends on, using each SDK's real typed error rather than a
-// hand-written string — the previous substring implementation was wrong
-// precisely because IAM's actual code was assumed rather than checked.
-//
-// A false positive here silently converts "this resource is still running"
-// into "cleaned up"; a false negative t.Errorf's on every healthy teardown
-// until the noise makes a real orphan unnoticeable. Both are the failure
-// this sweep exists to prevent, so both directions are asserted.
 func TestIsNotFoundErrRecognisesEveryServicesGoneCode(t *testing.T) {
 	t.Parallel()
 
@@ -354,16 +318,11 @@ func TestIsNotFoundErrRecognisesEveryServicesGoneCode(t *testing.T) {
 		{"ec2 customer gateway", &smithy.GenericAPIError{Code: "InvalidCustomerGatewayID.NotFound"}, true},
 		{"wrapped", fmt.Errorf("verifying role: %w", &iamtypes.NoSuchEntityException{}), true},
 
-		// The safe direction. An auth or throttling failure means the check
-		// could not run, NOT that the resource is gone — treating it as gone
-		// is how a billing orphan goes unreported.
 		{"access denied", &smithy.GenericAPIError{Code: "AccessDenied"}, false},
 		{"throttled", &smithy.GenericAPIError{Code: "Throttling"}, false},
 		{"nil", nil, false},
 		{"not an API error", errors.New("dial tcp: no such host"), false},
 
-		// The old substring implementation would have said true here: a
-		// message mentioning another resource's code is not a status.
 		{"code named only in the message", errors.New("peer returned InvalidVpnGatewayID.NotFound"), false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -374,9 +333,6 @@ func TestIsNotFoundErrRecognisesEveryServicesGoneCode(t *testing.T) {
 	}
 }
 
-// TestIsNotFoundErrCoversEveryCheckedService guards against a service being
-// added to the sweep without its gone-code being registered, which would make
-// that check fail on every clean teardown.
 func TestIsNotFoundErrCoversEveryCheckedService(t *testing.T) {
 	t.Parallel()
 
@@ -391,24 +347,9 @@ func TestIsNotFoundErrCoversEveryCheckedService(t *testing.T) {
 	}
 }
 
-// TestEveryFixtureResourceIsAccountedForByTheOrphanSweep is a coverage guard on
-// the sweep itself, not on any one resource.
-//
-// It exists because of how modules/certs' certificate was missed: it was added
-// to the fixture, no case was added to loadFixtureResourceIDs, and nothing
-// noticed — the offline fixture omitted it too, so the parser tests could not
-// catch it, and IoT certificates carry no tags, so the VPC tag scan could not
-// either. The result was a billable-in-principle resource with no orphan
-// detection at all, on a fixture whose whole point is that teardown is
-// verified.
-//
-// So: every "resource" block in testdata/tf must be either checked by ID or
-// listed below with a reason. Adding a resource to the fixture without doing
-// one of those fails here, offline, in milliseconds.
 func TestEveryFixtureResourceIsAccountedForByTheOrphanSweep(t *testing.T) {
 	t.Parallel()
 
-	// Checked by ID in verifyFixtureResourcesGone.
 	checkedByID := map[string]bool{
 		"aws_vpc.main":                   true,
 		"aws_vpn_gateway.vgw":            true,
@@ -423,9 +364,6 @@ func TestEveryFixtureResourceIsAccountedForByTheOrphanSweep(t *testing.T) {
 		"aws_iam_role.lambda":            true,
 	}
 
-	// Deliberately not checked by ID, each for a stated reason. A resource
-	// belongs here only when its survival is either impossible or already
-	// detectable another way.
 	exempt := map[string]string{
 		"aws_route_table.rt":                            "inside the VPC; the tag scan reports the VPC, and a route table cannot outlive it",
 		"aws_vpn_connection_route.route":                "a property of the VPN connection, which is checked by ID",
@@ -474,9 +412,6 @@ func TestEveryFixtureResourceIsAccountedForByTheOrphanSweep(t *testing.T) {
 			"reason its survival is impossible or already detectable.", addr)
 	}
 
-	// The lists must not rot in the other direction either: an entry naming a
-	// resource the fixture no longer declares is a check that silently does
-	// nothing.
 	declared := make(map[string]bool, len(found))
 	for _, addr := range found {
 		declared[addr] = true

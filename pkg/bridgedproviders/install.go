@@ -110,18 +110,6 @@ func InstallProvider(ctx context.Context, opts InstallProviderOptions) (*Install
 	}, nil
 }
 
-// EnsureProviderInstalled returns the path to the provider binary, installing
-// it if it is not already present.
-//
-// Callers that go on to exec the binary — GetMappingFromBinary does — rely on
-// the check and the install being atomic against each other. Two callers that
-// both miss the cache otherwise install the same path at once, and whichever
-// execs while the other is still writing fails: "text file busy" on Linux, or a
-// plugin handshake against a partial binary where the kernel permits the exec.
-// The lock is keyed on the provider name rather than name and version because
-// an empty Version means "latest", which resolves to a version the caller
-// cannot name here; a caller asking for "aws" and one asking for "aws 6.83.2"
-// may be writing the same directory.
 func EnsureProviderInstalled(ctx context.Context, opts InstallProviderOptions) (*InstallProviderResult, error) {
 	defer pathlock.Acquire("pulumi-plugin:" + opts.Name)()
 

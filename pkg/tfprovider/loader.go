@@ -96,11 +96,6 @@ func getPluginCache() (string, error) {
 	return workspace.GetPulumiPath("dynamic_tf_plugins")
 }
 
-// lockProviderInstall serializes concurrent loads of the same provider into the
-// same cache directory: without it, two callers both see an empty cache and
-// install the same file at once, one writing the binary while the other
-// forks/execs it. The key is cache directory plus provider and version, which
-// is exactly the path being written.
 func lockProviderInstall(cacheDir string, addr addrs.Provider, version versions.Version) func() {
 	return pathlock.Acquire(cacheDir + "\x00" + addr.String() + "\x00" + version.String())
 }
@@ -114,9 +109,6 @@ func getProviderServer(
 		return nil, err
 	}
 
-	// Held across the exec as well as the install: a caller that execs the
-	// binary while another is still writing it fails the same way as two
-	// concurrent writers.
 	defer lockProviderInstall(cacheDir, addr, version)()
 
 	systemCache := providercache.NewDir(cacheDir)

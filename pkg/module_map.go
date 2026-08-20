@@ -61,57 +61,12 @@ type ModuleResource struct {
 	// "pulumi import" cannot bring it into state — the attempt fails with a
 	// misleading "resource '<id>' does not exist" — so resolve leaves it out of
 	// the import file rather than emitting an entry guaranteed to fail.
-	NonImportable bool `json:"nonImportable,omitempty"`
-	// PulumiOutputs are the resource's Terraform attributes converted to Pulumi
-	// property names and shapes, computed while a provider was open. Populated
-	// only for resources NonImportable flags, since nothing else needs them.
-	PulumiOutputs map[string]interface{} `json:"pulumiOutputs,omitempty"`
-	// RawStateDelta is the bridge's __pulumi_raw_state_delta for those outputs.
-	// Computed from redacted attributes, so it never contains a secret.
-	//
-	// Kept omitempty: RawStateComputeDelta cannot produce a genuinely empty
-	// delta for a whole resource (its PropertyValue is always an Object, and
-	// the bridge's empty-delta recovery path refuses Object values outright —
-	// see ComputeInjectionState in raw_state_delta.go). What look like "empty"
-	// deltas are actually the RawStateDeltaReason case below: a delta was
-	// attempted and failed, not one that succeeded and came back empty.
-	//
-	// Reconfirmed after fixing the "timeouts" type/value mismatch (see
-	// stripTimeouts and TestComputeInjectionState_TimeoutsDeltaRecovers
-	// in raw_state_delta.go / raw_state_delta_test.go): a whole-resource delta
-	// is always Obj-shaped at the top level, and even when every field
-	// matches exactly (so objDelta's own fields are all empty and omitted),
-	// the marshalled map still carries the "obj" key itself — e.g.
-	// {"obj":{}} — which is a non-empty map[string]interface{}. omitempty
-	// only drops a literal empty map, so this case still marshals through.
-	RawStateDelta map[string]interface{} `json:"rawStateDelta,omitempty"`
-	// RawStateDeltaReason explains why RawStateDelta is absent, for a resource
-	// where computing one was attempted (schemaMap was available and
-	// ComputeInjectionState ran) but did not succeed. Empty whenever
-	// RawStateDelta is present, and also empty when injection-state
-	// computation was skipped entirely (no provider, no bridged schema) —
-	// this field only covers the "we tried and it didn't work" case, so a
-	// later reader (e.g. patch-state) can tell that apart from "nobody
-	// looked." Derived from the bridge's own error text, which is safe to
-	// carry: it never echoes attribute values, only structural detail (see
-	// ComputeInjectionState).
-	RawStateDeltaReason string `json:"rawStateDeltaReason,omitempty"`
-	// InjectionStateReason explains why this resource has NO injection state at
-	// all — no PulumiOutputs, no RawStateDelta, no SchemaVersion — as distinct
-	// from having outputs but no delta, which RawStateDeltaReason covers.
-	//
-	// Without it, `PulumiOutputs == nil` means two different things that need
-	// different responses: "nobody tried" (the digest ran without the
-	// import-support probe, so there was no live provider) and "we tried and
-	// could not" (the two provider loaders disagreed, or the computation
-	// failed). The first is expected; the second means the resource will be
-	// injected from raw attribute renaming instead, losing the schema-aware
-	// conversion, and an operator can act on that.
-	InjectionStateReason string `json:"injectionStateReason,omitempty"`
-	// SchemaVersion is the Terraform resource type's schema version, read from
-	// the live provider. Written into state as __meta so that a later provider
-	// upgrade runs the right state upgraders.
-	SchemaVersion int64 `json:"schemaVersion,omitempty"`
+	NonImportable        bool                   `json:"nonImportable,omitempty"`
+	PulumiOutputs        map[string]interface{} `json:"pulumiOutputs,omitempty"`
+	RawStateDelta        map[string]interface{} `json:"rawStateDelta,omitempty"`
+	RawStateDeltaReason  string                 `json:"rawStateDeltaReason,omitempty"`
+	InjectionStateReason string                 `json:"injectionStateReason,omitempty"`
+	SchemaVersion        int64                  `json:"schemaVersion,omitempty"`
 }
 
 // ImportSupportChecker reports whether a Terraform resource type can be
@@ -122,20 +77,6 @@ type ImportSupportChecker interface {
 	Check(ctx context.Context, providerAddr, tfType string) importsupport.Support
 }
 
-// ProviderAccessor is an optional capability of an ImportSupportChecker: a
-// checker backed by a live Terraform provider (namely *importsupport.Prober)
-// can implement it to let matchResources reuse that same open provider to
-// compute a non-importable resource's Pulumi outputs, raw state delta, and
-// schema version.
-//
-// This is deliberately not folded into ImportSupportChecker. Widening that
-// interface would force every implementation — including the test fake in
-// pkg/importsupport/prober_test.go — to supply a provider, when most callers
-// only need the Check verdict. matchResources type-asserts for this
-// interface and degrades to leaving the new ModuleResource fields empty when
-// it is absent, which is the correct behaviour when digest tf runs without
-// the import-support probe (no provider, no non-importable detection, and so
-// nothing for these fields to hold).
 type ProviderAccessor interface {
 	Provider(ctx context.Context, providerAddr string) (tfprovider.Provider, bool)
 }
@@ -432,17 +373,11 @@ func matchResources(
 						ImportID:         importID,
 					}
 
-					// Include attributes, redacting sensitive paths from state.
-					// This must happen before the non-importable state
-					// computation below: RawStateDelta is computed from these
-					// attributes, and must never see an unredacted secret.
 					if attrs != nil {
 						redactSensitivePaths(attrs, inst.Current.AttrSensitivePaths)
 						mr.Attributes = attrs
 					}
 
-					// Only managed resources are ever imported, so only they
-					// are worth checking.
 					if mode == "managed" && importChecker != nil {
 						mr.NonImportable = importChecker.Check(ctx, providerName, resourceType) == importsupport.Unsupported
 						if mr.NonImportable && attrs != nil {
@@ -462,12 +397,6 @@ func matchResources(
 	return resources
 }
 
-// decodeAttrs decodes a Terraform instance's AttrsJSON into a generic map,
-// preserving large integer precision by decoding numbers as json.Number
-// instead of float64. Without this, integers above 2^53 silently decode to
-// a different number, and that corrupted value would flow into the digest's
-// Attributes, the sidecar, ComputeInjectionState, and ultimately into
-// Pulumi state written by patch-state.
 func decodeAttrs(data []byte) (map[string]interface{}, error) {
 	var attrs map[string]interface{}
 	dec := json.NewDecoder(bytes.NewReader(data))
@@ -478,43 +407,18 @@ func decodeAttrs(data []byte) (map[string]interface{}, error) {
 	return attrs, nil
 }
 
-// formatImportID renders a digest attribute value (typically the "id"
-// attribute) as an import ID string. json.Number is itself a string type,
-// so formatting a json.Number with %v prints the original digits rather
-// than the scientific notation fmt would produce for a float64.
 func formatImportID(v interface{}) string {
-	// A JSON null must not stringify to the literal "<nil>", which is what
-	// fmt.Sprintf produces and which would then be injected as if it were a
-	// real ID. Returning "" instead lets the empty-ID guard in
-	// buildInjectedResource reject it with an actionable message.
 	if v == nil {
 		return ""
 	}
 	return fmt.Sprintf("%v", v)
 }
 
-// warnInjectionState reports, once per resource, that a non-importable resource
-// will be injected without the schema-aware conversion.
-//
-// Printed at digest time because that is where the cause is visible: by the
-// time patch-state sees the sidecar, all it knows is that the fields are
-// absent. The reason travels on the resource as well, so the later command can
-// name it too.
 func warnInjectionState(mr *ModuleResource) {
 	fmt.Fprintf(os.Stderr, "Warning: no injection state for %s: %s\n",
 		mr.TerraformAddress, mr.InjectionStateReason)
 }
 
-// populateInjectionState fills mr's PulumiOutputs, RawStateDelta and
-// SchemaVersion for a resource matchResources has already flagged
-// NonImportable. attrs must already be redacted.
-//
-// It needs a live Terraform provider, which only importChecker (in practice
-// *importsupport.Prober) can supply, and only when it implements
-// ProviderAccessor — otherwise there is nothing more to compute, and mr is
-// left with these fields empty. That degradation is deliberate: it is not an
-// error, it means whoever built the digest ran without the import-support
-// probe, or the provider that flagged this resource could not be reused.
 func populateInjectionState(
 	ctx context.Context,
 	mr *ModuleResource,
@@ -524,17 +428,8 @@ func populateInjectionState(
 	resourceType string,
 	attrs map[string]interface{},
 ) {
-	// Every path out of this function that leaves the injection fields empty
-	// records WHY. Without that, an under-populated digest is indistinguishable
-	// from one where there was simply nothing to compute, and the difference
-	// matters: a resource with no PulumiOutputs is injected from raw attribute
-	// renaming instead of the schema-aware conversion, which is a real
-	// downgrade an operator can act on.
 	accessor, ok := importChecker.(ProviderAccessor)
 	if !ok {
-		// Expected, not a fault: "digest tf --skip-import-check" has no probe
-		// and therefore no live provider. Recorded anyway so the reason is
-		// never simply absent.
 		mr.InjectionStateReason = "no live Terraform provider (import-support probe not run)"
 		return
 	}
@@ -546,10 +441,6 @@ func populateInjectionState(
 		return
 	}
 
-	// schemaMap/schemaInfos come from the mock Pulumi-bridged schema the
-	// digest already has for this provider, not from the live provider's own
-	// protocol schema: RawStateComputeDelta needs Pulumi naming, which only
-	// the bridge's schema mock carries.
 	var schemaMap shim.SchemaMap
 	var schemaInfos map[string]*tfbridge.SchemaInfo
 	if pwm, ok := pulumiProviders[providermap.TerraformProviderName(providerName)]; ok && pwm != nil {
@@ -561,17 +452,6 @@ func populateInjectionState(
 		}
 	}
 	if schemaMap == nil {
-		// pulumiProviders and the import prober are two different loaders
-		// with different failure modes: PulumiProvidersForTerraformProviders
-		// can fail to bridge a provider and skip it (pkg/pulumi_providers.go)
-		// while the prober still loaded that same provider fine and used it
-		// to flag this resource non-importable. Without a schema,
-		// RawStateComputeDelta cannot resolve nested attribute names and, for
-		// a nested-block type, panics rather than erroring — so there is
-		// nothing safe to compute here. Leaving the new fields empty is the
-		// correct degradation, not an error — but it must be a LOUD one, since
-		// it means the two loaders disagreed about a provider that the probe
-		// itself loaded successfully.
 		mr.InjectionStateReason = fmt.Sprintf(
 			"no bridged Pulumi schema for %s, though the import-support probe loaded %s: "+
 				"the provider loaders disagree (see issue #26)", resourceType, providerName)
@@ -605,14 +485,6 @@ func populateInjectionState(
 	}
 }
 
-// safeComputeInjectionState calls ComputeInjectionState and converts any
-// panic from it into a false ok. This is a best-effort enrichment path — a
-// resource whose injection state cannot be computed still belongs in the
-// digest — and ComputeInjectionState calls into tfbridge internals
-// (RawStateComputeDelta's schema walk) that are known to panic rather than
-// return an error on some schema/value mismatches (see the nil-schemaMap
-// case this guards against above). A malformed resource must not be able to
-// abort the whole digest.
 func safeComputeInjectionState(
 	ctx context.Context,
 	prov tfprovider.Provider,
@@ -843,14 +715,6 @@ func DiscoverSensitiveSecrets(state *states.State, projectName string) ([]Sensit
 				if inst.Current.AttrsJSON == nil {
 					continue
 				}
-				// decodeAttrs, not a plain Unmarshal: this value is about to be
-				// stringified with %v and written into stack config, and a
-				// plain decode turns every number into a float64. A sensitive
-				// 1234567890123456789 became "1.2345678901234568e+18" in
-				// config, and injection then resolved that key and wrote the
-				// corrupted, retyped value into state as the resource's real
-				// secret. json.Number is itself a string type, so %v prints the
-				// original digits.
 				attrs, err := decodeAttrs(inst.Current.AttrsJSON)
 				if err != nil {
 					continue
@@ -879,11 +743,6 @@ func DiscoverSensitiveSecrets(state *states.State, projectName string) ([]Sensit
 		}
 	}
 
-	// Deterministic order. state.Modules, res.Instances and module.Resources
-	// are all Go maps, and nothing above sorts them (unlike the sibling
-	// discoverModuleInstances, which does), so without this the assignment of
-	// a colliding key to one address or the other varied between runs of the
-	// same command over the same state.
 	sort.Slice(raw, func(i, j int) bool {
 		if raw[i].address != raw[j].address {
 			return raw[i].address < raw[j].address
@@ -912,19 +771,6 @@ func DiscoverSensitiveSecrets(state *states.State, projectName string) ([]Sensit
 		finalKey := key
 		if count > 1 {
 			finalKey = fmt.Sprintf("%s_%d", key, count)
-			// The suffixed key is written to config but NOTHING can read it
-			// back: the sidecar records the config key as a bare
-			// flattenAddress(address, attribute) (redactedAttributeKeys in
-			// import_filler.go), so both colliding resources point at the
-			// un-suffixed key and the second one silently resolves to the
-			// FIRST one's secret. Suffixing therefore does not handle a
-			// collision, it only hides it — and the resulting corruption is a
-			// real secret written into the wrong resource's state.
-			//
-			// Collisions are easy to produce because flattenAddress drops the
-			// resource type and collapses punctuation: two resources named
-			// "this" in one module collide, as do ssm_parameters["/a/b"] and
-			// ssm_parameters["/a_b"].
 			collisions = append(collisions, fmt.Sprintf(
 				"%q is produced by both %s and %s (attribute %q)",
 				key, keyToAddress[key], r.address, r.attribute))
@@ -1190,24 +1036,6 @@ func redactSensitivePaths(attrs map[string]interface{}, paths []cty.PathValueMar
 	}
 }
 
-// redactAtPath walks one cty path into a decoded attribute tree and replaces
-// the value at its end with redactedPlaceholder.
-//
-// Nested paths are walked rather than skipped. OpenTofu really does record
-// them — a NestingSet block with a sensitive attribute (aws_mq_broker's
-// user[].password, google_container_cluster's master_auth.client_key, or
-// anything derived from a sensitive variable) yields a path of length 3, and
-// ResourceInstanceObject.Encode stores it with no depth filter. Ignoring those
-// left the plaintext in the digest; on this branch it would then flow through
-// ComputeInjectionState into PulumiOutputs and into the injected resource's
-// state outputs, unmarked, since resolveOutputSecrets only envelopes
-// properties named in RedactedAttributes.
-//
-// A nested secret gets no stack config key (DiscoverSensitiveSecrets still
-// records only top-level attributes, because the config key format is derived
-// from an address plus one attribute name). That is deliberate: injection then
-// meets the placeholder and hard-fails in checkNoPlaceholders, which is a loud,
-// fixable stop rather than a silent leak.
 func redactAtPath(container interface{}, path cty.Path) {
 	if len(path) == 0 {
 		return
@@ -1228,19 +1056,6 @@ func redactAtPath(container interface{}, path cty.Path) {
 			redactAtPath(value, path[1:])
 			return
 		}
-		// A null value has nothing to hide: it is not a secret, and redacting
-		// it would manufacture a reference to a stack config entry that is
-		// never created. DiscoverSensitiveSecrets agrees — it skips nil values
-		// when deciding what to write into config — so this keeps the digest's
-		// redaction and the config-writing loop in sync. Left unfixed, the
-		// digest would claim a secret exists (redactedAttributes would record a
-		// config key for it) that config never got, and patch-state/injection
-		// would hard-fail trying to resolve it.
-		//
-		// Empty string is treated differently: DiscoverSensitiveSecrets does
-		// NOT skip "" (only value == nil is excluded there; an empty string is
-		// stringified and written to config like any other value), so redacting
-		// an empty-string attribute here does not create a dangling reference.
 		if value == nil {
 			return
 		}
@@ -1249,12 +1064,6 @@ func redactAtPath(container interface{}, path cty.Path) {
 	case cty.IndexStep:
 		switch c := container.(type) {
 		case []interface{}:
-			// A list index is a number; a SET index is the element VALUE
-			// itself, which cannot address a slot in a decoded JSON array. When
-			// the index does not resolve to an ordinal, every element is
-			// redacted instead. Over-redacting costs a placeholder the operator
-			// must supply; under-redacting writes a secret into state, so the
-			// ambiguity is resolved towards over-redacting.
 			idx, ok := indexStepOrdinal(step, len(c))
 			if !ok {
 				for i := range c {
@@ -1284,8 +1093,6 @@ func redactAtPath(container interface{}, path cty.Path) {
 	}
 }
 
-// redactSliceElement applies the remainder of a path to one slice element,
-// redacting it outright when the path ends here.
 func redactSliceElement(s []interface{}, i int, path cty.Path, last bool) {
 	if i < 0 || i >= len(s) {
 		return
@@ -1300,7 +1107,6 @@ func redactSliceElement(s []interface{}, i int, path cty.Path, last bool) {
 	s[i] = redactedPlaceholder
 }
 
-// indexStepOrdinal returns a list index for an IndexStep, if it carries one.
 func indexStepOrdinal(step cty.IndexStep, length int) (int, bool) {
 	if step.Key.Type() != cty.Number {
 		return 0, false
@@ -1313,7 +1119,6 @@ func indexStepOrdinal(step cty.IndexStep, length int) (int, bool) {
 	return i, true
 }
 
-// indexStepKey returns a map key for an IndexStep, if it carries one.
 func indexStepKey(step cty.IndexStep) (string, bool) {
 	if step.Key.Type() != cty.String {
 		return "", false

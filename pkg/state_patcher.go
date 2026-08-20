@@ -629,11 +629,6 @@ func patchResourceFields(
 	return res, nil
 }
 
-// deepCopyJSONValue returns a copy of a JSON-decoded value that shares no maps
-// or slices with the original, so mutating one cannot affect the other.
-//
-// Scalars are returned as-is: strings, bools, nil and json.Number are all
-// immutable, so sharing them is safe and copying them would only allocate.
 func deepCopyJSONValue(v interface{}) interface{} {
 	switch val := v.(type) {
 	case map[string]interface{}:
@@ -675,16 +670,6 @@ func patchAndValidateResource(
 	for k, v := range outputsRaw {
 		outputsSnapshot[k] = v
 	}
-	// The delta needs a DEEP copy, unlike everything else here. Patching
-	// replaces a top-level output wholesale, so a shallow copy is a faithful
-	// snapshot of those — but injectAssetDeltas below reaches into the delta's
-	// nested "obj"/"ps" maps and mutates them in place, returning the same map
-	// it was given. A shallow snapshot shares those maps, so reverting
-	// outputsRaw = outputsSnapshot restored the delta's IDENTITY while keeping
-	// the injected asset entries, leaving the resource in a state its pre-patch
-	// outputs never had: validateRecover on the "reverted" outputs then fails
-	// with an error the original state would not have produced, and that is
-	// what gets written.
 	if delta, hasDelta := outputsRaw[rawStateDeltaKey]; hasDelta {
 		outputsSnapshot[rawStateDeltaKey] = deepCopyJSONValue(delta)
 	}
@@ -733,11 +718,6 @@ func PatchState(
 	configSecrets map[string]string,
 	configDir string,
 ) ([]byte, *PatchStateResult, error) {
-	// Parse state using a decoder with UseNumber to preserve exact number
-	// representations. Without this, integers above 2^53 silently decode to
-	// a different integer (no error, no malformed output); scientific
-	// notation only appears once a number reaches ~1e21, which Pulumi's
-	// state parser rejects.
 	var state map[string]interface{}
 	dec := json.NewDecoder(strings.NewReader(string(stateData)))
 	dec.UseNumber()
@@ -902,11 +882,7 @@ const (
 	assetSig   = "c44067f5952c0a294b673a41bacd8c17"
 	archiveSig = "0def7320c3a5731c473e5ecbe6d01bc7"
 	sigKey     = "4dabf18193072939515e22adb298388d"
-	// secretSig is the sig value marking a Pulumi secret envelope. Named
-	// rather than repeated: it appeared as a bare literal at four
-	// construction/recognition sites, and a typo in one of them would produce
-	// a plain object that reads as data instead of failing.
-	secretSig = "1b47061264138c4ac30d75fd1eb44270"
+	secretSig  = "1b47061264138c4ac30d75fd1eb44270"
 )
 
 // buildAssetSentinel constructs a Pulumi asset/archive sentinel from a file path.
@@ -1299,14 +1275,6 @@ func hashFileArchive(dirPath string) (string, error) {
 	return arch.Hash, nil
 }
 
-// isEmptyValue checks if a value is nil, empty string, or empty array/map.
-// equalValues compares two JSON-deserialized values for equality.
-// JSON numbers from different sources may be json.Number, float64, or (from
-// Go literals in tests) int, so numeric comparisons are normalized through
-// numericValue before falling back to reflect.DeepEqual. Without this, a
-// digest value decoded as json.Number would never equal an identical
-// fields-file or state value decoded as float64, even when the numbers
-// match exactly.
 func equalValues(a, b interface{}) bool {
 	if reflect.DeepEqual(a, b) {
 		return true
@@ -1316,11 +1284,6 @@ func equalValues(a, b interface{}) bool {
 	return aOk && bOk && af == bf
 }
 
-// numericValue reports whether v is one of the numeric types that can
-// appear in JSON-derived data — json.Number (from a UseNumber decode),
-// float64/float32 (from a plain decode), or the common Go integer types
-// (from literals built directly in Go, e.g. in tests) — and returns it as
-// a float64 for comparison.
 func numericValue(v interface{}) (float64, bool) {
 	switch n := v.(type) {
 	case json.Number:
@@ -1429,16 +1392,6 @@ func conformToDelta(val interface{}, field string, outputsRaw map[string]interfa
 	return val
 }
 
-// isSimpleValue returns true for primitive types (bool, number, string, nil).
-// Arrays and objects are not simple — they may have been type-mapped by the bridge.
-//
-// json.Number must be included alongside float64/int: a UseNumber decode
-// (used by both cmd/patch_state_cfn.go and cmd/patch_state_tf.go to preserve
-// large integers exactly) represents every JSON number as json.Number rather
-// than float64. Without this case, a numeric not-read field would be written
-// into inputs (patchResourceFields's input branch has no isSimpleValue gate)
-// but skipped for outputs, leaving an input with no matching output — the
-// exact divergence outputStale/outputIsBadPlain exist to prevent.
 func isSimpleValue(v interface{}) bool {
 	switch v.(type) {
 	case nil, bool, string, float64, int, json.Number:
@@ -1457,14 +1410,6 @@ func isSimpleValue(v interface{}) bool {
 // the engine deserializes state for the bridge's Diff/Recover path.
 func propertyValueFromState(v interface{}) resource.PropertyValue {
 	replv := func(v interface{}) (resource.PropertyValue, bool) {
-		// json.Number must be handled explicitly: resource.NewPropertyValueRepl
-		// has no case for it (only float64/int/etc, produced by a plain
-		// encoding/json decode), and reflection sees json.Number's underlying
-		// Kind as String — so without this case, every sidecar output number
-		// (LoadNonImportableFile decodes with UseNumber to keep large integers
-		// exact) would silently recover as a *string* PropertyValue instead of
-		// a number. validateRecover would then pass on a Recover that
-		// reconstructed the wrong type.
 		if n, ok := v.(json.Number); ok {
 			f, err := n.Float64()
 			if err != nil {
@@ -1482,17 +1427,6 @@ func propertyValueFromState(v interface{}) resource.PropertyValue {
 		}
 		switch s {
 		case secretSig: // secret
-			// Two on-disk shapes carry this sig in this codebase: the engine's
-			// own state-serialization form, {sig, "value": <PropertyValue>},
-			// and the "plaintext" form this package writes when it resolves a
-			// secret from stack config (resolveSecretInputs and
-			// resolveOutputSecrets in state_injector.go; digVal in
-			// patchAndValidateResource above) — a JSON-encoded string under
-			// "plaintext", matching Automation API's ConfigValue convention.
-			// Both must recover as an actual Secret PropertyValue: falling
-			// through to the generic map case below would recover it as a
-			// nested Object instead, which is the same "Recover succeeds but
-			// reconstructs the wrong type" bug this function exists to avoid.
 			if _, hasValue := m["value"]; hasValue {
 				elem := propertyValueFromState(m["value"])
 				return resource.MakeSecret(elem), true
@@ -1504,16 +1438,6 @@ func propertyValueFromState(v interface{}) resource.PropertyValue {
 					return resource.MakeSecret(elem), true
 				}
 			}
-			// The third shape, and the one the documented file-mode workflow
-			// actually produces: "pulumi stack export" without --show-secrets
-			// writes {sig, "ciphertext": "..."}. The plaintext is not
-			// recoverable here and is not needed — this conversion feeds
-			// validateRecover, which checks that outputs are SHAPED the way
-			// the delta expects. What matters is that the value stays a
-			// Secret. Falling through returned a plain Object, so Recover was
-			// handed an object where it required a scalar, failed, and
-			// patchAndValidateResource reverted every patch for the resource
-			// while reporting overall success.
 			if ciphertext, ok := m["ciphertext"].(string); ok {
 				return resource.MakeSecret(resource.NewStringProperty(ciphertext)), true
 			}
@@ -1531,22 +1455,6 @@ func propertyValueFromState(v interface{}) resource.PropertyValue {
 	return resource.NewPropertyValueRepl(v, nil, replv)
 }
 
-// deltaPropertyValue converts a JSON-decoded __pulumi_raw_state_delta into a
-// PropertyValue.
-//
-// Only json.Number needs special handling, and it needs it for the same reason
-// propertyValueFromState does: both of the delta's producers (PatchState and
-// LoadNonImportableFile) decode with UseNumber to keep large integers exact,
-// resource.NewPropertyValue has no case for json.Number, and reflection reports
-// its Kind as String. The delta's own numeric fields are typed on the bridge
-// side — assetDelta.archiveFormat is an archive.Format, not a string — so a
-// stringified number makes UnmarshalRawStateDelta fail outright with "cannot
-// unmarshal string into Go struct field ... of type archive.Format", and
-// patchAndValidateResource then reverts every patch for the resource.
-//
-// Unlike propertyValueFromState this deliberately does NOT interpret Pulumi
-// sentinel maps: a delta is the bridge's own encoding, so a sig-keyed map
-// inside one would be data, not a sentinel.
 func deltaPropertyValue(v interface{}) resource.PropertyValue {
 	replv := func(v interface{}) (resource.PropertyValue, bool) {
 		if n, ok := v.(json.Number); ok {
@@ -1733,11 +1641,6 @@ func PatchStateFromSchema(
 	configSecrets map[string]string,
 	configDir string,
 ) ([]byte, *PatchStateResult, error) {
-	// Parse state using a decoder with UseNumber to preserve exact number
-	// representations. Without this, integers above 2^53 silently decode to
-	// a different integer (no error, no malformed output); scientific
-	// notation only appears once a number reaches ~1e21, which Pulumi's
-	// state parser rejects.
 	var state map[string]interface{}
 	dec := json.NewDecoder(strings.NewReader(string(stateData)))
 	dec.UseNumber()

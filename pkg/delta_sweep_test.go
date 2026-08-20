@@ -32,34 +32,6 @@ import (
 	ctyjson "github.com/zclconf/go-cty/cty/json"
 )
 
-// The delta sweep runs every NON-IMPORTABLE resource type in a provider through
-// the same pipeline production uses, and requires the recovered raw state to
-// equal what went in.
-//
-// Behind a build tag because it probes hundreds of resource types and takes
-// minutes. It needs the provider binary but NO cloud credentials:
-//
-//	go test -tags deltasweep ./pkg/ -run TestDeltaSweep -v -timeout 30m
-//
-// Non-importable types are the population that matters: they are the only ones
-// this tool computes deltas for. Everything else gets its delta from the bridge
-// during "pulumi import".
-//
-// Two rules this sweep must follow, both learned by getting them wrong in
-// smaller tests where the damage was visible:
-//
-//  1. Decode with UseNumber on BOTH sides. A plain decode turns large integers
-//     into float64 on both, so the comparison silently agrees about a value
-//     neither side represents correctly.
-//  2. Report WHICH attribute differs, never a boolean. An earlier prototype
-//     reported "5 mismatches of 10 types"; careful per-attribute comparison of
-//     one of them showed 0 differing attributes of 23. The finding was an
-//     artifact of the comparator and was withdrawn. A sweep that cries wolf is
-//     worse than no sweep.
-//
-// It also accounts for what it SKIPPED. A sweep that silently drops the types
-// it could not build a value for reads as coverage it does not have.
-
 var sweepLimit = flag.Int("delta-sweep-limit", 0,
 	"maximum non-importable resource types to sweep (0 = no limit)")
 
@@ -118,7 +90,6 @@ func TestDeltaSweep(t *testing.T) {
 		sweepOne(ctx, t, prov, pwm, typ, schemas.ResourceTypes[typ].Block.ImpliedType(), &out)
 	}
 
-	// Report everything, including what was not exercised.
 	t.Logf("swept %d non-importable types: %d ok, %d mismatch, %d recover-fail, "+
 		"%d compute-fail, %d unbuildable value, %d no bridged schema",
 		len(nonImportable), len(out.ok), len(out.mismatch), len(out.recoverFail),
@@ -145,9 +116,6 @@ func TestDeltaSweep(t *testing.T) {
 			map[bool]string{true: " ...", false: ""}[len(label.list) > 25])
 	}
 
-	// Only a genuine reconstruction difference fails the sweep. A type whose
-	// value could not be built, or which has no bridged schema, was not
-	// exercised — counted and named above, but not treated as a defect.
 	if len(out.mismatch) > 0 || len(out.recoverFail) > 0 {
 		t.Errorf("%d type(s) did not reconstruct their raw state exactly and %d failed to recover",
 			len(out.mismatch), len(out.recoverFail))
@@ -193,10 +161,6 @@ func sweepOne(
 		return
 	}
 
-	// The production converters, deliberately. propertyValueFromState is the
-	// only one with a json.Number case; NewPropertyMapFromMap turns every
-	// UseNumber-decoded number into a String property, which made this sweep
-	// report three false mismatches on numeric attributes before it was fixed.
 	rsd, err := tfbridge.UnmarshalRawStateDelta(deltaPropertyValue(decodeExact(t, deltaJSON)))
 	if err != nil {
 		out.recoverFail = append(out.recoverFail, typ)
@@ -215,24 +179,12 @@ func sweepOne(
 	out.ok = append(out.ok, typ)
 }
 
-// sweepValue builds a populated value for a resource type from its implied
-// type. Populated, not all-null: an all-null value exercises the walk and
-// almost nothing else, so it would report success without testing naming,
-// pluralization or element handling.
 func sweepValue(ity cty.Type) ([]byte, error) {
 	if !ity.IsObjectType() {
 		return nil, fmt.Errorf("not an object type")
 	}
 	vals := map[string]cty.Value{}
 	for name, at := range ity.AttributeTypes() {
-		// "timeouts" is left null deliberately. ComputeInjectionState strips it
-		// from both the type and the Pulumi outputs — mirroring what the sdk-v2
-		// shim does in production, where no bridged resource's props ever
-		// carries it — so a populated timeouts block would make every type with
-		// one report a difference the pipeline creates ON PURPOSE. That
-		// behaviour has its own dedicated coverage in
-		// TestComputeInjectionState_TimeoutsDeltaRecovers, including the
-		// populated case; it does not belong in a mismatch count.
 		if name == "timeouts" {
 			vals[name] = cty.NullVal(at)
 			continue
@@ -245,8 +197,6 @@ func sweepValue(ity cty.Type) ([]byte, error) {
 	return ctyjson.Marshal(cty.ObjectVal(vals), ity)
 }
 
-// sampleValue returns a representative non-null value for a cty type, falling
-// back to null for shapes it cannot populate meaningfully.
 func sampleValue(t cty.Type) cty.Value {
 	switch {
 	case t == cty.String:
@@ -271,15 +221,10 @@ func sampleValue(t cty.Type) cty.Value {
 		}
 		return cty.ObjectVal(vals)
 	default:
-		// DynamicPseudoType, tuples and anything else: null rather than a
-		// guess. Counted as swept, but honestly not exercised deeply.
 		return cty.NullVal(t)
 	}
 }
 
-// diffAttributes names the attributes that differ, rather than returning a
-// boolean. Recovered raw state is schema-complete, so an attribute the original
-// omitted is only a difference if it came back non-null.
 func diffAttributes(want, got map[string]interface{}) []string {
 	var diffs []string
 	for k, w := range want {

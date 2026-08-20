@@ -38,15 +38,6 @@ func testVersion(t *testing.T, s string) versions.Version {
 	return v
 }
 
-// TestProviderInstallLockExcludesTheSamePath pins the property that keeps two
-// callers from installing and exec-ing one provider binary at the same time.
-// Losing it produces "text file busy" on Linux, or a go-plugin handshake
-// failure against a half-written binary elsewhere — see
-// TestLoadProviderIsSafeForConcurrentCallers (build tag "providerload") for the
-// end-to-end reproduction against a real download.
-//
-// pkg/pathlock covers the locking itself; what is specific here is that the
-// key names the path this loader writes.
 func TestProviderInstallLockExcludesTheSamePath(t *testing.T) {
 	t.Parallel()
 
@@ -77,10 +68,6 @@ func TestProviderInstallLockExcludesTheSamePath(t *testing.T) {
 	}
 }
 
-// TestProviderInstallLockIsPerPath: different providers, versions and cache
-// directories write different files, so they must not serialize against each
-// other — "digest tf" loads several providers, and a global lock would make
-// each wait for the last one's download.
 func TestProviderInstallLockIsPerPath(t *testing.T) {
 	t.Parallel()
 
@@ -98,8 +85,6 @@ func TestProviderInstallLockIsPerPath(t *testing.T) {
 		"different version":   lockProviderInstall(dir, aws, v6),
 		"different cache dir": lockProviderInstall(t.TempDir(), aws, v5),
 	} {
-		// Acquiring at all is the assertion: a global lock would have
-		// deadlocked the test before reaching here.
 		require.NotNil(t, unlock, name)
 		unlock()
 	}

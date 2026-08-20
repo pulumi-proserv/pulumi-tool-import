@@ -65,7 +65,6 @@ func propagationPreview(t *testing.T) *PreviewDigest {
 	return d
 }
 
-// injected pulls the last resource out of an injected state document.
 func injected(t *testing.T, out []byte) map[string]interface{} {
 	t.Helper()
 	var doc map[string]interface{}
@@ -104,36 +103,24 @@ func TestInjectNonImportable_OutputsFromSidecarInputsFromProgram(t *testing.T) {
 
 	r := injected(t, out)
 
-	// Outputs come from the sidecar's Terraform attributes, renamed. With no
-	// provider schema loaded the camelCase fallback applies.
 	outputs := r["outputs"].(map[string]interface{})
 	assert.Equal(t, "rtb-0e370d1fdde0890b3", outputs["routeTableId"])
 	assert.Equal(t, "vgw-0cdee3deb918b1983", outputs["vpnGatewayId"])
 
-	// Inputs come from the program, so preview diffs them to nothing.
 	inputs := r["inputs"].(map[string]interface{})
 	assert.Equal(t, "rtb-0e370d1fdde0890b3", inputs["routeTableId"])
 	assert.Equal(t, []interface{}{}, inputs["__defaults"])
 
-	// No sidecar delta was supplied here, so none is written.
 	assert.NotContains(t, outputs, "__pulumi_raw_state_delta")
 }
 
 func TestInjectNonImportable_CarriesDigestOutputsAndDelta(t *testing.T) {
 	t.Parallel()
 	sidecar := propagationSidecar()
-	// What "digest tf" computed while a provider was open (Task 2b).
 	sidecar.Resources[0].PulumiOutputs = map[string]interface{}{
 		"routeTableId": "rtb-0e370d1fdde0890b3",
 		"vpnGatewayId": "vgw-0cdee3deb918b1983",
 	}
-	// A real digest-computed delta for a resource with no field-level deltas
-	// still carries {"obj":{}} at the top: an object's raw state can never be
-	// recovered from a bare {} (rawStateRecoverNatural refuses to recover
-	// Object-typed values), only from an explicit, even if empty, "obj" node.
-	// See ComputeInjectionState (pkg/raw_state_delta.go) and
-	// TestComputeInjectionState_RandomPet, which shows the bridge itself
-	// produces exactly this shape for a flat resource.
 	sidecar.Resources[0].RawStateDelta = map[string]interface{}{"obj": map[string]interface{}{}}
 	sidecar.Resources[0].SchemaVersion = 2
 
@@ -146,19 +133,12 @@ func TestInjectNonImportable_CarriesDigestOutputsAndDelta(t *testing.T) {
 	assert.Equal(t, "rtb-0e370d1fdde0890b3", outputs["routeTableId"])
 	assert.Contains(t, outputs, "__pulumi_raw_state_delta")
 
-	// __meta records the schema version the provider reported, so a later
-	// provider upgrade runs the right state upgraders.
 	assert.Contains(t, outputs["__meta"], "\"schema_version\":\"2\"")
 }
 
 func TestInjectNonImportable_MetaWithoutDelta(t *testing.T) {
 	t.Parallel()
 	sidecar := propagationSidecar()
-	// ComputeInjectionState (pkg/raw_state_delta.go) can report a schema
-	// version even when it could not compute a delta at all: the schema
-	// version comes straight from the provider's schema, independent of
-	// whether delta computation succeeded. __meta must not be silently
-	// dropped along with the (here, entirely absent) delta.
 	sidecar.Resources[0].SchemaVersion = 2
 
 	out, result, err := InjectNonImportable(
@@ -180,15 +160,6 @@ func TestInjectNonImportable_DropsDeltaThatNoLongerRecovers(t *testing.T) {
 	t.Parallel()
 	sidecar := propagationSidecar()
 	sidecar.Resources[0].PulumiOutputs = map[string]interface{}{"routeTableId": "rtb-1"}
-	// A delta that cannot apply to these outputs: it claims routeTableId's raw
-	// representation is an array delta, but the output value is a string.
-	// (An arbitrary unknown key under "obj", e.g. {"nope": {}}, does NOT
-	// exercise this path — encoding/json silently ignores unrecognized object
-	// fields when unmarshalling into objDelta, so such a delta is
-	// indistinguishable from an empty one and recovers just fine. Verified
-	// empirically against the real tfbridge.UnmarshalRawStateDelta/Recover.)
-	// Rather than write state that fails at the next preview, injection drops
-	// the delta and falls back to the bridge's pre-delta reconstruction.
 	sidecar.Resources[0].RawStateDelta = map[string]interface{}{
 		"obj": map[string]interface{}{
 			"ps": map[string]interface{}{
@@ -205,32 +176,18 @@ func TestInjectNonImportable_DropsDeltaThatNoLongerRecovers(t *testing.T) {
 	assert.Equal(t, 0, result.DeltaDroppedSensitive)
 	require.Len(t, result.DeltaDroppedNotes, 1)
 	assert.Contains(t, result.DeltaDroppedNotes[0], "aws_vpn_gateway_route_propagation.prop[0]")
-	// The Recover error itself must survive into the note: it is the single
-	// most useful fact for deciding whether the delta could be repaired.
 	assert.Contains(t, result.DeltaDroppedNotes[0], "recover:")
 
 	outputs := injected(t, out)["outputs"].(map[string]interface{})
 	assert.NotContains(t, outputs, "__pulumi_raw_state_delta")
 }
 
-// TestInjectNonImportable_FillsOutputsMissingFromTerraform is the regression
-// test for the whole-branch finding: "region" is per-resource in the Pulumi
-// AWS provider (v7+, bridging terraform-provider-aws v6+) but provider-level
-// configuration in Terraform AWS 5.x, so it never appears in a Terraform
-// resource's state attributes and so never reaches the sidecar. The program's
-// inputs do carry it (the preview create step reflects what the program
-// declared), and a successfully created resource's outputs are normally a
-// superset of its inputs — so a property Terraform has no opinion on must
-// still be filled into outputs from inputs, or the next preview reports a
-// spurious "update".
 func TestInjectNonImportable_FillsOutputsMissingFromTerraform(t *testing.T) {
 	t.Parallel()
 	preview := propagationPreview(t)
 	preview.Steps[0].NewState["inputs"].(map[string]interface{})["region"] = "us-west-2"
 
 	sidecar := propagationSidecar()
-	// The sidecar's Terraform attributes carry no "region": Terraform AWS 5.x
-	// models it as provider config, not a resource attribute.
 
 	out, _, err := InjectNonImportable(
 		minimalState(goodProviderRef), sidecar, preview, nil, nil)
@@ -238,9 +195,7 @@ func TestInjectNonImportable_FillsOutputsMissingFromTerraform(t *testing.T) {
 
 	r := injected(t, out)
 	outputs := r["outputs"].(map[string]interface{})
-	// Filled from inputs, since Terraform never reported it.
 	assert.Equal(t, "us-west-2", outputs["region"])
-	// Terraform-derived outputs are untouched.
 	assert.Equal(t, "rtb-0e370d1fdde0890b3", outputs["routeTableId"])
 
 	inputs := r["inputs"].(map[string]interface{})
@@ -249,15 +204,9 @@ func TestInjectNonImportable_FillsOutputsMissingFromTerraform(t *testing.T) {
 	require.NoError(t, VerifyDeploymentIntegrity(out))
 }
 
-// TestInjectNonImportable_FillDoesNotOverwriteTerraformOutput asserts the
-// fill is one-directional: a property Terraform *did* report is never
-// clobbered by the program's input, even when the two disagree (which can
-// happen legitimately, e.g. a value Terraform computed differently than what
-// was requested).
 func TestInjectNonImportable_FillDoesNotOverwriteTerraformOutput(t *testing.T) {
 	t.Parallel()
 	preview := propagationPreview(t)
-	// Disagrees with the sidecar's Attributes value for the same property.
 	preview.Steps[0].NewState["inputs"].(map[string]interface{})["routeTableId"] = "rtb-DIFFERENT"
 
 	out, _, err := InjectNonImportable(
@@ -265,14 +214,9 @@ func TestInjectNonImportable_FillDoesNotOverwriteTerraformOutput(t *testing.T) {
 	require.NoError(t, err)
 
 	outputs := injected(t, out)["outputs"].(map[string]interface{})
-	// The Terraform-derived value wins; the input never overwrites it.
 	assert.Equal(t, "rtb-0e370d1fdde0890b3", outputs["routeTableId"])
 }
 
-// TestInjectNonImportable_FillSkipsReservedKeys asserts the reserved bridge
-// keys are handled the way the fill decided: __defaults is input-only
-// bookkeeping and must never reach outputs, even though it is always present
-// in inputs by the time the fill runs.
 func TestInjectNonImportable_FillSkipsReservedKeys(t *testing.T) {
 	t.Parallel()
 	out, _, err := InjectNonImportable(
@@ -287,15 +231,9 @@ func TestInjectNonImportable_FillSkipsReservedKeys(t *testing.T) {
 	assert.NotContains(t, outputs, "__defaults", "__defaults must never leak into outputs")
 }
 
-// TestInjectNonImportable_FillWrapsSecretInput is the regression test for the
-// leak this fix could introduce: a secret input missing from outputs must be
-// filled in still wrapped in Pulumi's secret envelope, never as a bare
-// plaintext value.
 func TestInjectNonImportable_FillWrapsSecretInput(t *testing.T) {
 	t.Parallel()
 	preview := propagationPreview(t)
-	// A property the sidecar's Attributes never carries (like "region"), but
-	// this time a masked secret in the program's inputs.
 	preview.Steps[0].NewState["inputs"].(map[string]interface{})["presharedKey"] = "[secret]"
 
 	sidecar := propagationSidecar()
@@ -313,17 +251,9 @@ func TestInjectNonImportable_FillWrapsSecretInput(t *testing.T) {
 	assert.Equal(t, "1b47061264138c4ac30d75fd1eb44270", envelope["4dabf18193072939515e22adb298388d"])
 	assert.Equal(t, `"hunter2"`, envelope["plaintext"])
 
-	// The backstop placeholder sweep must still pass on the filled value.
 	require.NoError(t, VerifyDeploymentIntegrity(out))
 }
 
-// TestCheckNoPlaceholders_NestedDepth covers the backstop's whole point: the
-// targeted resolvers only look at top-level properties, so a placeholder
-// buried inside a nested block is exactly what this is here to catch. No test
-// went deeper than one level before — recorded as a unit-level gap in
-//
-// The path in the error matters as much as the detection: an operator given
-// only "a placeholder is somewhere in this resource" cannot act on it.
 func TestCheckNoPlaceholders_NestedDepth(t *testing.T) {
 	t.Parallel()
 	r := &NonImportableResource{
@@ -392,9 +322,6 @@ func TestCheckNoPlaceholders_NestedDepth(t *testing.T) {
 	}
 }
 
-// TestCheckNoPlaceholders_CleanNestedValuePasses is the other half: a deeply
-// nested structure with no placeholder must not trip the backstop. Without
-// this, a check that always errored would pass the tests above.
 func TestCheckNoPlaceholders_CleanNestedValuePasses(t *testing.T) {
 	t.Parallel()
 	r := &NonImportableResource{Type: "aws:ec2/x:X", Name: "clean"}
@@ -428,28 +355,12 @@ func TestInjectNonImportable_UnresolvedSecretFails(t *testing.T) {
 	sidecar := propagationSidecar()
 	sidecar.Resources[0].RedactedAttributes = map[string]string{"shared_key": "route_shared_key"}
 
-	// No config secrets supplied: the placeholder cannot be resolved, so the
-	// command must fail rather than write "[secret]" into state.
 	_, _, err := InjectNonImportable(
 		minimalState(goodProviderRef), sidecar, preview, nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "route_shared_key")
 }
 
-// TestInjectNonImportable_DropsMaskedSecretWithNoTerraformValue is the
-// regression test for the e2e run of 2026-08-14, where every scenario failed
-// on aws_iot_certificate's "ca_pem".
-//
-// A Pulumi provider marks a property secret from its schema, so "pulumi
-// preview --json" emits "[secret]" for it whether or not it holds a value.
-// Terraform's side is value-driven: redactSensitivePaths skips a null
-// attribute (module_map.go), so the digest records no config key for it and
-// none is written to stack config. Both halves are individually right; the
-// mismatch is that the preview masks a property Terraform never had.
-//
-// The property must be dropped, not resolved and not fatal. There is no
-// secret to recover, and leaving the literal "[secret]" in inputs would write
-// a known-wrong value into state.
 func TestInjectNonImportable_DropsMaskedSecretWithNoTerraformValue(t *testing.T) {
 	t.Parallel()
 
@@ -458,8 +369,6 @@ func TestInjectNonImportable_DropsMaskedSecretWithNoTerraformValue(t *testing.T)
 		attrs map[string]interface{}
 	}{
 		{
-			// The shape aws_iot_certificate produces: the attribute exists in
-			// state and is explicitly null.
 			name: "explicitly null",
 			attrs: map[string]interface{}{
 				"route_table_id": "rtb-0e370d1fdde0890b3",
@@ -491,11 +400,6 @@ func TestInjectNonImportable_DropsMaskedSecretWithNoTerraformValue(t *testing.T)
 	}
 }
 
-// TestInjectNonImportable_MaskedSecretWithValueButNoConfigKeyFails pins the
-// half of the guard that must survive the fix above. Here Terraform DOES have
-// a value for the attribute, so a missing config key means the digest and the
-// sidecar genuinely disagree — the corruption the hard error exists to catch.
-// Dropping the property here would silently discard a real secret.
 func TestInjectNonImportable_MaskedSecretWithValueButNoConfigKeyFails(t *testing.T) {
 	t.Parallel()
 	preview := propagationPreview(t)
@@ -503,7 +407,6 @@ func TestInjectNonImportable_MaskedSecretWithValueButNoConfigKeyFails(t *testing
 
 	sidecar := propagationSidecar()
 	sidecar.Resources[0].Attributes["shared_key"] = "(sensitive)"
-	// RedactedAttributes deliberately left empty.
 
 	_, _, err := InjectNonImportable(
 		minimalState(goodProviderRef), sidecar, preview, nil, nil)
@@ -532,12 +435,6 @@ func TestInjectNonImportable_ResolvesSecretFromConfig(t *testing.T) {
 	assert.Equal(t, `"hunter2"`, envelope["plaintext"])
 }
 
-// TestInjectNonImportable_ResolvedOutputSecretIsWrapped is the regression
-// test for the whole-branch finding that resolveOutputSecrets wrote a
-// resolved output secret bare, while resolveSecretInputs correctly wrapped
-// the same kind of value for inputs. A VPN pre-shared key (or similar)
-// resolved from stack config must land in the deployment's outputs inside
-// Pulumi's secret envelope, not in plaintext.
 func TestInjectNonImportable_ResolvedOutputSecretIsWrapped(t *testing.T) {
 	t.Parallel()
 	sidecar := propagationSidecar()
@@ -561,9 +458,6 @@ func TestInjectNonImportable_ResolvedOutputSecretIsWrapped(t *testing.T) {
 	assert.Equal(t, "1b47061264138c4ac30d75fd1eb44270", envelope["4dabf18193072939515e22adb298388d"])
 	assert.Equal(t, `"hunter2"`, envelope["plaintext"])
 
-	// The backstop placeholder sweep must still pass: the envelope's own
-	// values ("plaintext"'s JSON-encoded content, the sig) are not
-	// themselves "(sensitive)" or "[secret]".
 	require.NoError(t, VerifyDeploymentIntegrity(out))
 }
 
@@ -577,9 +471,6 @@ func TestInjectNonImportable_OutputPassesIntegrityCheck(t *testing.T) {
 
 func TestInjectNonImportable_OrdersDependenciesFirst(t *testing.T) {
 	t.Parallel()
-	// Two injected resources where the second depends on the first. The
-	// dependency must be written earlier in the array: VerifyIntegrity rejects a
-	// forward reference.
 	preview, err := ParsePreviewJSON([]byte(`{
 	  "steps": [
 	    {
@@ -638,16 +529,6 @@ func TestInjectNonImportable_OrdersDependenciesFirst(t *testing.T) {
 	require.NoError(t, VerifyDeploymentIntegrity(out))
 }
 
-// TestResolveSecretInputs_AbsentAttributeDependsOnNameTrust covers the
-// distinction that decides whether dropping a masked input is safe.
-//
-// A masked input whose Terraform attribute is ABSENT is the write-only case
-// only if the Terraform name is trustworthy. When it came from the provider
-// schema it is; when it came from PulumiToTerraformName it is a guess, and a
-// wrong guess looks exactly the same — the bridge pluralises list and set
-// names, which that transform cannot invert, so hundreds of real properties do
-// not round-trip. Dropping on a guess silently deletes a program-declared
-// input, and in file mode no preview ever runs to notice.
 func TestResolveSecretInputs_AbsentAttributeDependsOnNameTrust(t *testing.T) {
 	t.Parallel()
 
@@ -674,9 +555,6 @@ func TestResolveSecretInputs_AbsentAttributeDependsOnNameTrust(t *testing.T) {
 
 	t.Run("guessed name is not trusted, so it is an error", func(t *testing.T) {
 		t.Parallel()
-		// No schema: PulumiToTerraformName("subnetMappings") yields
-		// "subnet_mappings", which the real attribute "subnet_mapping" does
-		// not match. Previously this silently deleted the input.
 		inputs := map[string]interface{}{"subnetMappings": secretPlaceholder}
 		_, err := resolveSecretInputs(newResource(), inputs, nil, nil)
 		require.Error(t, err)
@@ -695,13 +573,6 @@ func TestResolveSecretInputs_AbsentAttributeDependsOnNameTrust(t *testing.T) {
 	})
 }
 
-// TestCheckNoPlaceholders_RejectsUnknownSentinel guards the value the engine
-// writes for something not yet known at preview time. An injected resource can
-// depend on another injected resource — orderInjected exists because those
-// edges occur, and the e2e fixture has one — so at the injecting preview the
-// dependency's outputs are unknown and the dependent's inputs carry this
-// sentinel. Copied into state it becomes an ordinary-looking string that no
-// later operation can tell from a real value.
 func TestCheckNoPlaceholders_RejectsUnknownSentinel(t *testing.T) {
 	t.Parallel()
 
@@ -714,35 +585,23 @@ func TestCheckNoPlaceholders_RejectsUnknownSentinel(t *testing.T) {
 	assert.Contains(t, err.Error(), "unknown-value sentinel")
 	assert.Contains(t, err.Error(), "inputs.target", "the path must be reported")
 
-	// Nested, to confirm the walk reaches it.
 	err = checkNoPlaceholders(r, "output", map[string]interface{}{
 		"a": []interface{}{map[string]interface{}{"b": unknownPlaceholder}},
 	}, "outputs")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "outputs.a[0].b")
 
-	// A real value must still pass.
 	require.NoError(t, checkNoPlaceholders(r, "input", map[string]interface{}{
 		"target": "arn:aws:iot:us-west-2:1234:cert/abc",
 	}, "inputs"))
 }
 
-// TestFormatImportID_NullIsEmptyNotAngleNil pins the other half of the
-// empty-ID guard: fmt.Sprintf("%v", nil) yields the literal "<nil>", which
-// would be injected as though it were a real ID.
 func TestFormatImportID_NullIsEmptyNotAngleNil(t *testing.T) {
 	t.Parallel()
 	assert.Equal(t, "", formatImportID(nil))
 	assert.Equal(t, "vpc-123", formatImportID("vpc-123"))
 }
 
-// TestInjectNonImportable_EmptyIDIsRejected guards the deployment invariant
-// nothing else checks. VerifyDeploymentIntegrity only rejects the inverse case
-// (a non-custom resource that HAS an ID), so an injected custom resource with
-// an empty ID passed every check and then panicked the engine on the next
-// operation — contract.Assertf(req.ID != "", "Diff requires an ID"). Some
-// resource types are simultaneously id-less and non-importable, which is
-// exactly the population injected here.
 func TestInjectNonImportable_EmptyIDIsRejected(t *testing.T) {
 	t.Parallel()
 
@@ -755,14 +614,6 @@ func TestInjectNonImportable_EmptyIDIsRejected(t *testing.T) {
 	assert.Contains(t, err.Error(), "no import ID")
 }
 
-// TestInjectNonImportable_EmptySidecarStillVerifies covers the only path
-// through patch-state that verified nothing at all.
-//
-// The empty-sidecar early return hands back a NON-nil (empty) InjectResult, so
-// the command's fallback check — guarded by "injectResult == nil" — was skipped
-// too, and stack mode then imported the state into the live stack unverified.
-// A sidecar with "resources": [] is what a run that found nothing writes, so
-// this is reachable without hand-editing.
 func TestInjectNonImportable_EmptySidecarStillVerifies(t *testing.T) {
 	t.Parallel()
 
@@ -782,8 +633,6 @@ func TestInjectNonImportable_EmptySidecarStillVerifies(t *testing.T) {
 		})
 	}
 
-	// A sound state still passes, so the guard is not simply rejecting
-	// everything.
 	out, result, err := InjectNonImportable(minimalState(goodProviderRef), nil, nil, nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, result)
@@ -791,16 +640,6 @@ func TestInjectNonImportable_EmptySidecarStillVerifies(t *testing.T) {
 	assert.NotEmpty(t, out)
 }
 
-// TestResolveUnknownInputs_SubstitutesFromOutputs covers the case the e2e
-// fixture actually produces: an injected resource referencing another injected
-// resource. At the preview that drives injection the dependency is not in state
-// yet, so the engine serializes the referring input as its unknown sentinel.
-//
-// Before the guard that rejects the sentinel existed, this was written into
-// state verbatim and twelve green e2e scenarios never noticed — it is an
-// ordinary-looking string. The guard alone is not enough though: the value is
-// knowable, because Terraform already created both resources and the real value
-// is in the sidecar as this resource's own output.
 func TestResolveUnknownInputs_SubstitutesFromOutputs(t *testing.T) {
 	t.Parallel()
 
@@ -818,14 +657,9 @@ func TestResolveUnknownInputs_SubstitutesFromOutputs(t *testing.T) {
 	assert.Equal(t, "arn:aws:iot:us-west-2:123456789012:cert/abc123", inputs["target"])
 	assert.Equal(t, "my-policy", inputs["policy"], "a resolved input must not be disturbed")
 
-	// And the result now passes the placeholder screen.
 	require.NoError(t, checkNoPlaceholders(r, "input", inputs, "inputs"))
 }
 
-// TestResolveUnknownInputs_UnresolvableIsLeftForTheScreen pins the degradation.
-// An unknown with no corresponding output means the program references
-// something Terraform has no record of, so injection would be inventing the
-// value. It stays unresolved and checkNoPlaceholders reports it with the path.
 func TestResolveUnknownInputs_UnresolvableIsLeftForTheScreen(t *testing.T) {
 	t.Parallel()
 
@@ -851,28 +685,12 @@ func TestResolveUnknownInputs_UnresolvableIsLeftForTheScreen(t *testing.T) {
 	}
 }
 
-// TestInjectResult_DeltaAttachedIsReportedPositively guards the distinction
-// between the two delta populations this tool reports on.
-//
-// Injected resources never reach the provider, so nothing would produce a
-// delta for them and "digest tf" computes it. PATCHED resources were imported,
-// and the bridge itself wrote their deltas during "pulumi import" (it calls
-// RawStateInjectDelta from Create, Read and Update). Those are counted
-// separately by PatchStateResult.DeltaValidated, and conflating the two is a
-// live hazard: the summary prints both, and an unqualified "Delta validated"
-// beside "Injected: N" reads as though it described the injected resources.
-//
-// DeltaAttached is reported positively rather than inferred from the three
-// absence counters being zero, because "every injected resource has a delta"
-// and "nothing went wrong enough to count" are different statements that look
-// identical at zero.
 func TestInjectResult_DeltaAttachedIsReportedPositively(t *testing.T) {
 	t.Parallel()
 
 	preview := propagationPreview(t)
 	sidecar := propagationSidecar()
 
-	// No delta in the sidecar: absent, not attached.
 	_, result, err := InjectNonImportable(
 		minimalState(goodProviderRef), sidecar, preview, nil, nil)
 	require.NoError(t, err)
@@ -881,7 +699,6 @@ func TestInjectResult_DeltaAttachedIsReportedPositively(t *testing.T) {
 	assert.Equal(t, 1, result.DeltaAbsentFromSidecar,
 		"the absence must still be counted and explained")
 
-	// With a delta that validates, it is attached and counted.
 	withDelta := propagationSidecar()
 	withDelta.Resources[0].RawStateDelta = map[string]interface{}{
 		"obj": map[string]interface{}{},
@@ -895,24 +712,12 @@ func TestInjectResult_DeltaAttachedIsReportedPositively(t *testing.T) {
 	assert.Equal(t, 0, result.DeltaDroppedSensitive)
 	assert.Equal(t, 0, result.DeltaDroppedUnrecoverable)
 
-	// The counters must partition the injected set, with nothing double-counted
-	// and nothing unaccounted for.
 	total := result.DeltaAttached + result.DeltaAbsentFromSidecar +
 		result.DeltaDroppedSensitive + result.DeltaDroppedUnrecoverable
 	assert.Equal(t, result.Injected, total,
 		"every injected resource must land in exactly one delta bucket")
 }
 
-// TestEnvelopeReplaceNodes_MatchesWhatTheBridgeDoes pins the encryption
-// parity between the two delta producers.
-//
-// The bridge wraps every Replace node in resource.MakeSecret before handing the
-// delta to the engine, which then persists it as ciphertext. Injection writes
-// JSON, so it cannot hand over a PropertyValue and has to re-apply the envelope
-// itself — otherwise the identical payload is encrypted when the bridge writes
-// it and plaintext when we do. A Replace node carries the provider's verbatim
-// raw state for an attribute, which is the one part of a delta that can hold
-// real values rather than structural information.
 func TestEnvelopeReplaceNodes_MatchesWhatTheBridgeDoes(t *testing.T) {
 	t.Parallel()
 
@@ -931,20 +736,15 @@ func TestEnvelopeReplaceNodes_MatchesWhatTheBridgeDoes(t *testing.T) {
 	got := envelopeReplaceNodes(delta).(map[string]interface{})
 	ps := got["obj"].(map[string]interface{})["ps"].(map[string]interface{})
 
-	// The Replace node is enveloped...
 	policy := ps["policy"].(map[string]interface{})
 	assert.Equal(t, secretSig, policy[sigKey], "a Replace node must carry the secret envelope")
 	assert.NotContains(t, policy, "replace", "the raw payload must be inside the envelope")
 	assert.Contains(t, policy["plaintext"], "secretish")
 
-	// ...and nothing else is.
 	assert.NotContains(t, ps["plain"], sigKey, "structural nodes must stay plain")
 	assert.Equal(t, []interface{}{"region"},
 		got["obj"].(map[string]interface{})["ignored"], "non-map values pass through")
 
-	// The whole point: it must survive the trip back. UnmarshalRawStateDelta
-	// calls propertyvalue.RemoveSecrets before decoding, which is the bridge
-	// accommodating its own Marshal — so a secreted node is unwrapped on read.
 	pv := propertyValueFromState(got)
 	recovered, err := tfbridge.UnmarshalRawStateDelta(pv)
 	require.NoError(t, err)

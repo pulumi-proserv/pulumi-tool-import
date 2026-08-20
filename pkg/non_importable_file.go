@@ -21,18 +21,11 @@ import (
 	"os"
 )
 
-// NonImportableFile is the sidecar "resolve tf" writes beside the import file,
-// recording the resources it left out because their Terraform type declares no
-// importer.
 type NonImportableFile struct {
 	Comment   string                  `json:"_comment,omitempty"`
 	Resources []NonImportableResource `json:"resources"`
 }
 
-// LoadNonImportableFile reads a sidecar written by "resolve tf".
-//
-// UseNumber keeps large integer attributes exact; they are written into state
-// unchanged, where a float64 would re-serialize as scientific notation.
 func LoadNonImportableFile(path string) (*NonImportableFile, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -47,10 +40,6 @@ func LoadNonImportableFile(path string) (*NonImportableFile, error) {
 	return &f, nil
 }
 
-// MapTFAttributesToPulumi renames Terraform attributes to their Pulumi property
-// names using the provider schema. An attribute the schema does not describe is
-// camelCased rather than dropped: losing state values silently is worse than
-// carrying one under a best-guess name.
 func MapTFAttributesToPulumi(
 	attrs map[string]interface{},
 	fields map[string]*SchemaFieldInfo,
@@ -66,8 +55,6 @@ func MapTFAttributesToPulumi(
 	return result
 }
 
-// PulumiToTFNames inverts the schema's name mapping, so a Pulumi property name
-// can be traced back to the Terraform attribute it came from.
 func PulumiToTFNames(fields map[string]*SchemaFieldInfo) map[string]string {
 	result := make(map[string]string, len(fields))
 	for tfName, fi := range fields {

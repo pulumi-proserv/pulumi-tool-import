@@ -32,14 +32,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestPropertyValueFromState_JSONNumberBecomesNumberProperty is the
-// regression test for the whole-branch finding that propertyValueFromState
-// silently recovered a sidecar's numeric outputs as strings.
-// LoadNonImportableFile decodes sidecars with json.Decoder.UseNumber, so
-// every numeric output arrives as json.Number, whose reflect.Kind is String
-// — resource.NewPropertyValueRepl has no case for json.Number, so before the
-// fix this fell through to the string branch. Before the fix this test
-// fails (pv.IsString() is true, pv.IsNumber() is false); after it passes.
 func TestPropertyValueFromState_JSONNumberBecomesNumberProperty(t *testing.T) {
 	t.Parallel()
 	pv := propertyValueFromState(json.Number("5"))
@@ -48,16 +40,6 @@ func TestPropertyValueFromState_JSONNumberBecomesNumberProperty(t *testing.T) {
 	assert.False(t, pv.IsString())
 }
 
-// TestValidateRecover_NumberOutputRecoversAsNumberNotString exercises the
-// same bug through the actual path validateRecover uses: an empty
-// ("obj":{}) raw state delta, which falls back to rawStateRecoverNatural.
-// That function branches on the PropertyValue's *kind* (pv.IsNumber() vs
-// pv.IsString()) to decide whether the recovered raw JSON is a bare number
-// or a quoted string. Before the fix, a json.Number output recovered as a
-// String PropertyValue, so validateRecover's guard passed (Recover reported
-// no error) while silently reconstructing the wrong Terraform raw-state
-// type — a quoted "5" instead of the number 5. This test fails before the
-// fix (recovered is `"5"`) and passes after (recovered is `5`).
 func TestValidateRecover_NumberOutputRecoversAsNumberNotString(t *testing.T) {
 	t.Parallel()
 
@@ -81,8 +63,6 @@ func TestValidateRecover_NumberOutputRecoversAsNumberNotString(t *testing.T) {
 	var back map[string]interface{}
 	require.NoError(t, json.Unmarshal(recoveredJSON, &back))
 
-	// The recovered raw state must carry a JSON number, not a JSON string
-	// containing digits.
 	_, isNumber := back["count"].(float64)
 	assert.True(t, isNumber, "count must recover as a raw JSON number, got %#v (%T)", back["count"], back["count"])
 }
@@ -192,19 +172,6 @@ func TestPatchState_PatchesFromDigest(t *testing.T) {
 	assert.Equal(t, false, inputs["forceOverwriteReplicaSecret"]) // from default
 }
 
-// TestPatchState_NotReadNumericField_JSONNumber_PatchesInputAndOutput is the
-// regression test for isSimpleValue missing a json.Number case.
-// cmd/patch_state_cfn.go decodes the CFN digest with json.Decoder.UseNumber
-// (to preserve large integers exactly), so a numeric not-read field's digest
-// value arrives here as json.Number rather than float64. patchResourceFields
-// writes digVal into inputs unconditionally, but the matching output write
-// is gated by isSimpleValue. Before the fix, isSimpleValue(json.Number(...))
-// was false, so the output write was silently skipped: patched state ended
-// up with an input and no matching output, which is exactly the divergence
-// outputStale/outputIsBadPlain exist to prevent, and it surfaces as a
-// spurious update on the next preview. This test fails before the fix
-// (inputs["recoveryWindowInDays"] is set, outputs["recoveryWindowInDays"] is
-// absent) and passes after.
 func TestPatchState_NotReadNumericField_JSONNumber_PatchesInputAndOutput(t *testing.T) {
 	t.Parallel()
 
@@ -229,8 +196,6 @@ func TestPatchState_NotReadNumericField_JSONNumber_PatchesInputAndOutput(t *test
 	}
 	stateData, _ := json.Marshal(state)
 
-	// Digest: recovery_window_in_days arrives as json.Number, as it would
-	// from a UseNumber-decoded CFN digest.
 	digest := ModuleMap{
 		RootResources: []ModuleResource{
 			{
@@ -1985,15 +1950,6 @@ func TestPatchStateFromSchema_DeltaUpdatesOnArrayPatch_REMOVED(t *testing.T) {
 	assert.True(t, hasObj, "element 0 delta should have 'obj' marker")
 }
 
-// TestPropertyValueFromState_CiphertextSecretStaysSecret covers the secret
-// shape the DOCUMENTED file-mode workflow produces. README.md and
-// docs/non-importable-resources.md both say `pulumi stack export > state.json`
-// with no --show-secrets, which writes {sig, ciphertext} rather than the
-// {sig, value} form the engine uses in memory or the {sig, plaintext} form
-// --show-secrets produces. Recovering it as a plain Object made the bridge's
-// Recover fail, so patchAndValidateResource reverted every patch for the
-// resource while the run still reported success. Stack mode never saw it
-// because auto.Stack.Export passes --show-secrets.
 func TestPropertyValueFromState_CiphertextSecretStaysSecret(t *testing.T) {
 	t.Parallel()
 
@@ -2020,11 +1976,6 @@ func TestPropertyValueFromState_CiphertextSecretStaysSecret(t *testing.T) {
 	}
 }
 
-// TestDeltaPropertyValue_JSONNumberSurvives pins the delta side of the
-// UseNumber contract. Both producers of a delta decode with UseNumber, and the
-// delta's numeric fields are typed on the bridge side (archive.Format), so a
-// number arriving as a string made UnmarshalRawStateDelta fail outright — and
-// a failure there reverts every patch for the resource.
 func TestDeltaPropertyValue_JSONNumberSurvives(t *testing.T) {
 	t.Parallel()
 
@@ -2038,18 +1989,12 @@ func TestDeltaPropertyValue_JSONNumberSurvives(t *testing.T) {
 	var numbered map[string]interface{}
 	require.NoError(t, dec.Decode(&numbered))
 
-	// The decode mode must not change the result: that difference is the bug.
 	_, plainErr := tfbridge.UnmarshalRawStateDelta(deltaPropertyValue(plain))
 	_, numErr := tfbridge.UnmarshalRawStateDelta(deltaPropertyValue(numbered))
 	assert.NoError(t, plainErr)
 	assert.NoError(t, numErr, "a UseNumber-decoded delta must unmarshal like a plain one")
 }
 
-// TestPatchRevert_DoesNotKeepInjectedAssetDeltas guards the revert path's
-// snapshot. injectAssetDeltas mutates the delta's nested maps in place and
-// returns the same map, so a shallow snapshot shared them and "reverting" left
-// the injected entries behind — leaving the resource in a state its pre-patch
-// outputs never had.
 func TestPatchRevert_DoesNotKeepInjectedAssetDeltas(t *testing.T) {
 	t.Parallel()
 
@@ -2077,7 +2022,6 @@ func TestPatchRevert_DoesNotKeepInjectedAssetDeltas(t *testing.T) {
 	assert.JSONEq(t, string(before), string(after),
 		"the snapshot must be unaffected by injectAssetDeltas, or a revert cannot restore it")
 
-	// And the live copy really was mutated, so this is not vacuous.
 	live, err := json.Marshal(outputs[rawStateDeltaKey])
 	require.NoError(t, err)
 	assert.NotEqual(t, string(before), string(live))

@@ -22,9 +22,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// minimalState builds a stack export containing a stack resource, an aws
-// provider, and one custom resource whose provider reference is supplied by the
-// caller so tests can break it.
 func minimalState(providerRef string) []byte {
 	return []byte(fmt.Sprintf(`{
 	  "version": 3,
@@ -68,16 +65,12 @@ func TestVerifyDeploymentIntegrity_Valid(t *testing.T) {
 
 func TestVerifyDeploymentIntegrity_EmptyProviderRef(t *testing.T) {
 	t.Parallel()
-	// This is the failure reported in issue #11: an injected resource whose
-	// provider reference was never filled in.
 	err := VerifyDeploymentIntegrity(minimalState(""))
 	require.Error(t, err)
 }
 
 func TestVerifyDeploymentIntegrity_UnknownProvider(t *testing.T) {
 	t.Parallel()
-	// Well-formed reference naming a provider that is not in the snapshot —
-	// what copying a provider ref from the wrong stack produces.
 	err := VerifyDeploymentIntegrity(minimalState(
 		"urn:pulumi:dev::proj::pulumi:providers:aws::default_7_24_0::" +
 			"00000000-dead-4000-8000-000000000000"))
@@ -85,12 +78,6 @@ func TestVerifyDeploymentIntegrity_UnknownProvider(t *testing.T) {
 	assert.Contains(t, err.Error(), "unknown provider")
 }
 
-// stateWithSecretsProvider builds the same minimal, structurally valid state
-// as minimalState, but with a secrets_providers block recording the given
-// type (and, optionally, a state blob) — the shape real deployments carry:
-// "passphrase" for a local file backend, "service" for Pulumi Cloud. Neither
-// is "b64", so these fixtures are exactly what stack.Base64SecretsProvider
-// cannot deserialize and what regressed the feature end-to-end.
 func stateWithSecretsProvider(secretsProviderType, secretsProviderState string) []byte {
 	stateField := ""
 	if secretsProviderState != "" {
@@ -139,28 +126,18 @@ func stateWithSecretsProvider(secretsProviderType, secretsProviderState string) 
 
 func TestVerifyDeploymentIntegrity_PassphraseSecretsProvider(t *testing.T) {
 	t.Parallel()
-	// This is the bug found on the first real AWS run: a local file backend
-	// records "passphrase", which stack.Base64SecretsProvider rejects
-	// outright with "no known secrets provider for type \"passphrase\"".
 	require.NoError(t, VerifyDeploymentIntegrity(
 		stateWithSecretsProvider("passphrase", `{"salt": "not-a-real-salt=="}`)))
 }
 
 func TestVerifyDeploymentIntegrity_ServiceSecretsProvider(t *testing.T) {
 	t.Parallel()
-	// Pulumi Cloud records "service" — also rejected by
-	// stack.Base64SecretsProvider before the fix.
 	require.NoError(t, VerifyDeploymentIntegrity(
 		stateWithSecretsProvider("service", "")))
 }
 
 func TestVerifyDeploymentIntegrity_EncryptedSecretValueUnderNonB64Provider(t *testing.T) {
 	t.Parallel()
-	// Deserialization must not choke trying to decrypt ciphertext it cannot
-	// possibly decrypt without the real passphrase/service credentials —
-	// verification never inspects the plaintext, so it must succeed even
-	// though the "secretValue" input above is real-looking, undecodable
-	// ciphertext under a non-b64 provider.
 	require.NoError(t, VerifyDeploymentIntegrity(
 		stateWithSecretsProvider("passphrase", `{"salt": "not-a-real-salt=="}`)))
 }

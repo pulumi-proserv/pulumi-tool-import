@@ -162,11 +162,6 @@ func TestPatchStateFromCFN_DigestAttributePatch(t *testing.T) {
 	assert.Equal(t, float64(7), inputs["recoveryWindowInDays"])
 }
 
-// decodeWithUseNumber mirrors how production reads a digest: every JSON
-// decode on the reading path uses UseNumber, so numeric attributes arrive as
-// json.Number rather than float64. Tests that build attributes as Go literals
-// silently test a different type than the one the tool actually handles —
-// which is how the reflect.DeepEqual regression in 9d0c4bf reached review.
 func decodeWithUseNumber(t *testing.T, doc string) map[string]interface{} {
 	t.Helper()
 	dec := json.NewDecoder(strings.NewReader(doc))
@@ -176,14 +171,6 @@ func decodeWithUseNumber(t *testing.T, doc string) map[string]interface{} {
 	return out
 }
 
-// TestPatchStateFromCFN_LargeIntegerKeepsExactDigits closes a unit-level gap:
-// 6ac03f6 changed the decode and 8d94094 fixed isSimpleValue, but no CFN test
-// carried a large integer through patchAndValidateResource.
-//
-// 2^53+1 is the smallest integer float64 cannot represent: it round-trips as
-// 9007199254740992, one less than it should be, and does so silently. That
-// makes it the value that distinguishes a genuine json.Number path from one
-// that merely looks like it works on small numbers.
 func TestPatchStateFromCFN_LargeIntegerKeepsExactDigits(t *testing.T) {
 	t.Parallel()
 
@@ -229,10 +216,6 @@ func TestPatchStateFromCFN_LargeIntegerKeepsExactDigits(t *testing.T) {
 	assert.Equal(t, 1, result.Patched)
 	assert.Equal(t, 1, result.FieldsFromDigest)
 
-	// Asserted on the raw bytes, not the decoded value: the failure mode is
-	// re-serialization, so decoding first would hide it. A float64 round trip
-	// yields "9.007199254740992e+15" or "9007199254740992" — never the exact
-	// digits.
 	assert.Contains(t, string(patched), beyondFloat64,
 		"the exact integer must survive patching; a float64 round trip loses the last digit silently")
 	assert.NotContains(t, string(patched), "9007199254740992",

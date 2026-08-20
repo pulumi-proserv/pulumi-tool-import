@@ -120,13 +120,6 @@ values out of stack config.
 					return err
 				}
 
-				// Write the backup before anything mutates the stack, so an
-				// interrupted run leaves a one-line recovery rather than a
-				// reconstruction job.
-				//
-				// The stack name is sanitized for use in a filename: --stack
-				// commonly takes a fully qualified "org/project/stack" form,
-				// whose slashes would otherwise break the write.
 				safeStackName := strings.ReplaceAll(stack, "/", "_")
 				backupFile := fmt.Sprintf("%s-%s.backup.json", safeStackName, time.Now().UTC().Format("20060102-150405"))
 				backupPath = backupFile
@@ -140,12 +133,6 @@ values out of stack config.
 					return fmt.Errorf("writing backup: %w", err)
 				}
 
-				// The recovery command is printed in full — with --cwd, --stack
-				// and an absolute --file path — because it is the instruction an
-				// operator follows from an arbitrary directory when they are
-				// already in trouble; a bare "pulumi stack import --file
-				// <relative path>" silently targets the wrong stack, or fails,
-				// if run from anywhere but this process's CWD.
 				absBackupPath, absErr := filepath.Abs(backupPath)
 				if absErr != nil {
 					absBackupPath = backupPath
@@ -246,13 +233,6 @@ values out of stack config.
 				return err
 			}
 
-			// baseline is the preview taken before any stack mutation, used to
-			// judge the verifying preview by comparison rather than an absolute
-			// bar (see the design's Verification section). It is only needed in
-			// stack mode. An injection run already previews the stack to build
-			// the skeleton for the resources it injects — that preview is taken
-			// before Import too, so it is reused as the baseline rather than
-			// running preview a second time.
 			var baseline *pkg.PreviewDigest
 
 			var injectResult *pkg.InjectResult
@@ -291,14 +271,6 @@ values out of stack config.
 				}
 			}
 
-			// InjectNonImportable already verifies the bytes it produces
-			// (VerifyDeploymentIntegrity, called at the end of
-			// pkg.InjectNonImportable); this only needs to run for a
-			// patch-only pass, in either mode, which never went through
-			// injection. The design's Verification section requires both
-			// modes verify before writing or importing, and patch-only stack
-			// mode previously skipped this check entirely — it only ran
-			// inside injection.
 			if injectResult == nil {
 				if err := pkg.VerifyDeploymentIntegrity(patched); err != nil {
 					return err
@@ -306,8 +278,6 @@ values out of stack config.
 			}
 
 			if stackMode && baseline == nil {
-				// Patch-only stack run: nothing above has previewed the stack
-				// yet, so take the baseline now — still before Import.
 				var err error
 				baseline, err = session.PreviewJSON(cmd.Context())
 				if err != nil {
@@ -321,14 +291,6 @@ values out of stack config.
 					return err
 				}
 
-				// revertOrExplain reverts to the pre-mutation export and returns
-				// the caller's error, or — if the revert itself fails — a
-				// hand-restore instruction that still points at the backup on
-				// disk. It is used both when the verifying preview fails
-				// outright and when it succeeds but reports problems: either way
-				// the tool's whole thesis is that only a clean preview validates
-				// a mutation, so an operator who cannot verify should never be
-				// left holding mutated, unverified state.
 				revertOrExplain := func(cause error) error {
 					fmt.Fprintf(os.Stderr, "Restoring %s\n", backupPath)
 					if err := session.Import(ctx, stateData); err != nil {
@@ -349,12 +311,6 @@ values out of stack config.
 					injectedURNs = injectResult.URNs
 				}
 
-				// Verification is by comparison against the baseline, not an
-				// absolute "zero operations" bar: patch-state runs iteratively
-				// against a stack mid-migration, which nearly always has
-				// outstanding diffs before the tool ever runs, so requiring a
-				// perfectly clean preview would revert almost every legitimate
-				// patch-only pass. What must not happen is regression.
 				problems := pkg.CheckInjectionVerification(baseline, verify, injectedURNs)
 
 				if len(problems) > 0 {
@@ -375,7 +331,6 @@ values out of stack config.
 						"(%d outstanding change(s) remain in the preview).\n", outstanding)
 				}
 			} else {
-				// Write output.
 				if err := os.WriteFile(outPath, patched, 0o600); err != nil {
 					return fmt.Errorf("writing output: %w", err)
 				}
@@ -392,11 +347,6 @@ values out of stack config.
 			}
 			fmt.Fprintf(os.Stderr, "  No fields to patch: %d\n", result.NoFields)
 			fmt.Fprintf(os.Stderr, "  Digest mapped:      %d\n", result.DigestMapped)
-			// "(imported)" is load-bearing, not decoration. These count PATCHED
-			// resources, whose deltas the bridge wrote during "pulumi import";
-			// the injected resources counted below are a different population
-			// with a different producer, and an unqualified "Delta validated"
-			// next to "Injected: N" reads as though it described them.
 			fmt.Fprintf(os.Stderr, "  Deltas validated (imported): %d\n", result.DeltaValidated)
 			if result.DeltaFailed > 0 {
 				fmt.Fprintf(os.Stderr, "  Deltas failed (imported):    %d (outputs reverted)\n", result.DeltaFailed)
@@ -473,9 +423,6 @@ values out of stack config.
 	return cmd
 }
 
-// loadProvidersForDigest loads Pulumi provider schemas for the Terraform
-// providers a digest records. "digest tf" stores those addresses precisely so
-// downstream commands can do this without a Terraform state file.
 func loadProvidersForDigest(
 	digest *pkg.ModuleMap,
 ) (map[providermap.TerraformProviderName]*pkg.ProviderWithMetadata, error) {

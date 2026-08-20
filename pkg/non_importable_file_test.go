@@ -51,7 +51,6 @@ func TestLoadNonImportableFile(t *testing.T) {
 	assert.Equal(t, "vgw-0cdee3deb918b1983_rtb-0e370d1fdde0890b3", r.ID)
 	assert.Equal(t, "route_shared_key", r.RedactedAttributes["shared_key"])
 
-	// Large integers must survive as json.Number, not float64.
 	assert.Equal(t, "52848974346", r.Attributes["owner_id"].(json.Number).String())
 }
 
@@ -64,8 +63,7 @@ func TestMapTFAttributesToPulumi(t *testing.T) {
 	attrs := map[string]interface{}{
 		"route_table_id": "rtb-1",
 		"vpn_gateway_id": "vgw-1",
-		// Not in the schema — must still be carried, camelCased, never dropped.
-		"custom_thing": "kept",
+		"custom_thing":   "kept",
 	}
 
 	got := MapTFAttributesToPulumi(attrs, fields)

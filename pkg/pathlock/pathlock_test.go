@@ -53,8 +53,6 @@ func TestAcquireDoesNotExcludeOtherKeys(t *testing.T) {
 	release := Acquire(t.Name())
 	defer release()
 
-	// A global lock would deadlock here rather than fail an assertion; the
-	// timeout is what turns that into a readable failure.
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -68,9 +66,6 @@ func TestAcquireDoesNotExcludeOtherKeys(t *testing.T) {
 	}
 }
 
-// TestAcquireSerializesContendingCallers is the property the loaders depend on:
-// however many callers race, only one is ever inside the critical section, so
-// only one writes the binary and nobody execs a half-written one.
 func TestAcquireSerializesContendingCallers(t *testing.T) {
 	t.Parallel()
 

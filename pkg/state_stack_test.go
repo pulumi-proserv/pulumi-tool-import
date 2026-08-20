@@ -22,12 +22,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestPreviewJSONArgs_IncludesShowSames is the regression test for the
-// whole-branch finding that "pulumi preview --json" silently omits "same"
-// steps without --show-sames (shouldShow in pulumi/pkg/v3's
-// backend/display/display.go defaults opts.ShowSameResources to false, and
-// nothing forces it under --json). Before the fix, previewJSONArgs did not
-// include the flag — this test fails against that version and passes now.
 func TestPreviewJSONArgs_IncludesShowSames(t *testing.T) {
 	t.Parallel()
 	args := previewJSONArgs("my-stack")
@@ -36,16 +30,6 @@ func TestPreviewJSONArgs_IncludesShowSames(t *testing.T) {
 	assert.Contains(t, args, "my-stack")
 }
 
-// These fixtures hand-write {"op":"same",...} steps to exercise
-// CheckInjectedOps/CheckPreviewClean/CheckInjectionVerification in isolation.
-// That is a deliberate simplification, not a claim about what real "pulumi
-// preview --json" output looks like: without --show-sames, the real CLI
-// omits "same" steps from the JSON entirely (see the comment on
-// StackSession.PreviewJSON in state_stack.go, and shouldShow in
-// pulumi/pkg/v3's backend/display/display.go). PreviewJSON always passes
-// --show-sames, so these fixtures are a faithful stand-in for its actual
-// output — they would NOT be faithful to what "pulumi preview --json" prints
-// on its own.
 func TestCheckInjectedOps_AllSame(t *testing.T) {
 	t.Parallel()
 	preview, err := ParsePreviewJSON([]byte(`{"steps": [
@@ -76,8 +60,6 @@ func TestCheckInjectedOps_ReplaceIsAProblem(t *testing.T) {
 
 func TestCheckInjectedOps_MissingFromPreviewIsAProblem(t *testing.T) {
 	t.Parallel()
-	// A URN absent from the preview means the resource is not in the program's
-	// graph at all — injection put something in state that nothing declares.
 	preview, err := ParsePreviewJSON([]byte(`{"steps": []}`))
 	require.NoError(t, err)
 
@@ -118,11 +100,6 @@ func TestCheckPreviewClean_NonSameStepIsAProblem(t *testing.T) {
 	assert.Contains(t, problems[0], "X::a")
 }
 
-// The CheckInjectionVerification fixtures below also hand-write "same" steps
-// for the same reason noted above TestCheckInjectedOps_AllSame: they test the
-// comparison logic in isolation, and are only a faithful stand-in for real
-// "pulumi preview --json" output because PreviewJSON always passes
-// --show-sames (see previewJSONArgs and TestPreviewJSONArgs_IncludesShowSames).
 func TestCheckInjectionVerification_BaselineDirtyPostIdentical(t *testing.T) {
 	t.Parallel()
 	baseline, err := ParsePreviewJSON([]byte(`{"steps": [
@@ -174,9 +151,6 @@ func TestCheckInjectionVerification_BaselineCleanPostDirtyIsAProblem(t *testing.
 
 func TestCheckInjectionVerification_NewlyDirtyURNIsNamedInMessage(t *testing.T) {
 	t.Parallel()
-	// Net count of non-"same" steps stays the same (one resource improves,
-	// another regresses), but the specific regression must still be caught
-	// and named — a stable total is not enough if it hides a real regression.
 	baseline, err := ParsePreviewJSON([]byte(`{"steps": [
 		{"op": "same", "urn": "urn:pulumi:dev::proj::aws:ec2/x:X::a"},
 		{"op": "update", "urn": "urn:pulumi:dev::proj::aws:ec2/y:Y::b"}
@@ -194,14 +168,6 @@ func TestCheckInjectionVerification_NewlyDirtyURNIsNamedInMessage(t *testing.T) 
 	assert.Contains(t, joined, "urn:pulumi:dev::proj::aws:ec2/x:X::a")
 }
 
-// TestCheckInjectionVerification_NewlyDirtyURNNamesDiffReasons is the
-// regression test for the e2e run of 2026-08-15. A patched (not injected)
-// Lambda newly reported changes after the mutation, and the message named
-// only its URN — so the run had to be diagnosed by hand from the log, and
-// could not be. CheckInjectedOps had already gained per-property reasons for
-// INJECTED resources ("differs on: caPem"), which made the other failure in
-// that same run diagnosable on sight; this extends the same treatment to the
-// newly-dirty list, which is the only other way a run can fail.
 func TestCheckInjectionVerification_NewlyDirtyURNNamesDiffReasons(t *testing.T) {
 	t.Parallel()
 	baseline, err := ParsePreviewJSON([]byte(`{"steps": [
@@ -221,10 +187,6 @@ func TestCheckInjectionVerification_NewlyDirtyURNNamesDiffReasons(t *testing.T) 
 	assert.Contains(t, joined, "sourceCodeHash")
 }
 
-// TestCheckInjectionVerification_NewlyDirtyWithoutReasonsSaysSo pins the
-// other half: when the provider reports an op but no per-property reasons,
-// that absence is itself the clue (it points at metadata rather than a
-// property value), so it must be stated rather than rendered as an empty list.
 func TestCheckInjectionVerification_NewlyDirtyWithoutReasonsSaysSo(t *testing.T) {
 	t.Parallel()
 	baseline, err := ParsePreviewJSON([]byte(`{"steps": [
@@ -257,12 +219,6 @@ func TestCheckInjectionVerification_InjectedURNMustBeSame(t *testing.T) {
 	assert.Contains(t, joined, "replace")
 }
 
-// TestCheckInjectedOps_UpdateNamesDiffReasons is the regression test for the
-// real AWS end-to-end failure this change is meant to fix: "preview reports
-// update, expected same" with no way to tell which properties disagreed
-// without re-running by hand with --diff. diffReasons is decoded from the
-// preview JSON and folded into the message so the failure is actionable on
-// its own.
 func TestCheckInjectedOps_UpdateNamesDiffReasons(t *testing.T) {
 	t.Parallel()
 	preview, err := ParsePreviewJSON([]byte(`{"steps": [
@@ -279,11 +235,6 @@ func TestCheckInjectedOps_UpdateNamesDiffReasons(t *testing.T) {
 	assert.Contains(t, problems[0], "(differs on: routeTableId, vpnGatewayId)")
 }
 
-// TestCheckInjectedOps_UpdateWithNoDiffReasonsSaysSo covers the case that
-// prompted this test: an unexpected op with an empty diffReasons list must
-// not render as a bare, uninformative "()" — it should say plainly that no
-// property-level diff was reported, since that absence points at metadata
-// (resource options, provider version) rather than a property value.
 func TestCheckInjectedOps_UpdateWithNoDiffReasonsSaysSo(t *testing.T) {
 	t.Parallel()
 	preview, err := ParsePreviewJSON([]byte(`{"steps": [
@@ -298,8 +249,6 @@ func TestCheckInjectedOps_UpdateWithNoDiffReasonsSaysSo(t *testing.T) {
 	assert.NotContains(t, problems[0], "()")
 }
 
-// TestCheckInjectedOps_ManyDiffReasonsAreTruncated ensures a resource with a
-// large diff produces one line with a count, not a flood of property names.
 func TestCheckInjectedOps_ManyDiffReasonsAreTruncated(t *testing.T) {
 	t.Parallel()
 	preview, err := ParsePreviewJSON([]byte(`{"steps": [
@@ -314,9 +263,6 @@ func TestCheckInjectedOps_ManyDiffReasonsAreTruncated(t *testing.T) {
 	assert.Contains(t, problems[0], "and 2 more")
 }
 
-// TestCheckInjectionVerification_SurfacesDiffReasons confirms the injected
-// verification gate — not just CheckInjectedOps in isolation — carries diff
-// reasons through, since that is the path the real failure came from.
 func TestCheckInjectionVerification_SurfacesDiffReasons(t *testing.T) {
 	t.Parallel()
 	baseline, err := ParsePreviewJSON([]byte(`{"steps": []}`))
@@ -332,13 +278,6 @@ func TestCheckInjectionVerification_SurfacesDiffReasons(t *testing.T) {
 	assert.Contains(t, joined, "differs on: routeTableId")
 }
 
-// TestCheckInjectionVerification_EscalationIsAProblem covers the gap that made
-// "must not make things worse" a count-only rule: a resource already non-"same"
-// in the baseline is neither newly dirty nor an increase in the total, so an
-// operation escalating from "update" to "replace" passed silently and the run
-// printed "Verified" while keeping a stack whose next "pulumi up" would destroy
-// and recreate a live resource. Many not_read fields are ForceNew, so a wrongly
-// patched value produces exactly this.
 func TestCheckInjectionVerification_EscalationIsAProblem(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -371,9 +310,6 @@ func TestCheckInjectionVerification_EscalationIsAProblem(t *testing.T) {
 	}
 }
 
-// TestCheckInjectionVerification_EscalationSwapIsAProblem pins the case the
-// aggregate count cannot catch even in principle: two resources both escalate,
-// so baseNonSame and verifyNonSame are equal.
 func TestCheckInjectionVerification_EscalationSwapIsAProblem(t *testing.T) {
 	t.Parallel()
 	baseline, err := ParsePreviewJSON([]byte(`{"steps": [
@@ -394,9 +330,6 @@ func TestCheckInjectionVerification_EscalationSwapIsAProblem(t *testing.T) {
 	assert.Contains(t, joined, "Y::b")
 }
 
-// TestCheckInjectionVerification_DeEscalationIsNotAProblem is the other half of
-// the rule. patch-state is run iteratively, so an operation getting BETTER is
-// the expected outcome and must never trigger a revert.
 func TestCheckInjectionVerification_DeEscalationIsNotAProblem(t *testing.T) {
 	t.Parallel()
 	baseline, err := ParsePreviewJSON([]byte(`{"steps": [
@@ -419,7 +352,6 @@ func TestOpGotWorse(t *testing.T) {
 	assert.True(t, opGotWorse("update", "replace"))
 	assert.True(t, opGotWorse("same", "delete"))
 	assert.True(t, opGotWorse("create", "replace"))
-	// Unrecognised in either position is reported rather than assumed benign.
 	assert.True(t, opGotWorse("update", "brand-new-op"))
 	assert.True(t, opGotWorse("brand-new-op", "update"))
 }
