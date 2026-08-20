@@ -45,10 +45,7 @@ func writeNonImportable(path string, resources []pkg.NonImportableResource) erro
 		return nil
 	}
 
-	doc := struct {
-		Comment   string                      `json:"_comment"`
-		Resources []pkg.NonImportableResource `json:"resources"`
-	}{
+	doc := pkg.NonImportableFile{
 		Comment: "Resources whose Terraform type declares no importer. They were omitted from the " +
 			"import file because importing them always fails. Do not simply let them be created: " +
 			"write them into the stack's state instead.",

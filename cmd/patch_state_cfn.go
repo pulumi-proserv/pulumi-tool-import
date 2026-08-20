@@ -15,6 +15,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -81,7 +82,9 @@ Example:
 				return fmt.Errorf("reading digest: %w", err)
 			}
 			var digest cfn.StackDigest
-			if err := json.Unmarshal(digestData, &digest); err != nil {
+			digestDec := json.NewDecoder(bytes.NewReader(digestData))
+			digestDec.UseNumber()
+			if err := digestDec.Decode(&digest); err != nil {
 				return fmt.Errorf("parsing digest: %w", err)
 			}
 			// CFN digests carry no per-Lambda arn, so region can't be derived from
@@ -201,9 +204,9 @@ Example:
 			}
 			fmt.Fprintf(os.Stderr, "  No fields to patch: %d\n", result.NoFields)
 			fmt.Fprintf(os.Stderr, "  Digest mapped:      %d\n", result.DigestMapped)
-			fmt.Fprintf(os.Stderr, "  Delta validated:    %d\n", result.DeltaValidated)
+			fmt.Fprintf(os.Stderr, "  Deltas validated (imported): %d\n", result.DeltaValidated)
 			if result.DeltaFailed > 0 {
-				fmt.Fprintf(os.Stderr, "  Delta FAILED:       %d (outputs reverted)\n", result.DeltaFailed)
+				fmt.Fprintf(os.Stderr, "  Deltas failed (imported):    %d (outputs reverted)\n", result.DeltaFailed)
 			}
 
 			return nil

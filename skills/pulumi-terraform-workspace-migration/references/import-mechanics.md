@@ -90,7 +90,8 @@ high. Common causes of a low rate:
   "resource '<id>' does not exist". `digest tf` detects these by asking the
   provider directly and flags them `nonImportable`, and `resolve tf` leaves them
   out of the import file and records them in a `*.non-importable.json` sidecar.
-  See [docs/non-importable-resources.md](../../../docs/non-importable-resources.md).
+  `patch-state tf --non-importable <sidecar>` then writes them into state; see
+  [docs/non-importable-resources.md](../../../docs/non-importable-resources.md).
   Where an importable equivalent exists, prefer it — e.g. use
   `aws:iam/rolePolicyAttachment:RolePolicyAttachment` rather than
   `aws:iam/policyAttachment:PolicyAttachment`.
@@ -115,7 +116,8 @@ high. Common causes of a low rate:
   > no "already enabled" path, and `aws_vpn_connection_route` surfaces the error
   > directly — so the first `pulumi up` dies partway through the stack. For
   > resources that exist but cannot be imported, write them into state instead of
-  > letting them be created.
+  > letting them be created — `patch-state tf --non-importable` does this from
+  > the sidecar `resolve tf` wrote.
 - **Don't let components create resources TF doesn't manage.** If a component
   creates extra resources, put them behind a flag and disable it in the migration
   program.

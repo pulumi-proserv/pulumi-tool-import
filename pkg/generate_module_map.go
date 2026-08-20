@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 
 	tfjson "github.com/hashicorp/terraform-json"
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/importsupport"
@@ -26,8 +27,10 @@ import (
 	tfcpkg "github.com/pulumi-proserv/pulumi-tool-import/pkg/tfc"
 	tofuutil "github.com/pulumi-proserv/pulumi-tool-import/pkg/tofu"
 	"github.com/pulumi/opentofu/addrs"
+	"github.com/pulumi/opentofu/lang/marks"
 	"github.com/pulumi/opentofu/states"
 	"github.com/pulumi/opentofu/tofu"
+	"github.com/zclconf/go-cty/cty"
 )
 
 // RemoteStateOptions configures pulling state from a TFC-compatible API.
@@ -122,6 +125,7 @@ func GenerateModuleMap(ctx context.Context, tfDir, stateFilePath, outputPath, st
 
 	case StateFormatTofuShowJSON:
 		var tfjsonState tfjson.State
+		tfjsonState.UseJSONNumber(true)
 		if err := json.Unmarshal(stateData, &tfjsonState); err != nil {
 			return fmt.Errorf("parsing tofu show JSON state: %w", err)
 		}
@@ -198,7 +202,7 @@ func GenerateModuleMap(ctx context.Context, tfDir, stateFilePath, outputPath, st
 	// Step 8: Set sensitive attributes and workspace variables as Pulumi config secrets.
 	if secrets != nil && !secrets.Skip {
 		fmt.Fprintf(os.Stderr, "[8] Discovering sensitive attributes...\n")
-		sensitiveSecrets, err := DiscoverSensitiveSecrets(rawState, secrets.ProjectName)
+		sensitiveSecrets, err := DiscoverSensitiveSecrets(rawState, secrets.ProjectName, pulumiProviders)
 		if err != nil {
 			return fmt.Errorf("discovering secrets: %w", err)
 		}
@@ -299,7 +303,10 @@ func rawStateFromTfjson(tfjsonState *tfjson.State) *states.State {
 		module.SetResourceProvider(resAddr, providerConfig)
 		module.SetResourceInstanceCurrent(
 			addrs.ResourceInstance{Resource: resAddr, Key: addrs.NoKey},
-			&states.ResourceInstanceObjectSrc{AttrsJSON: attrsJSON},
+			&states.ResourceInstanceObjectSrc{
+				AttrsJSON:          attrsJSON,
+				AttrSensitivePaths: sensitivePathsFromTfjson(r.SensitiveValues),
+			},
 			providerConfig,
 			nil,
 		)
@@ -308,4 +315,47 @@ func rawStateFromTfjson(tfjsonState *tfjson.State) *states.State {
 	}, &tofuutil.VisitOptions{IncludeDataSources: true})
 
 	return state
+}
+
+func sensitivePathsFromTfjson(raw json.RawMessage) []cty.PathValueMarks {
+	if len(raw) == 0 {
+		return nil
+	}
+	var doc interface{}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil
+	}
+	var paths []cty.PathValueMarks
+	walkSensitiveValues(doc, nil, &paths)
+	return paths
+}
+
+func walkSensitiveValues(node interface{}, prefix cty.Path, out *[]cty.PathValueMarks) {
+	switch v := node.(type) {
+	case bool:
+		if !v || len(prefix) == 0 {
+			return
+		}
+		p := make(cty.Path, len(prefix))
+		copy(p, prefix)
+		*out = append(*out, cty.PathValueMarks{
+			Path:  p,
+			Marks: cty.NewValueMarks(marks.Sensitive),
+		})
+	case map[string]interface{}:
+		keys := make([]string, 0, len(v))
+		for k := range v {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			walkSensitiveValues(v[k], append(prefix, cty.GetAttrStep{Name: k}), out)
+		}
+	case []interface{}:
+		for i, elem := range v {
+			walkSensitiveValues(elem, append(prefix, cty.IndexStep{
+				Key: cty.NumberIntVal(int64(i)),
+			}), out)
+		}
+	}
 }

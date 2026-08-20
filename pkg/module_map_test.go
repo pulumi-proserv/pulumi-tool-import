@@ -504,7 +504,7 @@ func TestDiscoverSensitiveSecrets_Dedup(t *testing.T) {
 		nil,
 	)
 
-	secrets, err := DiscoverSensitiveSecrets(state, "test-project")
+	secrets, err := DiscoverSensitiveSecrets(state, "test-project", nil)
 	require.NoError(t, err)
 	require.Len(t, secrets, 1)
 	assert.Equal(t, "main_password", secrets[0].ConfigKey)
@@ -538,12 +538,69 @@ func TestDiscoverSensitiveSecrets_MarksEntriesAsSecret(t *testing.T) {
 		nil,
 	)
 
-	entries, err := DiscoverSensitiveSecrets(state, "test-project")
+	entries, err := DiscoverSensitiveSecrets(state, "test-project", nil)
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
 	assert.Equal(t, "my_secret_secret_string", entries[0].ConfigKey)
 	assert.Equal(t, "hunter2", entries[0].Value)
 	assert.True(t, entries[0].Secret, "entries from DiscoverSensitiveSecrets should have Secret=true")
+}
+
+func TestDiscoverSensitiveSecrets_NullAttributeNotRedacted(t *testing.T) {
+	t.Parallel()
+
+	const address = "aws_iot_certificate.cert"
+	attrsJSON := []byte(`{"id":"cert-1","ca_pem":null,"certificate_pem":"-----BEGIN CERTIFICATE-----real-pem-value"}`)
+
+	sensitivePaths := []cty.PathValueMarks{
+		{Path: cty.GetAttrPath("ca_pem"), Marks: cty.NewValueMarks("sensitive")},
+		{Path: cty.GetAttrPath("certificate_pem"), Marks: cty.NewValueMarks("sensitive")},
+	}
+
+	state := states.NewState()
+	rootModule := state.RootModule()
+	rootModule.SetResourceInstanceCurrent(
+		addrs.ResourceInstance{
+			Resource: addrs.Resource{
+				Mode: addrs.ManagedResourceMode,
+				Type: "aws_iot_certificate",
+				Name: "cert",
+			},
+			Key: addrs.NoKey,
+		},
+		&states.ResourceInstanceObjectSrc{
+			AttrsJSON:          attrsJSON,
+			AttrSensitivePaths: sensitivePaths,
+		},
+		addrs.AbsProviderConfig{
+			Provider: addrs.MustParseProviderSourceString("registry.opentofu.org/hashicorp/aws"),
+		},
+		nil,
+	)
+
+	configEntries, err := DiscoverSensitiveSecrets(state, "test-project", nil)
+	require.NoError(t, err)
+	require.Len(t, configEntries, 1, "only the populated attribute should produce a config entry")
+	assert.Equal(t, "cert_certificate_pem", configEntries[0].ConfigKey)
+
+	attrs, err := decodeAttrs(attrsJSON)
+	require.NoError(t, err)
+	redactSensitivePaths(attrs, sensitivePaths)
+
+	assert.Nil(t, attrs["ca_pem"], "null sensitive attribute must remain null in the digest, not become the redaction placeholder")
+	assert.Equal(t, "(sensitive)", attrs["certificate_pem"], "populated sensitive attribute must still be redacted")
+
+	redacted := redactedAttributeKeys(address, attrs)
+	assert.NotContains(t, redacted, "ca_pem",
+		"must not record a redactedAttributes entry for a null attribute; DiscoverSensitiveSecrets never wrote a config key for it")
+	require.Contains(t, redacted, "certificate_pem")
+
+	configKeys := make(map[string]bool, len(configEntries))
+	for _, e := range configEntries {
+		configKeys[e.ConfigKey] = true
+	}
+	assert.True(t, configKeys[redacted["certificate_pem"]],
+		"redactedAttributes must point at a config key DiscoverSensitiveSecrets wrote")
 }
 
 func TestConfigEntry_WorkspaceVarsSensitivity(t *testing.T) {
@@ -689,4 +746,130 @@ func TestRawStateFromTfjson_DataSources(t *testing.T) {
 		Name: "example",
 	})
 	require.NotNil(t, managedRes, "expected aws_s3_bucket.example in root module")
+}
+
+func sensitiveResource(m *states.Module, typ, name, attrsJSON string, paths []cty.PathValueMarks) {
+	m.SetResourceInstanceCurrent(
+		addrs.ResourceInstance{
+			Resource: addrs.Resource{Mode: addrs.ManagedResourceMode, Type: typ, Name: name},
+			Key:      addrs.NoKey,
+		},
+		&states.ResourceInstanceObjectSrc{
+			AttrsJSON:          []byte(attrsJSON),
+			AttrSensitivePaths: paths,
+		},
+		addrs.AbsProviderConfig{
+			Provider: addrs.MustParseProviderSourceString("registry.opentofu.org/hashicorp/aws"),
+		},
+		nil,
+	)
+}
+
+func TestRedactSensitivePaths_NestedPathIsRedacted(t *testing.T) {
+	t.Parallel()
+
+	attrs := map[string]interface{}{
+		"broker_name": "b",
+		"user": []interface{}{
+			map[string]interface{}{"username": "admin", "password": "NESTED-SECRET"},
+		},
+	}
+	redactSensitivePaths(attrs, []cty.PathValueMarks{{
+		Path: cty.Path{
+			cty.GetAttrStep{Name: "user"},
+			cty.IndexStep{Key: cty.NumberIntVal(0)},
+			cty.GetAttrStep{Name: "password"},
+		},
+		Marks: cty.NewValueMarks("sensitive"),
+	}})
+
+	user := attrs["user"].([]interface{})[0].(map[string]interface{})
+	assert.Equal(t, redactedPlaceholder, user["password"])
+	assert.Equal(t, "admin", user["username"], "only the marked path may be redacted")
+	assert.Equal(t, "b", attrs["broker_name"])
+}
+
+func TestRedactSensitivePaths_UnresolvableIndexRedactsEveryElement(t *testing.T) {
+	t.Parallel()
+
+	attrs := map[string]interface{}{
+		"user": []interface{}{
+			map[string]interface{}{"password": "A"},
+			map[string]interface{}{"password": "B"},
+		},
+	}
+	redactSensitivePaths(attrs, []cty.PathValueMarks{{
+		Path: cty.Path{
+			cty.GetAttrStep{Name: "user"},
+			cty.IndexStep{Key: cty.ObjectVal(map[string]cty.Value{"password": cty.StringVal("A")})},
+			cty.GetAttrStep{Name: "password"},
+		},
+		Marks: cty.NewValueMarks("sensitive"),
+	}})
+
+	for i, elem := range attrs["user"].([]interface{}) {
+		assert.Equal(t, redactedPlaceholder, elem.(map[string]interface{})["password"],
+			"element %d must be redacted when the index cannot be resolved", i)
+	}
+}
+
+func TestDiscoverSensitiveSecrets_LargeIntegerKeepsItsDigits(t *testing.T) {
+	t.Parallel()
+
+	state := states.NewState()
+	sensitiveResource(state.RootModule(), "aws_x", "big",
+		`{"id":"1","token":1234567890123456789}`,
+		[]cty.PathValueMarks{
+			{Path: cty.GetAttrPath("token"), Marks: cty.NewValueMarks("sensitive")},
+		})
+
+	secrets, err := DiscoverSensitiveSecrets(state, "p", nil)
+	require.NoError(t, err)
+	require.Len(t, secrets, 1)
+	assert.Equal(t, "1234567890123456789", secrets[0].Value)
+}
+
+func TestDiscoverSensitiveSecrets_CollisionIsAnError(t *testing.T) {
+	t.Parallel()
+
+	state := states.NewState()
+	root := state.RootModule()
+	sensitiveResource(root, "aws_db_instance", "this", `{"id":"1","password":"SECRET-A"}`,
+		[]cty.PathValueMarks{{Path: cty.GetAttrPath("password"), Marks: cty.NewValueMarks("sensitive")}})
+	sensitiveResource(root, "aws_rds_cluster", "this", `{"id":"2","password":"SECRET-B"}`,
+		[]cty.PathValueMarks{{Path: cty.GetAttrPath("password"), Marks: cty.NewValueMarks("sensitive")}})
+
+	_, err := DiscoverSensitiveSecrets(state, "p", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "collision")
+}
+
+func TestSensitivePathsFromTfjson(t *testing.T) {
+	t.Parallel()
+
+	paths := sensitivePathsFromTfjson([]byte(
+		`{"password":true,"tags":false,"user":[{"password":true,"name":false}]}`))
+	require.Len(t, paths, 2)
+
+	attrs := map[string]interface{}{
+		"password": "TOP-SECRET",
+		"tags":     "public",
+		"user": []interface{}{
+			map[string]interface{}{"password": "NESTED-SECRET", "name": "admin"},
+		},
+	}
+	redactSensitivePaths(attrs, paths)
+
+	assert.Equal(t, redactedPlaceholder, attrs["password"])
+	assert.Equal(t, "public", attrs["tags"], "a false leaf is not sensitive")
+	user := attrs["user"].([]interface{})[0].(map[string]interface{})
+	assert.Equal(t, redactedPlaceholder, user["password"])
+	assert.Equal(t, "admin", user["name"])
+}
+
+func TestSensitivePathsFromTfjson_EmptyOrInvalid(t *testing.T) {
+	t.Parallel()
+	assert.Nil(t, sensitivePathsFromTfjson(nil))
+	assert.Nil(t, sensitivePathsFromTfjson([]byte(`not json`)))
+	assert.Empty(t, sensitivePathsFromTfjson([]byte(`{"a":false}`)))
 }

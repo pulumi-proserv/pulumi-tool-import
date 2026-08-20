@@ -6,6 +6,7 @@
 - [How it works](#how-it-works)
 - [Falsy default suppression](#falsy-default-suppression)
 - [Diagnosing "this field needs adding to the fields file"](#diagnosing-this-field-needs-adding-to-the-fields-file)
+- [Injecting non-importable resources](#injecting-non-importable-resources)
 
 After import, many fields show diffs because the provider's Read doesn't return
 them — write-only fields and IaC-only defaults. `patch-state` fills them from the
@@ -203,3 +204,50 @@ component child becoming a bare resource).
 
 Iterate one resource type at a time and re-preview — it keeps the cause of each
 change in the diff count unambiguous.
+
+## Injecting non-importable resources
+
+`patch-state tf` also writes resources that `resolve tf` could not put in the
+import file — those flagged `nonImportable` in the digest and recorded in a
+`*.non-importable.json` sidecar — directly into state. Pass the sidecar with
+`--non-importable`. Full background on why these resources exist and how the
+tool detects them: `docs/non-importable-resources.md` in the tool repo.
+
+Injection needs a preview to source each resource's URN, parent, provider and
+dependencies from — the sidecar only carries the ID and Terraform attributes.
+Where the preview comes from depends on which of two modes the command runs in:
+
+- **File mode** — `--state` and `--out` are both set, same as ordinary
+  patching. Supply the preview yourself with `--preview-json <file>`, produced
+  by `pulumi preview --json > preview.json`. After patching, `pulumi stack
+  import --file <out>` and `pulumi preview` are still your responsibility; a
+  correct injection previews as zero operations.
+- **Stack mode** — `--state` and `--out` are both omitted; `--project-dir` and
+  `--stack` select the stack directly, and `--preview-json` is rejected (the
+  command runs its own previews). In order: export the stack, write a
+  timestamped backup and print its absolute path, take a baseline preview,
+  patch and inject, import, take a verifying preview, and revert to the
+  pre-mutation export if verification fails. `--backup-dir` chooses where the
+  backup is written (default: the current directory).
+
+  **The backup contains decrypted secrets** — the Automation API's export runs
+  with `--show-secrets` underneath. Delete it once the change is confirmed.
+
+  Verification compares the verifying preview against the baseline, not
+  against an absolute "clean" bar: a stack mid-migration legitimately still has
+  outstanding diffs, and `patch-state` is often run iteratively against
+  exactly that stack. Three checks must all pass: every injected resource's
+  URN must report `same`; no resource that was `same` (or absent) in the
+  baseline may turn non-`same` afterward — checked per resource, so one
+  regression fails the run even if the aggregate count doesn't move (e.g. it
+  regresses while an unrelated resource happens to improve); and the total
+  non-`same` count outside the injected set must not increase versus the
+  baseline. Any single failure reverts the run — regression, not residue, is
+  what fails it.
+
+  Stack mode needs a runnable program and live credentials, since it runs
+  `pulumi preview` itself.
+
+`pulumi refresh` reporting "unchanged" is never a substitute for either preview
+check: for these resource types it only proves the ID resolves, not that the
+injected values are right — see `docs/non-importable-resources.md`.

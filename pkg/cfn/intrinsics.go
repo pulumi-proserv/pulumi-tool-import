@@ -16,6 +16,7 @@ package cfn
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -164,14 +165,15 @@ func resolveValue(ctx context.Context, v interface{}, resources, resourceTypes, 
 	}
 }
 
-// toIndex parses an Fn::Select index (a JSON number arrives as float64; CFN also
-// allows a numeric string).
 func toIndex(v interface{}) (int, bool) {
 	switch n := v.(type) {
 	case int:
 		return n, true
 	case float64:
 		return int(n), true
+	case json.Number:
+		i, err := n.Int64()
+		return int(i), err == nil
 	case string:
 		i, err := strconv.Atoi(n)
 		return i, err == nil

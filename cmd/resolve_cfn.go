@@ -15,6 +15,7 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -36,7 +37,9 @@ func newResolveCfnCmd() *cobra.Command {
 				return fmt.Errorf("reading digest: %w", err)
 			}
 			var digest cfn.StackDigest
-			if err := json.Unmarshal(digestData, &digest); err != nil {
+			digestDec := json.NewDecoder(bytes.NewReader(digestData))
+			digestDec.UseNumber()
+			if err := digestDec.Decode(&digest); err != nil {
 				return fmt.Errorf("parsing digest: %w", err)
 			}
 			importData, err := os.ReadFile(importPath)

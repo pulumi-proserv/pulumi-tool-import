@@ -31,6 +31,7 @@ import (
 	"github.com/apparentlymart/go-versions/versions"
 	plugin "github.com/hashicorp/go-plugin"
 	disco "github.com/opentofu/svchost/disco"
+	"github.com/pulumi-proserv/pulumi-tool-import/pkg/pathlock"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/vendored/opentofu/addrs"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/vendored/opentofu/getproviders"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/vendored/opentofu/logging"
@@ -95,6 +96,10 @@ func getPluginCache() (string, error) {
 	return workspace.GetPulumiPath("dynamic_tf_plugins")
 }
 
+func lockProviderInstall(cacheDir string, addr addrs.Provider, version versions.Version) func() {
+	return pathlock.Acquire(cacheDir + "\x00" + addr.String() + "\x00" + version.String())
+}
+
 func getProviderServer(
 	ctx context.Context, addr addrs.Provider, version versions.Version,
 	registryDisco *disco.Disco,
@@ -103,6 +108,8 @@ func getProviderServer(
 	if err != nil {
 		return nil, err
 	}
+
+	defer lockProviderInstall(cacheDir, addr, version)()
 
 	systemCache := providercache.NewDir(cacheDir)
 

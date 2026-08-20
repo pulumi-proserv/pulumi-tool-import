@@ -21,6 +21,8 @@ import (
 	"testing"
 
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/importsupport"
+	"github.com/pulumi-proserv/pulumi-tool-import/pkg/providermap"
+	"github.com/pulumi-proserv/pulumi-tool-import/pkg/tfprovider"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -119,6 +121,97 @@ func TestBuildModuleMapRecordsThatTheCheckWasSkipped(t *testing.T) {
 	t.Parallel()
 	mm := buildIndexedModulesMap(t, nil)
 	assert.False(t, mm.ImportSupportChecked)
+}
+
+type checkerWithProvider struct {
+	*stubChecker
+	prov tfprovider.Provider
+}
+
+func (c *checkerWithProvider) Provider(context.Context, string) (tfprovider.Provider, bool) {
+	return c.prov, true
+}
+
+func TestBuildModuleMapSkipsInjectionStateWithoutBridgedSchema(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	prov, err := tfprovider.LoadProvider(ctx, "registry.opentofu.org/hashicorp/random", "3.9.0")
+	if err != nil {
+		t.Skipf("random provider unavailable: %v", err)
+	}
+	defer prov.Close(ctx)
+
+	tfDir, err := filepath.Abs(filepath.Join("testdata", "tf_indexed_modules"))
+	require.NoError(t, err)
+	config, err := LoadConfig(tfDir)
+	require.NoError(t, err)
+	rawState, err := LoadRawState(filepath.Join(tfDir, "terraform.tfstate"))
+	require.NoError(t, err)
+
+	checker := &checkerWithProvider{
+		stubChecker: &stubChecker{verdicts: map[string]importsupport.Support{
+			"random_pet": importsupport.Unsupported,
+		}},
+		prov: prov,
+	}
+
+	require.NotPanics(t, func() {
+		mm, err := BuildModuleMap(ctx, config, nil, rawState, nil, "test-stack", "test-project", checker)
+		require.NoError(t, err)
+
+		require.Contains(t, mm.Modules, "pet[0]")
+		require.Len(t, mm.Modules["pet[0]"].Resources, 1)
+		res := mm.Modules["pet[0]"].Resources[0]
+		assert.True(t, res.NonImportable)
+		assert.Nil(t, res.PulumiOutputs)
+		assert.Nil(t, res.RawStateDelta)
+		assert.Zero(t, res.SchemaVersion)
+	})
+}
+
+func TestBuildModuleMapPopulatesInjectionStateWithBridgedSchema(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	prov, err := tfprovider.LoadProvider(ctx, "registry.opentofu.org/hashicorp/random", "3.9.0")
+	if err != nil {
+		t.Skipf("random provider unavailable: %v", err)
+	}
+	defer prov.Close(ctx)
+
+	pulumiProviders, err := PulumiProvidersForTerraformProviders(
+		[]providermap.TerraformProviderName{"registry.opentofu.org/hashicorp/random"},
+		map[string]string{"registry.opentofu.org/hashicorp/random": "3.9.0"},
+	)
+	if err != nil {
+		t.Skipf("could not bridge random provider schema: %v", err)
+	}
+
+	tfDir, err := filepath.Abs(filepath.Join("testdata", "tf_indexed_modules"))
+	require.NoError(t, err)
+	config, err := LoadConfig(tfDir)
+	require.NoError(t, err)
+	rawState, err := LoadRawState(filepath.Join(tfDir, "terraform.tfstate"))
+	require.NoError(t, err)
+
+	checker := &checkerWithProvider{
+		stubChecker: &stubChecker{verdicts: map[string]importsupport.Support{
+			"random_pet": importsupport.Unsupported,
+		}},
+		prov: prov,
+	}
+
+	mm, err := BuildModuleMap(ctx, config, nil, rawState, pulumiProviders, "test-stack", "test-project", checker)
+	require.NoError(t, err)
+
+	require.Contains(t, mm.Modules, "pet[0]")
+	require.Len(t, mm.Modules["pet[0]"].Resources, 1)
+	res := mm.Modules["pet[0]"].Resources[0]
+	assert.True(t, res.NonImportable)
+	require.NotNil(t, res.PulumiOutputs)
+	assert.Equal(t, "test-0-just-phoenix", res.PulumiOutputs["id"])
+	assert.Equal(t, "-", res.PulumiOutputs["separator"])
 }
 
 func buildIndexedModulesMap(t *testing.T, checker ImportSupportChecker) *ModuleMap {

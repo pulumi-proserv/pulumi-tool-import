@@ -558,8 +558,8 @@ func patchResourceFields(
 					return nil, fmt.Errorf("encoding secret value for %s: %w", configKey, err)
 				}
 				digVal = map[string]interface{}{
-					"4dabf18193072939515e22adb298388d": "1b47061264138c4ac30d75fd1eb44270",
-					"plaintext":                        string(jsonEncoded),
+					sigKey:      secretSig,
+					"plaintext": string(jsonEncoded),
 				}
 				digEmpty = false
 				digSensitive = false
@@ -579,7 +579,7 @@ func patchResourceFields(
 			// field is always the default itself. Patching it would cause the same
 			// phantom diff the suppression is meant to prevent.
 			digestIsSuppressedDefault := fd.SuppressDefaultFallback && !digEmpty && fd.Default != nil &&
-				reflect.DeepEqual(digVal, fd.Default)
+				equalValues(digVal, fd.Default)
 			if !digEmpty && !digestIsSuppressedDefault {
 				inputsRaw[pulumiField] = digVal
 				res.fieldsFromDigest++
@@ -629,6 +629,25 @@ func patchResourceFields(
 	return res, nil
 }
 
+func deepCopyJSONValue(v interface{}) interface{} {
+	switch val := v.(type) {
+	case map[string]interface{}:
+		out := make(map[string]interface{}, len(val))
+		for k, elem := range val {
+			out[k] = deepCopyJSONValue(elem)
+		}
+		return out
+	case []interface{}:
+		out := make([]interface{}, len(val))
+		for i, elem := range val {
+			out[i] = deepCopyJSONValue(elem)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
 // patchAndValidateResource patches a single resource's fields and validates
 // the result with the bridge's Recover function. If Recover fails, outputs
 // are reverted to their pre-patch state.
@@ -651,6 +670,9 @@ func patchAndValidateResource(
 	for k, v := range outputsRaw {
 		outputsSnapshot[k] = v
 	}
+	if delta, hasDelta := outputsRaw[rawStateDeltaKey]; hasDelta {
+		outputsSnapshot[rawStateDeltaKey] = deepCopyJSONValue(delta)
+	}
 
 	res, err := patchResourceFields(fields, inputsRaw, outputsRaw, digResource, configSecrets, configDir)
 	if err != nil {
@@ -658,16 +680,16 @@ func patchAndValidateResource(
 	}
 
 	// Update __pulumi_raw_state_delta for patched asset fields.
-	if deltaRaw, hasDelta := outputsRaw["__pulumi_raw_state_delta"]; hasDelta {
+	if deltaRaw, hasDelta := outputsRaw[rawStateDeltaKey]; hasDelta {
 		if len(res.patchedAssetFields) > 0 {
-			outputsRaw["__pulumi_raw_state_delta"] = injectAssetDeltas(deltaRaw, res.patchedAssetFields)
+			outputsRaw[rawStateDeltaKey] = injectAssetDeltas(deltaRaw, res.patchedAssetFields)
 		}
 	}
 
 	// Validate patched outputs against delta using bridge's Recover.
 	// If Recover fails, revert both inputs and outputs to pre-patch state
 	// to avoid panics and keep inputs/outputs consistent.
-	if _, hasDelta := outputsRaw["__pulumi_raw_state_delta"]; hasDelta && res.patched {
+	if _, hasDelta := outputsRaw[rawStateDeltaKey]; hasDelta && res.patched {
 		if recoverErr := validateRecover(urn, outputsRaw); recoverErr != nil {
 			fmt.Fprintf(os.Stderr, "  WARNING: Recover failed for %s: %v — reverting all patches\n", name, recoverErr)
 			inputsRaw = inputsSnapshot
@@ -696,10 +718,6 @@ func PatchState(
 	configSecrets map[string]string,
 	configDir string,
 ) ([]byte, *PatchStateResult, error) {
-	// Parse state using a decoder with UseNumber to preserve exact number
-	// representations. Without this, large integers (like AWS account IDs)
-	// become float64 and may re-serialize as scientific notation (e.g.,
-	// "5399223e-54"), which Pulumi's state parser rejects.
 	var state map[string]interface{}
 	dec := json.NewDecoder(strings.NewReader(string(stateData)))
 	dec.UseNumber()
@@ -864,6 +882,7 @@ const (
 	assetSig   = "c44067f5952c0a294b673a41bacd8c17"
 	archiveSig = "0def7320c3a5731c473e5ecbe6d01bc7"
 	sigKey     = "4dabf18193072939515e22adb298388d"
+	secretSig  = "1b47061264138c4ac30d75fd1eb44270"
 )
 
 // buildAssetSentinel constructs a Pulumi asset/archive sentinel from a file path.
@@ -1142,13 +1161,6 @@ func DownloadLambdaCodeToFile(ctx context.Context, functionName, arn, region, de
 	return nil
 }
 
-// patchedOutputFieldInfo tracks an output field that was modified by the patcher.
-type patchedOutputFieldInfo struct {
-	pulumiField string
-	oldValue    interface{}
-	newValue    interface{}
-}
-
 // assetFieldDeltaInfo holds info needed to inject an asset delta entry.
 type assetFieldDeltaInfo struct {
 	pulumiField string
@@ -1191,57 +1203,6 @@ func injectAssetDeltas(deltaRaw interface{}, fields []assetFieldDeltaInfo) inter
 		}
 		ps[f.pulumiField] = map[string]interface{}{
 			"asset": assetDelta,
-		}
-	}
-
-	return delta
-}
-
-// updateDeltaForPatchedOutputs updates the __pulumi_raw_state_delta when the patcher
-// changes output fields that are referenced by the delta. When an array goes from
-// empty to populated (or changes element count), the delta's element entries must
-// be updated to match, otherwise the bridge's Recover panics with
-// "rawStateRecoverNatural cannot process Object values due to map vs object confusion".
-func updateDeltaForPatchedOutputs(deltaRaw interface{}, fields []patchedOutputFieldInfo) interface{} {
-	delta, ok := deltaRaw.(map[string]interface{})
-	if !ok || delta == nil {
-		return deltaRaw
-	}
-
-	obj, ok := delta["obj"].(map[string]interface{})
-	if !ok {
-		return deltaRaw
-	}
-	ps, ok := obj["ps"].(map[string]interface{})
-	if !ok {
-		return deltaRaw
-	}
-
-	for _, f := range fields {
-		existing, inDelta := ps[f.pulumiField]
-		if !inDelta {
-			continue // field not in delta, no update needed
-		}
-
-		// Check if the existing delta entry is an array type.
-		existingMap, ok := existing.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		arrDelta, isArr := existingMap["arr"]
-		if !isArr {
-			continue
-		}
-
-		// Rebuild the array delta to match the new value's structure.
-		newArr, ok := f.newValue.([]interface{})
-		if !ok {
-			continue
-		}
-
-		newArrDelta := buildArrayDelta(arrDelta, newArr)
-		ps[f.pulumiField] = map[string]interface{}{
-			"arr": newArrDelta,
 		}
 	}
 
@@ -1314,12 +1275,46 @@ func hashFileArchive(dirPath string) (string, error) {
 	return arch.Hash, nil
 }
 
-// isEmptyValue checks if a value is nil, empty string, or empty array/map.
-// equalValues compares two JSON-deserialized values for equality.
-// JSON numbers from different sources may be float64 vs int, so we
-// normalize numeric comparisons.
 func equalValues(a, b interface{}) bool {
-	return reflect.DeepEqual(a, b)
+	if reflect.DeepEqual(a, b) {
+		return true
+	}
+	af, aOk := numericValue(a)
+	bf, bOk := numericValue(b)
+	return aOk && bOk && af == bf
+}
+
+func numericValue(v interface{}) (float64, bool) {
+	switch n := v.(type) {
+	case json.Number:
+		f, err := n.Float64()
+		return f, err == nil
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case int8:
+		return float64(n), true
+	case int16:
+		return float64(n), true
+	case int32:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case uint:
+		return float64(n), true
+	case uint8:
+		return float64(n), true
+	case uint16:
+		return float64(n), true
+	case uint32:
+		return float64(n), true
+	case uint64:
+		return float64(n), true
+	}
+	return 0, false
 }
 
 // conformToDelta transforms a digest value to match the bridge's type mapping
@@ -1329,7 +1324,7 @@ func equalValues(a, b interface{}) bool {
 // array (TF representation), we need to flatten it to match the bridge's
 // object representation so Recover can correctly reverse the transformation.
 func conformToDelta(val interface{}, field string, outputsRaw map[string]interface{}) interface{} {
-	deltaRaw, ok := outputsRaw["__pulumi_raw_state_delta"]
+	deltaRaw, ok := outputsRaw[rawStateDeltaKey]
 	if !ok {
 		return val
 	}
@@ -1373,7 +1368,7 @@ func conformToDelta(val interface{}, field string, outputsRaw map[string]interfa
 										if nestedVal, exists := resultMap[nestedField]; exists {
 											// Build a synthetic outputsRaw with just the delta for recursion.
 											synth := map[string]interface{}{
-												"__pulumi_raw_state_delta": map[string]interface{}{
+												rawStateDeltaKey: map[string]interface{}{
 													"obj": map[string]interface{}{
 														"ps": map[string]interface{}{
 															nestedField: nestedDelta,
@@ -1397,11 +1392,9 @@ func conformToDelta(val interface{}, field string, outputsRaw map[string]interfa
 	return val
 }
 
-// isSimpleValue returns true for primitive types (bool, number, string, nil).
-// Arrays and objects are not simple — they may have been type-mapped by the bridge.
 func isSimpleValue(v interface{}) bool {
 	switch v.(type) {
-	case nil, bool, string, float64, int:
+	case nil, bool, string, float64, int, json.Number:
 		return true
 	}
 	return false
@@ -1417,6 +1410,13 @@ func isSimpleValue(v interface{}) bool {
 // the engine deserializes state for the bridge's Diff/Recover path.
 func propertyValueFromState(v interface{}) resource.PropertyValue {
 	replv := func(v interface{}) (resource.PropertyValue, bool) {
+		if n, ok := v.(json.Number); ok {
+			f, err := n.Float64()
+			if err != nil {
+				return resource.PropertyValue{}, false
+			}
+			return resource.NewNumberProperty(f), true
+		}
 		m, ok := v.(map[string]interface{})
 		if !ok {
 			return resource.PropertyValue{}, false
@@ -1426,9 +1426,22 @@ func propertyValueFromState(v interface{}) resource.PropertyValue {
 			return resource.PropertyValue{}, false
 		}
 		switch s {
-		case "1b47061264138c4ac30d75fd1eb44270": // secret
-			elem := propertyValueFromState(m["value"])
-			return resource.MakeSecret(elem), true
+		case secretSig: // secret
+			if _, hasValue := m["value"]; hasValue {
+				elem := propertyValueFromState(m["value"])
+				return resource.MakeSecret(elem), true
+			}
+			if plaintext, ok := m["plaintext"].(string); ok {
+				var raw interface{}
+				if err := json.Unmarshal([]byte(plaintext), &raw); err == nil {
+					elem := propertyValueFromState(raw)
+					return resource.MakeSecret(elem), true
+				}
+			}
+			if ciphertext, ok := m["ciphertext"].(string); ok {
+				return resource.MakeSecret(resource.NewStringProperty(ciphertext)), true
+			}
+			return resource.PropertyValue{}, false
 		default:
 			if a, isAsset, err := resource.DeserializeAsset(m); err == nil && isAsset {
 				return resource.NewAssetProperty(a), true
@@ -1442,11 +1455,25 @@ func propertyValueFromState(v interface{}) resource.PropertyValue {
 	return resource.NewPropertyValueRepl(v, nil, replv)
 }
 
+func deltaPropertyValue(v interface{}) resource.PropertyValue {
+	replv := func(v interface{}) (resource.PropertyValue, bool) {
+		if n, ok := v.(json.Number); ok {
+			f, err := n.Float64()
+			if err != nil {
+				return resource.PropertyValue{}, false
+			}
+			return resource.NewNumberProperty(f), true
+		}
+		return resource.PropertyValue{}, false
+	}
+	return resource.NewPropertyValueRepl(v, nil, replv)
+}
+
 // validateRecover checks that a resource's outputs are compatible with its
 // __pulumi_raw_state_delta by running the bridge's Recover function.
 // Returns nil if valid, or the Recover error if not.
 func validateRecover(urn string, outputsRaw map[string]interface{}) error {
-	deltaRaw, ok := outputsRaw["__pulumi_raw_state_delta"]
+	deltaRaw, ok := outputsRaw[rawStateDeltaKey]
 	if !ok {
 		return nil
 	}
@@ -1456,7 +1483,7 @@ func validateRecover(urn string, outputsRaw map[string]interface{}) error {
 	}
 
 	outputsPV := propertyValueFromState(outputsRaw)
-	deltaPV := resource.NewPropertyValue(deltaMap)
+	deltaPV := deltaPropertyValue(deltaMap)
 	rsd, err := tfbridge.UnmarshalRawStateDelta(deltaPV)
 	if err != nil {
 		return fmt.Errorf("UnmarshalRawStateDelta: %w", err)
@@ -1614,10 +1641,6 @@ func PatchStateFromSchema(
 	configSecrets map[string]string,
 	configDir string,
 ) ([]byte, *PatchStateResult, error) {
-	// Parse state using a decoder with UseNumber to preserve exact number
-	// representations. Without this, large integers (like AWS account IDs)
-	// become float64 and may re-serialize as scientific notation (e.g.,
-	// "5399223e-54"), which Pulumi's state parser rejects.
 	var state map[string]interface{}
 	dec := json.NewDecoder(strings.NewReader(string(stateData)))
 	dec.UseNumber()

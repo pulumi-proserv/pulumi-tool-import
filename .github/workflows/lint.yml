@@ -24,6 +24,19 @@ jobs:
         with:
           version: v2.11.3
 
+      # The e2e sources are behind "//go:build e2e", so the run above does not
+      # see them and neither does "go test ./..." — 2,500+ lines that no job
+      # ever compiled. Two real bugs lived there undetected (a cleanup ordering
+      # error that disabled the AWS-side orphan sweep on every successful run,
+      # and an IAM error-code match that could never fire), and neither a green
+      # offline suite nor a green e2e run could surface them. This needs no AWS
+      # credentials and takes seconds.
+      - name: golangci-lint (e2e build)
+        uses: golangci/golangci-lint-action@9fae48acfc02a90574d7c304a1758ef9895495fa # v7
+        with:
+          version: v2.11.3
+          args: --build-tags e2e ./test/e2e/...
+
   vet:
     name: vet
     runs-on: ubuntu-latest
@@ -44,6 +57,13 @@ jobs:
           fi
       - name: go vet
         run: go vet ./...
+
+      # "go vet" fully type-checks, so this is what catches a compile error in
+      # an e2e-tagged file — otherwise the first thing to notice is a run that
+      # has already spent ~16 minutes and real AWS spend. See the e2e lint step
+      # for why the tagged build needs its own invocation.
+      - name: go vet (e2e build)
+        run: go vet -tags e2e ./test/e2e/...
 
   govulncheck:
     name: govulncheck

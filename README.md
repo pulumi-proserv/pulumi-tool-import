@@ -322,6 +322,18 @@ as local `FileArchive`s so preview is clean without embedding CDK build artifact
 Both can read secret config values from a stack (`--project-dir` + `--stack`) to
 avoid re-patching secret fields.
 
+`patch-state tf` additionally takes `--non-importable <sidecar>`, the
+`*.non-importable.json` `resolve tf` writes, and injects those resources
+directly into state. Injection needs a preview to source each resource's URN,
+parent, provider and dependencies from: pass one with `--preview-json` (file
+mode), or omit `--state`/`--out` and pass `--project-dir`/`--stack` instead, in
+which case the command operates on the stack directly — exporting, backing up,
+patching, injecting, importing and verifying with its own previews
+(`--preview-json` is rejected in this mode). The stack-mode backup contains
+decrypted secrets; `--backup-dir` controls where it's written. See
+[docs/non-importable-resources.md](docs/non-importable-resources.md) for both
+modes' full command lines and the verification rules.
+
 ## `set-secrets`
 
 Extracts specific secret values from Terraform state and sets them as encrypted

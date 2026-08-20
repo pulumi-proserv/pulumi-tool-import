@@ -74,3 +74,22 @@ func TestClassifyConnectionFailureIsUnknown(t *testing.T) {
 	err := errors.New("connection refused")
 	assert.Equal(t, Unknown, Classify(err))
 }
+
+func TestClassifyPluginDidNotRespondIsUnknown(t *testing.T) {
+	t.Parallel()
+
+	err := errors.New("Plugin did not respond: The plugin encountered an error, " +
+		"and failed to respond to the plugin6.(*GRPCProvider).ImportResourceState call. " +
+		"The plugin logs may contain more details.")
+	assert.Equal(t, Unknown, Classify(err),
+		"a crashed plugin must never be read as an answer")
+}
+
+func TestClassifyEveryTransportMarkerIsUnknown(t *testing.T) {
+	t.Parallel()
+
+	for _, marker := range transportFailureMarkers {
+		assert.Equal(t, Unknown, Classify(errors.New("probe failed: "+marker)),
+			"marker %q must classify as Unknown", marker)
+	}
+}

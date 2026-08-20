@@ -16,6 +16,7 @@ package cfn
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -263,4 +264,14 @@ func TestResolveProperties_FnSelect(t *testing.T) {
 	require.Equal(t, "b", got["Second"])
 	require.Equal(t, "phys-r", got["RefPick"])
 	require.Equal(t, "<unresolved-intrinsic:Fn::Select>", got["Unres"])
+}
+
+func TestToIndex_JSONNumber(t *testing.T) {
+	t.Parallel()
+	i, ok := toIndex(json.Number("2"))
+	require.True(t, ok)
+	require.Equal(t, 2, i)
+
+	_, ok = toIndex(json.Number("not-a-number"))
+	require.False(t, ok)
 }

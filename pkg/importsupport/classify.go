@@ -77,6 +77,7 @@ var transportFailureMarkers = []string{
 	"connection refused",
 	"connection reset",
 	"EOF",
+	"Plugin did not respond",
 }
 
 // Classify interprets the outcome of an ImportResourceState probe:

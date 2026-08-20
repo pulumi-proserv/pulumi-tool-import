@@ -72,7 +72,12 @@ type NonImportableResource struct {
 	// lost — but the copy in Attributes is a placeholder and must be resolved
 	// from config before the resource is written to state, the same way
 	// patch-state resolves sensitive fields.
-	RedactedAttributes map[string]string `json:"redactedAttributes,omitempty"`
+	RedactedAttributes   map[string]string      `json:"redactedAttributes,omitempty"`
+	PulumiOutputs        map[string]interface{} `json:"pulumiOutputs,omitempty"`
+	RawStateDelta        map[string]interface{} `json:"rawStateDelta,omitempty"`
+	RawStateDeltaReason  string                 `json:"rawStateDeltaReason,omitempty"`
+	InjectionStateReason string                 `json:"injectionStateReason,omitempty"`
+	SchemaVersion        int64                  `json:"schemaVersion,omitempty"`
 }
 
 // redactedPlaceholder is the value the digest substitutes for attributes
@@ -253,13 +258,18 @@ func (s *fillState) assign(entry *ImportEntry, tfRes *ModuleResource) {
 	}
 	if tfRes.NonImportable {
 		s.result.NonImportable = append(s.result.NonImportable, NonImportableResource{
-			Type:               entry.Type,
-			Name:               entry.Name,
-			Parent:             entry.Parent,
-			TerraformAddress:   tfRes.TerraformAddress,
-			ID:                 tfRes.ImportID,
-			Attributes:         tfRes.Attributes,
-			RedactedAttributes: redactedAttributeKeys(tfRes.TerraformAddress, tfRes.Attributes),
+			Type:                 entry.Type,
+			Name:                 entry.Name,
+			Parent:               entry.Parent,
+			TerraformAddress:     tfRes.TerraformAddress,
+			ID:                   tfRes.ImportID,
+			Attributes:           tfRes.Attributes,
+			RedactedAttributes:   redactedAttributeKeys(tfRes.TerraformAddress, tfRes.Attributes),
+			PulumiOutputs:        tfRes.PulumiOutputs,
+			RawStateDelta:        tfRes.RawStateDelta,
+			RawStateDeltaReason:  tfRes.RawStateDeltaReason,
+			InjectionStateReason: tfRes.InjectionStateReason,
+			SchemaVersion:        tfRes.SchemaVersion,
 		})
 		s.dropped[entry] = true
 		return

@@ -145,6 +145,12 @@ func (p *Prober) discard(ctx context.Context, providerAddr string) {
 	p.failed[providerAddr] = true
 }
 
+func (p *Prober) Provider(ctx context.Context, providerAddr string) (tfprovider.Provider, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.provider(ctx, providerAddr)
+}
+
 // provider returns a running provider, loading it on first use. The caller
 // holds p.mu.
 func (p *Prober) provider(ctx context.Context, providerAddr string) (tfprovider.Provider, bool) {

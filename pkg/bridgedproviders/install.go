@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"github.com/blang/semver"
+	"github.com/pulumi-proserv/pulumi-tool-import/pkg/pathlock"
 	"github.com/pulumi/pulumi/sdk/v3/go/auto"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 )
@@ -110,6 +111,8 @@ func InstallProvider(ctx context.Context, opts InstallProviderOptions) (*Install
 }
 
 func EnsureProviderInstalled(ctx context.Context, opts InstallProviderOptions) (*InstallProviderResult, error) {
+	defer pathlock.Acquire("pulumi-plugin:" + opts.Name)()
+
 	result, err := GetInstalledProviderPath(ctx, opts.Name, opts.Version)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {

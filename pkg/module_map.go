@@ -15,6 +15,7 @@
 package pkg
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -27,9 +28,12 @@ import (
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/bridge"
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/importsupport"
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/providermap"
+	"github.com/pulumi-proserv/pulumi-tool-import/pkg/tfprovider"
 	"github.com/pulumi/opentofu/addrs"
 	"github.com/pulumi/opentofu/configs"
 	"github.com/pulumi/opentofu/states"
+	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
+	shim "github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfshim"
 	"github.com/pulumi/pulumi/sdk/v3/go/auto"
 	"github.com/zclconf/go-cty/cty"
 )
@@ -58,6 +62,23 @@ type ModuleResource struct {
 	// misleading "resource '<id>' does not exist" — so resolve leaves it out of
 	// the import file rather than emitting an entry guaranteed to fail.
 	NonImportable bool `json:"nonImportable,omitempty"`
+	// PulumiOutputs are the Terraform attributes converted to Pulumi property
+	// names and shapes, and RawStateDelta is the bridge's
+	// __pulumi_raw_state_delta for them. Both are computed from REDACTED
+	// attributes, so neither ever contains a secret, and both are populated
+	// only for resources NonImportable flags.
+	PulumiOutputs map[string]interface{} `json:"pulumiOutputs,omitempty"`
+	RawStateDelta map[string]interface{} `json:"rawStateDelta,omitempty"`
+	// RawStateDeltaReason says why RawStateDelta is absent when computing one
+	// was attempted; InjectionStateReason says why the resource has no
+	// injection state at all. The distinction is what lets a reader tell "we
+	// tried and could not" from "nobody looked", which PulumiOutputs == nil
+	// alone cannot express and which need different responses.
+	RawStateDeltaReason  string `json:"rawStateDeltaReason,omitempty"`
+	InjectionStateReason string `json:"injectionStateReason,omitempty"`
+	// SchemaVersion is written into state as __meta, so a later provider
+	// upgrade runs the right state upgraders.
+	SchemaVersion int64 `json:"schemaVersion,omitempty"`
 }
 
 // ImportSupportChecker reports whether a Terraform resource type can be
@@ -66,6 +87,10 @@ type ModuleResource struct {
 // *importsupport.Prober.
 type ImportSupportChecker interface {
 	Check(ctx context.Context, providerAddr, tfType string) importsupport.Support
+}
+
+type ProviderAccessor interface {
+	Provider(ctx context.Context, providerAddr string) (tfprovider.Provider, bool)
 }
 
 // ModuleMapEntry represents a single module instance in the module map.
@@ -132,7 +157,10 @@ func BuildModuleMap(
 
 	// Collect root-level resources (empty segments = root module).
 	fmt.Fprintf(os.Stderr, "  Matching root-level resources...\n")
-	rootResources := matchResources(ctx, state, nil, pulumiProviders, stackName, projectName, importChecker)
+	rootResources, err := matchResources(ctx, state, nil, pulumiProviders, stackName, projectName, importChecker)
+	if err != nil {
+		return nil, err
+	}
 	if len(rootResources) > 0 {
 		mm.RootResources = rootResources
 	}
@@ -178,11 +206,15 @@ func buildModuleMapLevel(
 			}
 
 			fmt.Fprintf(os.Stderr, "      %s: matching resources...\n", mapKey)
+			moduleResources, err := matchResources(ctx, state, segments, pulumiProviders, stackName, projectName, importChecker)
+			if err != nil {
+				return err
+			}
 			entry := &ModuleMapEntry{
 				TerraformPath: buildModulePath(segments),
 				Source:        call.SourceAddrRaw,
 				IndexKey:      inst.key,
-				Resources:     matchResources(ctx, state, segments, pulumiProviders, stackName, projectName, importChecker),
+				Resources:     moduleResources,
 			}
 			fmt.Fprintf(os.Stderr, "      %s: %d resources\n", mapKey, len(entry.Resources))
 
@@ -300,7 +332,7 @@ func matchResources(
 	stackName string,
 	projectName string,
 	importChecker ImportSupportChecker,
-) []ModuleResource {
+) ([]ModuleResource, error) {
 	var resources []ModuleResource
 	modulePath := buildModulePath(segments)
 
@@ -333,9 +365,10 @@ func matchResources(
 					var attrs map[string]interface{}
 					importID := ""
 					if inst.Current.AttrsJSON != nil {
-						if err := json.Unmarshal(inst.Current.AttrsJSON, &attrs); err == nil {
+						if parsed, err := decodeAttrs(inst.Current.AttrsJSON); err == nil {
+							attrs = parsed
 							if id, ok := attrs["id"]; ok {
-								importID = fmt.Sprintf("%v", id)
+								importID = formatImportID(id)
 							}
 						}
 					}
@@ -359,16 +392,39 @@ func matchResources(
 						ImportID:         importID,
 					}
 
-					// Only managed resources are ever imported, so only they
-					// are worth checking.
-					if mode == "managed" && importChecker != nil {
-						mr.NonImportable = importChecker.Check(ctx, providerName, resourceType) == importsupport.Unsupported
-					}
-
-					// Include attributes, redacting sensitive paths from state.
 					if attrs != nil {
 						redactSensitivePaths(attrs, inst.Current.AttrSensitivePaths)
+						// The provider schema is a second, independent source.
+						// Redaction is otherwise driven entirely by the state's
+						// own sensitive marks, so where those are missing it
+						// runs, reports success, and leaves the secret in the
+						// clear. Anything the schema marks and the state did
+						// not is redacted here, and DiscoverSensitiveSecrets
+						// recovers it into stack config from the same schema.
+						schemaMap := bridgedSchemaMap(pulumiProviders, providerName, resourceType)
+						redactSchemaSensitive(attrs, schemaMap)
+						// Nested recovery is top-level only throughout, so a
+						// nested attribute the state did not mark cannot be
+						// redacted here without making it unresolvable later.
+						// Failing is the honest answer for that case.
+						if leaks := schemaSensitiveLeaks(attrs, schemaMap); len(leaks) > 0 {
+							return nil, fmt.Errorf(
+								"%s: the provider schema marks the nested attribute(s) %s sensitive, but the "+
+									"Terraform state carries no sensitive mark for them, so the digest would "+
+									"record the real values in plaintext. Recovering a nested secret from stack "+
+									"config is not implemented (see issue #28), so this cannot be redacted "+
+									"either. Re-run \"terraform refresh\" (or \"tofu refresh\") so the state "+
+									"records the marks, or exclude this resource",
+								address, strings.Join(leaks, ", "))
+						}
 						mr.Attributes = attrs
+					}
+
+					if mode == "managed" && importChecker != nil {
+						mr.NonImportable = importChecker.Check(ctx, providerName, resourceType) == importsupport.Unsupported
+						if mr.NonImportable && attrs != nil {
+							populateInjectionState(ctx, &mr, importChecker, pulumiProviders, providerName, resourceType, attrs)
+						}
 					}
 
 					resources = append(resources, mr)
@@ -380,7 +436,139 @@ func matchResources(
 	if resources == nil {
 		resources = []ModuleResource{}
 	}
-	return resources
+	return resources, nil
+}
+
+// bridgedSchemaMap returns the bridged Terraform schema for a resource type,
+// or nil when no provider was loaded for it — in which case there is no second
+// source to cross-check redaction against.
+func bridgedSchemaMap(
+	pulumiProviders map[providermap.TerraformProviderName]*ProviderWithMetadata,
+	providerName, resourceType string,
+) shim.SchemaMap {
+	pwm, ok := pulumiProviders[providermap.TerraformProviderName(providerName)]
+	if !ok || pwm == nil || pwm.P == nil {
+		return nil
+	}
+	shimResource := pwm.P.ResourcesMap().Get(resourceType)
+	if shimResource == nil {
+		return nil
+	}
+	return shimResource.Schema()
+}
+
+// decodeAttrs decodes AttrsJSON with json.Number rather than float64:
+// integers above 2^53 otherwise decode to a different number, silently, and
+// that value flows into the sidecar and on into Pulumi state.
+func decodeAttrs(data []byte) (map[string]interface{}, error) {
+	var attrs map[string]interface{}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	if err := dec.Decode(&attrs); err != nil {
+		return nil, err
+	}
+	return attrs, nil
+}
+
+func formatImportID(v interface{}) string {
+	if v == nil {
+		return ""
+	}
+	return fmt.Sprintf("%v", v)
+}
+
+func warnInjectionState(mr *ModuleResource) {
+	fmt.Fprintf(os.Stderr, "Warning: no injection state for %s: %s\n",
+		mr.TerraformAddress, mr.InjectionStateReason)
+}
+
+func populateInjectionState(
+	ctx context.Context,
+	mr *ModuleResource,
+	importChecker ImportSupportChecker,
+	pulumiProviders map[providermap.TerraformProviderName]*ProviderWithMetadata,
+	providerName string,
+	resourceType string,
+	attrs map[string]interface{},
+) {
+	accessor, ok := importChecker.(ProviderAccessor)
+	if !ok {
+		mr.InjectionStateReason = "no live Terraform provider (import-support probe not run)"
+		return
+	}
+	prov, ok := accessor.Provider(ctx, providerName)
+	if !ok {
+		mr.InjectionStateReason = fmt.Sprintf(
+			"the import-support probe holds no open provider for %s", providerName)
+		warnInjectionState(mr)
+		return
+	}
+
+	var schemaMap shim.SchemaMap
+	var schemaInfos map[string]*tfbridge.SchemaInfo
+	if pwm, ok := pulumiProviders[providermap.TerraformProviderName(providerName)]; ok && pwm != nil {
+		if shimResource := pwm.P.ResourcesMap().Get(resourceType); shimResource != nil {
+			schemaMap = shimResource.Schema()
+		}
+		if ri := pwm.Resources[resourceType]; ri != nil {
+			schemaInfos = ri.Fields
+		}
+	}
+	if schemaMap == nil {
+		mr.InjectionStateReason = fmt.Sprintf(
+			"no bridged Pulumi schema for %s, though the import-support probe loaded %s: "+
+				"the provider loaders disagree (see issue #26)", resourceType, providerName)
+		warnInjectionState(mr)
+		return
+	}
+
+	attrsJSON, err := json.Marshal(attrs)
+	if err != nil {
+		mr.InjectionStateReason = fmt.Sprintf("re-marshalling redacted attributes: %v", err)
+		warnInjectionState(mr)
+		return
+	}
+
+	outputs, delta, deltaReason, version, ok := safeComputeInjectionState(
+		ctx, prov, resourceType, attrsJSON, schemaMap, schemaInfos)
+	if !ok {
+		mr.InjectionStateReason = fmt.Sprintf(
+			"computing injection state for %s panicked or failed; the resource will be "+
+				"injected from raw attribute renaming instead", resourceType)
+		warnInjectionState(mr)
+		return
+	}
+	mr.PulumiOutputs = outputs
+	mr.RawStateDelta = delta
+	mr.SchemaVersion = version
+	if delta == nil && deltaReason != "" {
+		fmt.Fprintf(os.Stderr, "Warning: no raw state delta for %s (%s): %s\n",
+			mr.TerraformAddress, resourceType, deltaReason)
+		mr.RawStateDeltaReason = deltaReason
+	}
+}
+
+func safeComputeInjectionState(
+	ctx context.Context,
+	prov tfprovider.Provider,
+	tfType string,
+	attrsJSON []byte,
+	schemaMap shim.SchemaMap,
+	schemaInfos map[string]*tfbridge.SchemaInfo,
+) (outputs map[string]interface{}, delta map[string]interface{}, deltaReason string, version int64, ok bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "Warning: computing injection state for %s panicked: %v\n", tfType, r)
+			outputs, delta, deltaReason, version, ok = nil, nil, "", 0, false
+		}
+	}()
+
+	o, d, reason, v, err := ComputeInjectionState(ctx, prov, tfType, attrsJSON, schemaMap, schemaInfos)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: computing injection state for %s failed: %v\n", tfType, err)
+		return nil, nil, "", 0, false
+	}
+	return o, d, reason, v, true
 }
 
 // buildResourceURN constructs a Pulumi URN for a Terraform resource, or falls back
@@ -558,7 +746,11 @@ type SensitiveSecret = ConfigEntry
 // After collecting all secrets, this function:
 //  1. Deduplicates keys by appending _2, _3, etc. and warns to stderr
 //  2. Checks key lengths and returns an error if any exceed the limit
-func DiscoverSensitiveSecrets(state *states.State, projectName string) ([]SensitiveSecret, error) {
+func DiscoverSensitiveSecrets(
+	state *states.State,
+	projectName string,
+	pulumiProviders map[providermap.TerraformProviderName]*ProviderWithMetadata,
+) ([]SensitiveSecret, error) {
 	if state == nil {
 		return nil, nil
 	}
@@ -572,8 +764,30 @@ func DiscoverSensitiveSecrets(state *states.State, projectName string) ([]Sensit
 	var raw []rawSecret
 	for _, module := range state.Modules {
 		for _, res := range module.Resources {
+			providerName := res.ProviderConfig.Provider.String()
+			resourceType := res.Addr.Resource.Type
+
+			// The provider schema names sensitive attributes independently of
+			// the state's marks, and matchResources redacts on that basis, so
+			// discovery has to look there too — otherwise it would redact a
+			// value it never recorded a config key for, and injection would
+			// fail on a placeholder nothing can resolve.
+			schemaMap := bridgedSchemaMap(pulumiProviders, providerName, resourceType)
+			schemaSensitive := map[string]bool{}
+			if schemaMap != nil {
+				schemaMap.Range(func(name string, sch shim.Schema) bool {
+					if sch.Sensitive() {
+						schemaSensitive[name] = true
+					}
+					return true
+				})
+			}
+
 			for instKey, inst := range res.Instances {
-				if inst.Current == nil || len(inst.Current.AttrSensitivePaths) == 0 {
+				if inst.Current == nil {
+					continue
+				}
+				if len(inst.Current.AttrSensitivePaths) == 0 && len(schemaSensitive) == 0 {
 					continue
 				}
 
@@ -587,30 +801,42 @@ func DiscoverSensitiveSecrets(state *states.State, projectName string) ([]Sensit
 				}
 
 				// Parse attributes.
-				var attrs map[string]interface{}
 				if inst.Current.AttrsJSON == nil {
 					continue
 				}
-				if err := json.Unmarshal(inst.Current.AttrsJSON, &attrs); err != nil {
+				attrs, err := decodeAttrs(inst.Current.AttrsJSON)
+				if err != nil {
 					continue
 				}
 
-				// Collect sensitive top-level attributes.
+				// Collect sensitive top-level attributes, from either source.
+				names := map[string]bool{}
 				for _, pvm := range inst.Current.AttrSensitivePaths {
 					if len(pvm.Path) != 1 {
 						continue
 					}
-					step, ok := pvm.Path[0].(cty.GetAttrStep)
-					if !ok {
-						continue
+					if step, ok := pvm.Path[0].(cty.GetAttrStep); ok {
+						names[step.Name] = true
 					}
-					value, exists := attrs[step.Name]
+				}
+				for name := range schemaSensitive {
+					names[name] = true
+				}
+
+				sorted := make([]string, 0, len(names))
+				for name := range names {
+					sorted = append(sorted, name)
+				}
+				sort.Strings(sorted)
+
+				for _, name := range sorted {
+					value, exists := attrs[name]
 					if !exists || value == nil {
 						continue
 					}
 					raw = append(raw, rawSecret{
 						address:   address,
-						attribute: step.Name,
+						attribute: name,
 						value:     fmt.Sprintf("%v", value),
 					})
 				}
@@ -618,10 +844,18 @@ func DiscoverSensitiveSecrets(state *states.State, projectName string) ([]Sensit
 		}
 	}
 
+	sort.Slice(raw, func(i, j int) bool {
+		if raw[i].address != raw[j].address {
+			return raw[i].address < raw[j].address
+		}
+		return raw[i].attribute < raw[j].attribute
+	})
+
 	// Generate keys and handle dedup + length checking.
 	maxKeyLen := 128 - len(projectName) - 1 // subtract "project:" namespace
 	keyCounts := make(map[string]int)
 	keyToAddress := make(map[string]string) // first address that produced each key
+	var collisions []string
 
 	var secrets []SensitiveSecret
 	var tooLong []string
@@ -638,8 +872,9 @@ func DiscoverSensitiveSecrets(state *states.State, projectName string) ([]Sensit
 		finalKey := key
 		if count > 1 {
 			finalKey = fmt.Sprintf("%s_%d", key, count)
-			fmt.Fprintf(os.Stderr, "  WARNING: duplicate config key %q from:\n    1: %s\n    %d: %s\n",
-				key, keyToAddress[key], count, r.address)
+			collisions = append(collisions, fmt.Sprintf(
+				"%q is produced by both %s and %s (attribute %q)",
+				key, keyToAddress[key], r.address, r.attribute))
 		}
 
 		if len(finalKey) > maxKeyLen {
@@ -653,6 +888,18 @@ func DiscoverSensitiveSecrets(state *states.State, projectName string) ([]Sensit
 			Value:     r.value,
 			Secret:    true,
 		})
+	}
+
+	if len(collisions) > 0 {
+		for _, msg := range collisions {
+			fmt.Fprintf(os.Stderr, "  ERROR: colliding config key: %s\n", msg)
+		}
+		return secrets, fmt.Errorf(
+			"%d config key collision(s): two sensitive attributes flatten to the same stack "+
+				"config key, and the sidecar cannot tell them apart — injection would write one "+
+				"resource's secret into the other. Rename or remap the resources so their "+
+				"addresses differ after flattening, or set these secrets by hand and re-run "+
+				"with --skip-secrets", len(collisions))
 	}
 
 	if len(tooLong) > 0 {
@@ -886,19 +1133,98 @@ func redactSensitivePaths(attrs map[string]interface{}, paths []cty.PathValueMar
 		if len(pvm.Path) == 0 {
 			continue
 		}
-		// For top-level attributes, the first step is a GetAttrStep.
-		step, ok := pvm.Path[0].(cty.GetAttrStep)
+		redactAtPath(attrs, pvm.Path)
+	}
+}
+
+func redactAtPath(container interface{}, path cty.Path) {
+	if len(path) == 0 {
+		return
+	}
+	last := len(path) == 1
+
+	switch step := path[0].(type) {
+	case cty.GetAttrStep:
+		m, ok := container.(map[string]interface{})
 		if !ok {
-			continue
+			return
 		}
-		if _, exists := attrs[step.Name]; exists {
-			if len(pvm.Path) == 1 {
-				// Top-level attribute is sensitive — redact it.
-				attrs[step.Name] = "(sensitive)"
+		value, exists := m[step.Name]
+		if !exists {
+			return
+		}
+		if !last {
+			redactAtPath(value, path[1:])
+			return
+		}
+		if value == nil {
+			return
+		}
+		m[step.Name] = redactedPlaceholder
+
+	case cty.IndexStep:
+		switch c := container.(type) {
+		case []interface{}:
+			idx, ok := indexStepOrdinal(step, len(c))
+			if !ok {
+				for i := range c {
+					redactSliceElement(c, i, path, last)
+				}
+				return
 			}
-			// Nested paths: we could recurse, but for now top-level is sufficient.
+			redactSliceElement(c, idx, path, last)
+		case map[string]interface{}:
+			key, ok := indexStepKey(step)
+			if !ok {
+				return
+			}
+			value, exists := c[key]
+			if !exists {
+				return
+			}
+			if !last {
+				redactAtPath(value, path[1:])
+				return
+			}
+			if value == nil {
+				return
+			}
+			c[key] = redactedPlaceholder
 		}
 	}
+}
+
+func redactSliceElement(s []interface{}, i int, path cty.Path, last bool) {
+	if i < 0 || i >= len(s) {
+		return
+	}
+	if !last {
+		redactAtPath(s[i], path[1:])
+		return
+	}
+	if s[i] == nil {
+		return
+	}
+	s[i] = redactedPlaceholder
+}
+
+func indexStepOrdinal(step cty.IndexStep, length int) (int, bool) {
+	if step.Key.Type() != cty.Number {
+		return 0, false
+	}
+	f, _ := step.Key.AsBigFloat().Float64()
+	i := int(f)
+	if i < 0 || i >= length {
+		return 0, false
+	}
+	return i, true
+}
+
+func indexStepKey(step cty.IndexStep) (string, bool) {
+	if step.Key.Type() != cty.String {
+		return "", false
+	}
+	return step.Key.AsString(), true
 }
 
 // ctyValueToInterface converts a cty.Value to a plain Go value suitable for JSON serialization.

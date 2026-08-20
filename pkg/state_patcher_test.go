@@ -20,14 +20,52 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/providermap"
+	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge/info"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestPropertyValueFromState_JSONNumberBecomesNumberProperty(t *testing.T) {
+	t.Parallel()
+	pv := propertyValueFromState(json.Number("5"))
+	require.True(t, pv.IsNumber(), "a json.Number must recover as a Number PropertyValue, got %#v", pv)
+	assert.Equal(t, float64(5), pv.NumberValue())
+	assert.False(t, pv.IsString())
+}
+
+func TestValidateRecover_NumberOutputRecoversAsNumberNotString(t *testing.T) {
+	t.Parallel()
+
+	outputs := map[string]interface{}{
+		"count": json.Number("5"),
+	}
+	outputsPV := propertyValueFromState(outputs)
+
+	deltaMap := map[string]interface{}{"obj": map[string]interface{}{}}
+	deltaPV := resource.NewPropertyValue(deltaMap)
+	rsd, err := tfbridge.UnmarshalRawStateDelta(deltaPV)
+	require.NoError(t, err)
+
+	recovered, err := rsd.Recover(outputsPV)
+	require.NoError(t, err, "Recover reporting no error is exactly the vacuous-guard bug: "+
+		"it must still reconstruct the correct raw JSON type")
+
+	recoveredJSON, err := json.Marshal(recovered)
+	require.NoError(t, err)
+
+	var back map[string]interface{}
+	require.NoError(t, json.Unmarshal(recoveredJSON, &back))
+
+	_, isNumber := back["count"].(float64)
+	assert.True(t, isNumber, "count must recover as a raw JSON number, got %#v (%T)", back["count"], back["count"])
+}
 
 func TestNormalizeTFName(t *testing.T) {
 	t.Parallel()
@@ -132,6 +170,77 @@ func TestPatchState_PatchesFromDigest(t *testing.T) {
 	inputs := r["inputs"].(map[string]interface{})
 	assert.Equal(t, float64(0), inputs["recoveryWindowInDays"])   // from digest, not default 30
 	assert.Equal(t, false, inputs["forceOverwriteReplicaSecret"]) // from default
+}
+
+func TestPatchState_NotReadNumericField_JSONNumber_PatchesInputAndOutput(t *testing.T) {
+	t.Parallel()
+
+	state := map[string]interface{}{
+		"version": 3,
+		"deployment": map[string]interface{}{
+			"resources": []interface{}{
+				map[string]interface{}{
+					"urn":    "urn:pulumi:dev::proj::aws:secretsmanager/secret:Secret::my-secret",
+					"type":   "aws:secretsmanager/secret:Secret",
+					"custom": true,
+					"id":     "arn:aws:secretsmanager:us-east-1:123:secret:my-secret",
+					"inputs": map[string]interface{}{
+						"name": "my-secret",
+					},
+					"outputs": map[string]interface{}{
+						"name": "my-secret",
+					},
+				},
+			},
+		},
+	}
+	stateData, _ := json.Marshal(state)
+
+	digest := ModuleMap{
+		RootResources: []ModuleResource{
+			{
+				Mode:             "managed",
+				TranslatedURN:    "urn:pulumi:dev::proj::aws:secretsmanager/secret:Secret::my-secret",
+				TerraformAddress: "aws_secretsmanager_secret.my_secret",
+				ImportID:         "arn:aws:secretsmanager:us-east-1:123:secret:my-secret",
+				Attributes: map[string]interface{}{
+					"recovery_window_in_days": json.Number("14"),
+					"name":                    "my-secret",
+				},
+			},
+		},
+	}
+
+	fields := &FieldsFile{
+		Fields: map[string]FieldCategory{
+			"secret:Secret": {
+				NotRead: map[string]FieldInfo{
+					"recoveryWindowInDays": {Default: float64(30)},
+				},
+			},
+		},
+	}
+
+	resourceMappings := map[string]string{
+		"aws_secretsmanager_secret.my_secret": "my-secret",
+	}
+
+	patched, result, err := PatchState(stateData, &digest, fields, nil, resourceMappings, nil, "")
+	require.NoError(t, err)
+	assert.Equal(t, 1, result.Patched)
+	assert.Equal(t, 1, result.FieldsFromDigest)
+
+	var patchedState map[string]interface{}
+	require.NoError(t, json.Unmarshal(patched, &patchedState))
+	resources := patchedState["deployment"].(map[string]interface{})["resources"].([]interface{})
+	r := resources[0].(map[string]interface{})
+	inputs := r["inputs"].(map[string]interface{})
+	outputs := r["outputs"].(map[string]interface{})
+
+	assert.Equal(t, float64(14), inputs["recoveryWindowInDays"], "input must be patched from the digest")
+	assert.Equal(t, float64(14), outputs["recoveryWindowInDays"],
+		"output must be patched to match the input; a numeric-only input with no matching "+
+			"output is the divergence outputStale/outputIsBadPlain exist to prevent")
 }
 
 func TestPatchState_OutputStaleBoolean(t *testing.T) {
@@ -1839,4 +1948,98 @@ func TestPatchStateFromSchema_DeltaUpdatesOnArrayPatch_REMOVED(t *testing.T) {
 	elem0Map := elem0.(map[string]interface{})
 	_, hasObj := elem0Map["obj"]
 	assert.True(t, hasObj, "element 0 delta should have 'obj' marker")
+}
+
+func TestPropertyValueFromState_CiphertextSecretStaysSecret(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		in   map[string]interface{}
+	}{
+		{"ciphertext (stack export, no --show-secrets)", map[string]interface{}{
+			sigKey: "1b47061264138c4ac30d75fd1eb44270", "ciphertext": "v1:abc:def",
+		}},
+		{"value (engine in-memory form)", map[string]interface{}{
+			sigKey: "1b47061264138c4ac30d75fd1eb44270", "value": "hunter2",
+		}},
+		{"plaintext (--show-secrets)", map[string]interface{}{
+			sigKey: "1b47061264138c4ac30d75fd1eb44270", "plaintext": `"hunter2"`,
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			pv := propertyValueFromState(tc.in)
+			assert.True(t, pv.IsSecret(), "must recover as a Secret, got %s", pv.TypeString())
+			assert.False(t, pv.IsObject(), "recovering as an Object is what breaks Recover")
+		})
+	}
+}
+
+func TestDeltaPropertyValue_JSONNumberSurvives(t *testing.T) {
+	t.Parallel()
+
+	delta := `{"obj":{"ps":{"code":{"asset":{"kind":1,"archiveFormat":2}}}}}`
+
+	var plain map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(delta), &plain))
+
+	dec := json.NewDecoder(strings.NewReader(delta))
+	dec.UseNumber()
+	var numbered map[string]interface{}
+	require.NoError(t, dec.Decode(&numbered))
+
+	_, plainErr := tfbridge.UnmarshalRawStateDelta(deltaPropertyValue(plain))
+	_, numErr := tfbridge.UnmarshalRawStateDelta(deltaPropertyValue(numbered))
+	assert.NoError(t, plainErr)
+	assert.NoError(t, numErr, "a UseNumber-decoded delta must unmarshal like a plain one")
+}
+
+func TestPatchRevert_DoesNotKeepInjectedAssetDeltas(t *testing.T) {
+	t.Parallel()
+
+	outputs := map[string]interface{}{
+		"code": "x",
+		rawStateDeltaKey: map[string]interface{}{
+			"obj": map[string]interface{}{"ps": map[string]interface{}{}},
+		},
+	}
+
+	snapshot := make(map[string]interface{}, len(outputs))
+	for k, v := range outputs {
+		snapshot[k] = v
+	}
+	snapshot[rawStateDeltaKey] = deepCopyJSONValue(outputs[rawStateDeltaKey])
+
+	before, err := json.Marshal(snapshot[rawStateDeltaKey])
+	require.NoError(t, err)
+
+	outputs[rawStateDeltaKey] = injectAssetDeltas(outputs[rawStateDeltaKey],
+		[]assetFieldDeltaInfo{{pulumiField: "code", kind: 0}})
+
+	after, err := json.Marshal(snapshot[rawStateDeltaKey])
+	require.NoError(t, err)
+	assert.JSONEq(t, string(before), string(after),
+		"the snapshot must be unaffected by injectAssetDeltas, or a revert cannot restore it")
+
+	live, err := json.Marshal(outputs[rawStateDeltaKey])
+	require.NoError(t, err)
+	assert.NotEqual(t, string(before), string(live))
+}
+
+func TestDeepCopyJSONValue_SharesNothingMutable(t *testing.T) {
+	t.Parallel()
+
+	orig := map[string]interface{}{
+		"m": map[string]interface{}{"k": "v"},
+		"a": []interface{}{map[string]interface{}{"k": "v"}},
+		"s": "scalar",
+	}
+	cp := deepCopyJSONValue(orig).(map[string]interface{})
+
+	cp["m"].(map[string]interface{})["k"] = "changed"
+	cp["a"].([]interface{})[0].(map[string]interface{})["k"] = "changed"
+
+	assert.Equal(t, "v", orig["m"].(map[string]interface{})["k"])
+	assert.Equal(t, "v", orig["a"].([]interface{})[0].(map[string]interface{})["k"])
 }
