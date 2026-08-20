@@ -14,6 +14,18 @@
 
 //go:build e2e
 
+// This test creates and destroys real AWS infrastructure, reading credentials
+// from the environment. Two operational hazards, both learned the hard way:
+//
+//   - Run it with "env -u AWS_PROFILE" whenever the shell exports AWS_PROFILE.
+//     It shadows brokered credentials and every AWS call then fails with "the
+//     config profile (...) could not be found". sanitizedEnv in helpers.go is
+//     the in-process backstop.
+//   - Start it detached, not in a shell with its own timeout: a harness that
+//     kills the process mid-run leaves t.Cleanup's "tofu destroy" unrun, which
+//     is how a VPN connection got orphaned.
+//
+// See "make test-e2e".
 package e2e
 
 import (
@@ -97,6 +109,8 @@ func TestNonImportableStateInjection(t *testing.T) {
 	repoRoot := repoRoot(t)
 	binPath := buildTool(t, ctx, repoRoot)
 
+	// Deliberately NOT t.TempDir(): Go removes that when the test ends,
+	// including on failure, taking the Terraform state with it.
 	tfRoot, err := os.MkdirTemp("", "pulumi-tool-import-e2e-tf-")
 	if err != nil {
 		t.Fatalf("creating tf working directory: %v", err)

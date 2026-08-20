@@ -43,6 +43,11 @@ func NewStackSession(ctx context.Context, projectDir, stackName string) (*StackS
 	return &StackSession{stack: s, projectDir: projectDir, stackName: stackName}, nil
 }
 
+// Export returns the full {"version":…,"deployment":{…}} envelope that
+// "pulumi stack export" writes. auto.Stack.Export returns an
+// apitype.UntypedDeployment whose Deployment field is only the inner object,
+// so it must be re-marshalled whole; returning dep.Deployment alone fails
+// every consumer here with a misleading "state missing deployment".
 func (s *StackSession) Export(ctx context.Context) ([]byte, error) {
 	dep, err := s.stack.Export(ctx)
 	if err != nil {
@@ -66,6 +71,10 @@ func (s *StackSession) Import(ctx context.Context, state []byte) error {
 	return nil
 }
 
+// PreviewJSON runs "pulumi preview --json" and parses the result.
+// auto.Stack.Preview cannot be used: it tails an event stream whose
+// StepEventStateMetadata carries no dependency edges, and optpreview has no
+// JSON option.
 func (s *StackSession) PreviewJSON(ctx context.Context) (*PreviewDigest, error) {
 	stdout, stderr, code, err := s.stack.Workspace().PulumiCommand().Run(
 		ctx, s.projectDir, nil, nil, nil, nil, previewJSONArgs(s.stackName)...)
@@ -75,6 +84,12 @@ func (s *StackSession) PreviewJSON(ctx context.Context) (*PreviewDigest, error) 
 	return ParsePreviewJSON([]byte(stdout))
 }
 
+// previewJSONArgs builds the CLI args for "pulumi preview --json".
+//
+// --show-sames is required, not cosmetic: the preview command defaults it to
+// false, and without it "same" steps are absent from the JSON entirely, so
+// every URN CheckInjectedOps looks up misses and a correct injection is
+// reported as unverified and reverted. Do not remove it as redundant.
 func previewJSONArgs(stackName string) []string {
 	return []string{"preview", "--json", "--show-sames", "--stack", stackName}
 }
@@ -113,6 +128,8 @@ func formatDiffReasons(reasons []string) string {
 	return fmt.Sprintf(" (differs on: %s%s)", strings.Join(shown, ", "), more)
 }
 
+// CheckPreviewClean reports every step whose operation is not "same". It is a
+// diagnostic, not a pass/fail gate — gating is CheckInjectionVerification's job.
 func CheckPreviewClean(preview *PreviewDigest) []string {
 	var problems []string
 	for _, step := range preview.Steps {
@@ -124,6 +141,14 @@ func CheckPreviewClean(preview *PreviewDigest) []string {
 	return problems
 }
 
+// CheckInjectionVerification is the verification gate for a stack-mode run:
+// injected URNs must all settle to "same", and the mutation must not make
+// anything else worse. An empty result means the mutation verified.
+//
+// "Worse" is judged by comparison against the pre-mutation baseline, not an
+// absolute bar: patch-state runs against a stack mid-migration, which nearly
+// always has outstanding diffs already, so demanding a clean preview would
+// revert almost every legitimate run.
 func CheckInjectionVerification(baseline, verify *PreviewDigest, injectedURNs []string) []string {
 	problems := CheckInjectedOps(verify, injectedURNs)
 
@@ -185,6 +210,10 @@ func CheckInjectionVerification(baseline, verify *PreviewDigest, injectedURNs []
 	return problems
 }
 
+// opSeverity ranks operations by how much of the live resource they destroy,
+// so "must not make things worse" can be judged on the operation and not only
+// on how many resources report one. The ranking is what matters, not the
+// numbers.
 var opSeverity = map[string]int{
 	"same":    0,
 	"refresh": 0,
@@ -205,6 +234,11 @@ var opSeverity = map[string]int{
 	"remove-pending-replace": 4,
 }
 
+// opGotWorse reports whether an operation became more destructive between the
+// two previews — many not_read fields are ForceNew, so a wrongly patched value
+// turns "update" into "replace" while staying non-"same", which no count can
+// see. An operation this table does not know is reported rather than assumed
+// benign; the engine's op vocabulary can grow.
 func opGotWorse(before, after string) bool {
 	if before == after {
 		return false

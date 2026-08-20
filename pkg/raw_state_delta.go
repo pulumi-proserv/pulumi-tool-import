@@ -48,6 +48,11 @@ func ComputeInjectionState(
 		return nil, nil, "", 0, fmt.Errorf("decoding %s attributes: %w", tfType, err)
 	}
 
+	// RawStateComputeDelta treats a top-level "timeouts" path as already
+	// handled, so the type it walks must not declare one either — the same
+	// thing valueshim.FromHctyResourceType does for every real bridge caller.
+	// The cty VALUE is deliberately passed unstripped below: with no "timeouts"
+	// key in props, RawStateComputeDelta removes it from the value itself.
 	strippedType := stripTimeouts(ty)
 
 	props, err := pulumiOutputsFromCty(ctx, value, schemaMap, schemaInfos)
@@ -57,6 +62,9 @@ func ComputeInjectionState(
 	delete(props, "timeouts")
 	outputs = props.Mappable()
 
+	// Mirrors the bridge's own first act in RawStateInjectDelta. Unreachable
+	// today only because pulumiOutputsFromCty starts with ctyjson.Marshal,
+	// which rejects an unknown value outright.
 	if resource.NewObjectProperty(props).ContainsUnknowns() {
 		return outputs, nil, fmt.Sprintf(
 			"raw state delta for %s skipped: outputs contain unknown values, which the bridge's "+
@@ -71,6 +79,11 @@ func ComputeInjectionState(
 		return outputs, nil, fmt.Sprintf("computing raw state delta for %s: %v", tfType, deltaErr), sch.Version, nil
 	}
 
+	// Marshalled by encoding/json directly, NOT via Marshal().Mappable(): the
+	// bridge secrets every Replace node, and MapRepl renders a secret as a
+	// *resource.Secret STRUCT, so Mappable emits {"Element":{"V":…}} with SDK
+	// field names baked in. Reading that back through UnmarshalRawStateDelta
+	// returns err=nil and an EMPTY delta — a wrong raw state, written silently.
 	deltaJSON, err := json.Marshal(rawDelta)
 	if err != nil {
 		return outputs, nil, fmt.Sprintf("marshalling raw state delta for %s: %v", tfType, err),
@@ -89,6 +102,11 @@ func ComputeInjectionState(
 	return outputs, marshalled, "", sch.Version, nil
 }
 
+// pulumiOutputsFromCty converts a cty value using the bridge's own
+// schema-aware conversion. RawStateComputeDelta recovers raw state by
+// replaying that naming and MaxItems=1 pluralization at every nested path, so
+// the outputs handed to it must be shaped exactly as this conversion produces
+// them — a flat name mapping is not equivalent.
 func pulumiOutputsFromCty(
 	ctx context.Context,
 	value cty.Value,
@@ -108,12 +126,18 @@ func pulumiOutputsFromCty(
 	return tfbridge.MakeTerraformOutputs(ctx, noSetChecker{}, attrs, schemaMap, schemaInfos, nil, false), nil
 }
 
+// noSetChecker tells MakeTerraformOutputs that no value is a Terraform SDK
+// "Set" wrapper: these values are plain Go values decoded from JSON, not the
+// SDK's typed set representation.
 type noSetChecker struct{}
 
 func (noSetChecker) IsSet(context.Context, interface{}) ([]interface{}, bool) {
 	return nil, false
 }
 
+// stripTimeouts removes the timeouts attribute, as the bridge's own
+// valueshim.FromHctyResourceType does for the hcty flavour. There is no
+// zclconf equivalent, so it is replicated here.
 func stripTimeouts(t cty.Type) cty.Type {
 	if !t.IsObjectType() {
 		return t

@@ -28,6 +28,11 @@ import (
 
 const secretPlaceholder = "[secret]"
 
+// unknownPlaceholder is how the engine serializes a value that is not yet
+// known at preview time (plugin.UnknownStringValue). It reaches injection
+// because an injected resource can depend on another injected resource, whose
+// outputs are not in state yet. Copied into state it becomes an
+// ordinary-looking string no later operation can tell from a real value.
 const unknownPlaceholder = "04da6b54-80e4-46f7-96ec-b56ff0331ba9"
 
 const (
@@ -56,6 +61,8 @@ func InjectNonImportable(
 	configSecrets map[string]string,
 ) ([]byte, *InjectResult, error) {
 	if sidecar == nil || len(sidecar.Resources) == 0 {
+		// Verified even though nothing was injected: callers rely on the bytes
+		// this returns having been checked, whether or not it changed them.
 		if err := VerifyDeploymentIntegrity(stateData); err != nil {
 			return nil, nil, err
 		}
@@ -179,6 +186,10 @@ func buildInjectedResource(
 		obj[k] = v
 	}
 	obj["custom"] = true
+	// A custom resource with no ID passes every check this tool makes and then
+	// panics the engine on the NEXT operation: VerifyDeploymentIntegrity only
+	// rejects the inverse case, and the provider plugin asserts on it —
+	// contract.Assertf(req.ID != "", "Diff requires an ID").
 	if r.ID == "" {
 		return nil, 0, deltaOK, "", fmt.Errorf(
 			"%s %q has no import ID: the sidecar records no top-level \"id\" attribute for it, "+
@@ -242,6 +253,11 @@ func buildInjectedResource(
 		inputs[reservedDefaultsKey] = []interface{}{}
 	}
 
+	// Fills only properties Terraform has no opinion on ("region" on AWS is the
+	// case that matters: per-resource in the Pulumi provider, provider-level in
+	// Terraform, so it is never in the sidecar). A Terraform-derived value always
+	// wins. Must run after resolveSecretInputs, so a copied secret carries the
+	// envelope rather than a bare placeholder or bare plaintext.
 	fillOutputsFromInputs(inputs, outputs)
 
 	outcome, note := attachRawStateDelta(r, obj, outputs)
@@ -347,6 +363,9 @@ func attachRawStateDelta(r *NonImportableResource, obj, outputs map[string]inter
 			r.TerraformAddress, r.Type, r.Name, err)
 	}
 
+	// Enveloped only now, AFTER validation: validateRecover builds its
+	// PropertyValue with deltaPropertyValue, which does not interpret Pulumi
+	// sentinel maps, so it must see the plain form.
 	outputs[rawStateDeltaKey] = envelopeReplaceNodes(r.RawStateDelta)
 	return deltaOK, ""
 }
@@ -527,6 +546,11 @@ func resolveSecretInputs(
 	return resolved, nil
 }
 
+// resolveUnknownInputs replaces inputs the preview reported as unknown with
+// the value from this resource's Terraform-derived outputs. Reading it from
+// there rather than chasing the dependency edge sidesteps what the edge cannot
+// answer: a preview step records WHICH resources a property depends on, not
+// which of their properties produced the value.
 func resolveUnknownInputs(r *NonImportableResource, inputs, outputs map[string]interface{}) error {
 	names := make([]string, 0, len(inputs))
 	for name := range inputs {

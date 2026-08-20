@@ -61,12 +61,24 @@ type ModuleResource struct {
 	// "pulumi import" cannot bring it into state — the attempt fails with a
 	// misleading "resource '<id>' does not exist" — so resolve leaves it out of
 	// the import file rather than emitting an entry guaranteed to fail.
-	NonImportable        bool                   `json:"nonImportable,omitempty"`
-	PulumiOutputs        map[string]interface{} `json:"pulumiOutputs,omitempty"`
-	RawStateDelta        map[string]interface{} `json:"rawStateDelta,omitempty"`
-	RawStateDeltaReason  string                 `json:"rawStateDeltaReason,omitempty"`
-	InjectionStateReason string                 `json:"injectionStateReason,omitempty"`
-	SchemaVersion        int64                  `json:"schemaVersion,omitempty"`
+	NonImportable bool `json:"nonImportable,omitempty"`
+	// PulumiOutputs are the Terraform attributes converted to Pulumi property
+	// names and shapes, and RawStateDelta is the bridge's
+	// __pulumi_raw_state_delta for them. Both are computed from REDACTED
+	// attributes, so neither ever contains a secret, and both are populated
+	// only for resources NonImportable flags.
+	PulumiOutputs map[string]interface{} `json:"pulumiOutputs,omitempty"`
+	RawStateDelta map[string]interface{} `json:"rawStateDelta,omitempty"`
+	// RawStateDeltaReason says why RawStateDelta is absent when computing one
+	// was attempted; InjectionStateReason says why the resource has no
+	// injection state at all. The distinction is what lets a reader tell "we
+	// tried and could not" from "nobody looked", which PulumiOutputs == nil
+	// alone cannot express and which need different responses.
+	RawStateDeltaReason  string `json:"rawStateDeltaReason,omitempty"`
+	InjectionStateReason string `json:"injectionStateReason,omitempty"`
+	// SchemaVersion is written into state as __meta, so a later provider
+	// upgrade runs the right state upgraders.
+	SchemaVersion int64 `json:"schemaVersion,omitempty"`
 }
 
 // ImportSupportChecker reports whether a Terraform resource type can be
@@ -397,6 +409,9 @@ func matchResources(
 	return resources
 }
 
+// decodeAttrs decodes AttrsJSON with json.Number rather than float64:
+// integers above 2^53 otherwise decode to a different number, silently, and
+// that value flows into the sidecar and on into Pulumi state.
 func decodeAttrs(data []byte) (map[string]interface{}, error) {
 	var attrs map[string]interface{}
 	dec := json.NewDecoder(bytes.NewReader(data))
