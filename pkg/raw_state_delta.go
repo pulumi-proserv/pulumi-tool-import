@@ -28,6 +28,13 @@ import (
 	ctyjson "github.com/zclconf/go-cty/cty/json"
 )
 
+// ComputeInjectionState converts a resource's recorded Terraform attributes
+// into the Pulumi outputs, raw state delta, and schema version injection needs.
+//
+// attrsJSON must be the REDACTED attributes: a delta can embed raw JSON, so
+// computing one from real values would put them in the sidecar. matchResources
+// redacts before this is reached and cross-checks the result against the
+// provider schema (schemaSensitiveLeaks).
 func ComputeInjectionState(
 	ctx context.Context,
 	prov tfprovider.Provider,

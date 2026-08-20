@@ -157,7 +157,10 @@ func BuildModuleMap(
 
 	// Collect root-level resources (empty segments = root module).
 	fmt.Fprintf(os.Stderr, "  Matching root-level resources...\n")
-	rootResources := matchResources(ctx, state, nil, pulumiProviders, stackName, projectName, importChecker)
+	rootResources, err := matchResources(ctx, state, nil, pulumiProviders, stackName, projectName, importChecker)
+	if err != nil {
+		return nil, err
+	}
 	if len(rootResources) > 0 {
 		mm.RootResources = rootResources
 	}
@@ -203,11 +206,15 @@ func buildModuleMapLevel(
 			}
 
 			fmt.Fprintf(os.Stderr, "      %s: matching resources...\n", mapKey)
+			moduleResources, err := matchResources(ctx, state, segments, pulumiProviders, stackName, projectName, importChecker)
+			if err != nil {
+				return err
+			}
 			entry := &ModuleMapEntry{
 				TerraformPath: buildModulePath(segments),
 				Source:        call.SourceAddrRaw,
 				IndexKey:      inst.key,
-				Resources:     matchResources(ctx, state, segments, pulumiProviders, stackName, projectName, importChecker),
+				Resources:     moduleResources,
 			}
 			fmt.Fprintf(os.Stderr, "      %s: %d resources\n", mapKey, len(entry.Resources))
 
@@ -325,7 +332,7 @@ func matchResources(
 	stackName string,
 	projectName string,
 	importChecker ImportSupportChecker,
-) []ModuleResource {
+) ([]ModuleResource, error) {
 	var resources []ModuleResource
 	modulePath := buildModulePath(segments)
 
@@ -387,6 +394,20 @@ func matchResources(
 
 					if attrs != nil {
 						redactSensitivePaths(attrs, inst.Current.AttrSensitivePaths)
+						// Cross-checked against the provider schema, an
+						// independent source: redaction is driven entirely by
+						// the state's own sensitive marks, so when those are
+						// missing it runs, reports success, and writes the
+						// secret in the clear.
+						if leaks := schemaSensitiveLeaks(attrs, bridgedSchemaMap(pulumiProviders, providerName, resourceType)); len(leaks) > 0 {
+							return nil, fmt.Errorf(
+								"%s: the provider schema marks %s sensitive, but the Terraform state carries "+
+									"no sensitive mark for %s, so the digest would record the real value in "+
+									"plaintext. Re-run \"terraform refresh\" (or \"tofu refresh\") so the state "+
+									"records the mark, or exclude this resource",
+								address, strings.Join(leaks, ", "),
+								map[bool]string{true: "them", false: "it"}[len(leaks) > 1])
+						}
 						mr.Attributes = attrs
 					}
 
@@ -406,7 +427,25 @@ func matchResources(
 	if resources == nil {
 		resources = []ModuleResource{}
 	}
-	return resources
+	return resources, nil
+}
+
+// bridgedSchemaMap returns the bridged Terraform schema for a resource type,
+// or nil when no provider was loaded for it — in which case there is no second
+// source to cross-check redaction against.
+func bridgedSchemaMap(
+	pulumiProviders map[providermap.TerraformProviderName]*ProviderWithMetadata,
+	providerName, resourceType string,
+) shim.SchemaMap {
+	pwm, ok := pulumiProviders[providermap.TerraformProviderName(providerName)]
+	if !ok || pwm == nil || pwm.P == nil {
+		return nil
+	}
+	shimResource := pwm.P.ResourcesMap().Get(resourceType)
+	if shimResource == nil {
+		return nil
+	}
+	return shimResource.Schema()
 }
 
 // decodeAttrs decodes AttrsJSON with json.Number rather than float64:

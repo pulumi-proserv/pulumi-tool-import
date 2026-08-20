@@ -44,6 +44,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   indicate it — because `AttrSensitivePaths` was never populated for it.
   Sensitive attributes nested below the top level were never redacted at any
   depth.
+- **Redaction was trusted, never verified.** Both the redaction of sensitive
+  attributes and the stack-config discovery that recovers their values are
+  driven by the Terraform state's own `AttrSensitivePaths`. One source means
+  one point of failure: where those marks are missing, redaction still runs,
+  still reports success, and `digest tf` writes the real value to disk in
+  plaintext — which is exactly what the `tofu show -json` path did. Every
+  resource's attributes are now cross-checked against the provider schema's
+  own `Sensitive` flags, an independent source, and `digest tf` **fails**
+  naming the attribute paths (never the values) when the two disagree. This is
+  a behaviour change: a digest that previously succeeded with a secret in the
+  clear now errors.
 - **Colliding stack config keys wrote one resource's secret into another.**
   Two sensitive attributes that flatten to the same config key were deduped
   with a `_2` suffix, but nothing could read a suffixed key back, so the second
@@ -95,7 +106,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   repeatedly cited as the mechanism that would fix the nested-path and
   `tofu show -json` redaction gaps — both of which are now closed in the
   redaction path that actually runs. Keeping it meant 249 lines that read as a
-  working alternative and were not one.
+  working alternative and were not one. The schema's `Sensitive` flags are
+  still consulted, but at one boundary and with a caller: the cross-check
+  above.
 
 ## [0.2.0] - 2026-08-12
 
