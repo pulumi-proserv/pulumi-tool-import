@@ -44,17 +44,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   indicate it — because `AttrSensitivePaths` was never populated for it.
   Sensitive attributes nested below the top level were never redacted at any
   depth.
-- **Redaction was trusted, never verified.** Both the redaction of sensitive
-  attributes and the stack-config discovery that recovers their values are
-  driven by the Terraform state's own `AttrSensitivePaths`. One source means
-  one point of failure: where those marks are missing, redaction still runs,
-  still reports success, and `digest tf` writes the real value to disk in
-  plaintext — which is exactly what the `tofu show -json` path did. Every
-  resource's attributes are now cross-checked against the provider schema's
-  own `Sensitive` flags, an independent source, and `digest tf` **fails**
-  naming the attribute paths (never the values) when the two disagree. This is
-  a behaviour change: a digest that previously succeeded with a secret in the
-  clear now errors.
+- **A sensitive attribute the Terraform state did not mark was written to disk
+  in plaintext.** Redaction and the stack-config discovery that recovers the
+  values are both driven by the state's own `AttrSensitivePaths`, so one
+  missing mark defeats both at once, silently — which is exactly what the
+  `tofu show -json` path did. The provider schema's `Sensitive` flags are now
+  consulted as an independent second source: a top-level attribute the schema
+  marks and the state does not is redacted from the digest *and* written to
+  stack config, so it is recoverable at injection time exactly as a marked one
+  would be. The stack config key is derived from the resource address and
+  attribute name, never from the marks, which is what makes recovery possible
+  at all.
+
+  A **nested** attribute in the same position fails the digest instead, naming
+  the paths but never the values. Recovering a nested secret from stack config
+  is not implemented anywhere in the pipeline (#28), so redacting one would
+  replace a leak with a placeholder nothing can resolve.
+
+  Both paths are backed by a check that runs for every resource, so a
+  redaction that runs and does nothing can no longer report success.
 - **Colliding stack config keys wrote one resource's secret into another.**
   Two sensitive attributes that flatten to the same config key were deduped
   with a `_2` suffix, but nothing could read a suffixed key back, so the second

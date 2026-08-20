@@ -202,7 +202,7 @@ func GenerateModuleMap(ctx context.Context, tfDir, stateFilePath, outputPath, st
 	// Step 8: Set sensitive attributes and workspace variables as Pulumi config secrets.
 	if secrets != nil && !secrets.Skip {
 		fmt.Fprintf(os.Stderr, "[8] Discovering sensitive attributes...\n")
-		sensitiveSecrets, err := DiscoverSensitiveSecrets(rawState, secrets.ProjectName)
+		sensitiveSecrets, err := DiscoverSensitiveSecrets(rawState, secrets.ProjectName, pulumiProviders)
 		if err != nil {
 			return fmt.Errorf("discovering secrets: %w", err)
 		}

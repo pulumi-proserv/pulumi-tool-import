@@ -530,7 +530,7 @@ func TestSyntheticSecrets_SensitiveInputResolvesEndToEnd(t *testing.T) {
 		nil,
 	)
 
-	secrets, err := DiscoverSensitiveSecrets(state, "proj")
+	secrets, err := DiscoverSensitiveSecrets(state, "proj", nil)
 	require.NoError(t, err)
 	require.Len(t, secrets, 1, "the sensitive attribute should produce exactly one config entry")
 	configKey := secrets[0].ConfigKey

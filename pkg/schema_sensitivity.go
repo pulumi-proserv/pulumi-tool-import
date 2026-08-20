@@ -85,3 +85,43 @@ func collectSensitiveLeaks(attrs map[string]interface{}, schemaMap shim.SchemaMa
 		return true
 	})
 }
+
+// redactSchemaSensitive redacts top-level attributes the provider schema marks
+// Sensitive but that the Terraform state did not, and returns their real
+// values keyed by attribute name so discovery can put them in stack config.
+//
+// This is what makes the schema a genuine second source rather than only an
+// alarm. The stack config key is flattenAddress(address, attribute) — derived
+// from the address and the attribute name, never from the state's marks — so
+// an attribute the marks missed is just as recoverable as one they caught.
+//
+// Top-level only, deliberately: recovery is top-level throughout
+// (redactedAttributeKeys, DiscoverSensitiveSecrets, and the resolvers in
+// state_injector.go), so redacting a nested attribute here would replace a
+// leak with a placeholder nothing can resolve. schemaSensitiveLeaks still
+// reports those, and the caller still fails on them.
+func redactSchemaSensitive(attrs map[string]interface{}, schemaMap shim.SchemaMap) map[string]string {
+	if schemaMap == nil || attrs == nil {
+		return nil
+	}
+	var recovered map[string]string
+	schemaMap.Range(func(name string, sch shim.Schema) bool {
+		if !sch.Sensitive() {
+			return true
+		}
+		value, present := attrs[name]
+		if !present || value == nil {
+			return true
+		}
+		if s, ok := value.(string); ok && s == redactedPlaceholder {
+			return true
+		}
+		if recovered == nil {
+			recovered = map[string]string{}
+		}
+		recovered[name] = fmt.Sprintf("%v", value)
+		attrs[name] = redactedPlaceholder
+		return true
+	})
+	return recovered
+}

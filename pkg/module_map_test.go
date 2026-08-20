@@ -504,7 +504,7 @@ func TestDiscoverSensitiveSecrets_Dedup(t *testing.T) {
 		nil,
 	)
 
-	secrets, err := DiscoverSensitiveSecrets(state, "test-project")
+	secrets, err := DiscoverSensitiveSecrets(state, "test-project", nil)
 	require.NoError(t, err)
 	require.Len(t, secrets, 1)
 	assert.Equal(t, "main_password", secrets[0].ConfigKey)
@@ -538,7 +538,7 @@ func TestDiscoverSensitiveSecrets_MarksEntriesAsSecret(t *testing.T) {
 		nil,
 	)
 
-	entries, err := DiscoverSensitiveSecrets(state, "test-project")
+	entries, err := DiscoverSensitiveSecrets(state, "test-project", nil)
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
 	assert.Equal(t, "my_secret_secret_string", entries[0].ConfigKey)
@@ -578,7 +578,7 @@ func TestDiscoverSensitiveSecrets_NullAttributeNotRedacted(t *testing.T) {
 		nil,
 	)
 
-	configEntries, err := DiscoverSensitiveSecrets(state, "test-project")
+	configEntries, err := DiscoverSensitiveSecrets(state, "test-project", nil)
 	require.NoError(t, err)
 	require.Len(t, configEntries, 1, "only the populated attribute should produce a config entry")
 	assert.Equal(t, "cert_certificate_pem", configEntries[0].ConfigKey)
@@ -823,7 +823,7 @@ func TestDiscoverSensitiveSecrets_LargeIntegerKeepsItsDigits(t *testing.T) {
 			{Path: cty.GetAttrPath("token"), Marks: cty.NewValueMarks("sensitive")},
 		})
 
-	secrets, err := DiscoverSensitiveSecrets(state, "p")
+	secrets, err := DiscoverSensitiveSecrets(state, "p", nil)
 	require.NoError(t, err)
 	require.Len(t, secrets, 1)
 	assert.Equal(t, "1234567890123456789", secrets[0].Value)
@@ -839,7 +839,7 @@ func TestDiscoverSensitiveSecrets_CollisionIsAnError(t *testing.T) {
 	sensitiveResource(root, "aws_rds_cluster", "this", `{"id":"2","password":"SECRET-B"}`,
 		[]cty.PathValueMarks{{Path: cty.GetAttrPath("password"), Marks: cty.NewValueMarks("sensitive")}})
 
-	_, err := DiscoverSensitiveSecrets(state, "p")
+	_, err := DiscoverSensitiveSecrets(state, "p", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "collision")
 }

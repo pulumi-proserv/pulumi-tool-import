@@ -394,19 +394,28 @@ func matchResources(
 
 					if attrs != nil {
 						redactSensitivePaths(attrs, inst.Current.AttrSensitivePaths)
-						// Cross-checked against the provider schema, an
-						// independent source: redaction is driven entirely by
-						// the state's own sensitive marks, so when those are
-						// missing it runs, reports success, and writes the
-						// secret in the clear.
-						if leaks := schemaSensitiveLeaks(attrs, bridgedSchemaMap(pulumiProviders, providerName, resourceType)); len(leaks) > 0 {
+						// The provider schema is a second, independent source.
+						// Redaction is otherwise driven entirely by the state's
+						// own sensitive marks, so where those are missing it
+						// runs, reports success, and leaves the secret in the
+						// clear. Anything the schema marks and the state did
+						// not is redacted here, and DiscoverSensitiveSecrets
+						// recovers it into stack config from the same schema.
+						schemaMap := bridgedSchemaMap(pulumiProviders, providerName, resourceType)
+						redactSchemaSensitive(attrs, schemaMap)
+						// Nested recovery is top-level only throughout, so a
+						// nested attribute the state did not mark cannot be
+						// redacted here without making it unresolvable later.
+						// Failing is the honest answer for that case.
+						if leaks := schemaSensitiveLeaks(attrs, schemaMap); len(leaks) > 0 {
 							return nil, fmt.Errorf(
-								"%s: the provider schema marks %s sensitive, but the Terraform state carries "+
-									"no sensitive mark for %s, so the digest would record the real value in "+
-									"plaintext. Re-run \"terraform refresh\" (or \"tofu refresh\") so the state "+
-									"records the mark, or exclude this resource",
-								address, strings.Join(leaks, ", "),
-								map[bool]string{true: "them", false: "it"}[len(leaks) > 1])
+								"%s: the provider schema marks the nested attribute(s) %s sensitive, but the "+
+									"Terraform state carries no sensitive mark for them, so the digest would "+
+									"record the real values in plaintext. Recovering a nested secret from stack "+
+									"config is not implemented (see issue #28), so this cannot be redacted "+
+									"either. Re-run \"terraform refresh\" (or \"tofu refresh\") so the state "+
+									"records the marks, or exclude this resource",
+								address, strings.Join(leaks, ", "))
 						}
 						mr.Attributes = attrs
 					}
@@ -737,7 +746,11 @@ type SensitiveSecret = ConfigEntry
 // After collecting all secrets, this function:
 //  1. Deduplicates keys by appending _2, _3, etc. and warns to stderr
 //  2. Checks key lengths and returns an error if any exceed the limit
-func DiscoverSensitiveSecrets(state *states.State, projectName string) ([]SensitiveSecret, error) {
+func DiscoverSensitiveSecrets(
+	state *states.State,
+	projectName string,
+	pulumiProviders map[providermap.TerraformProviderName]*ProviderWithMetadata,
+) ([]SensitiveSecret, error) {
 	if state == nil {
 		return nil, nil
 	}
@@ -751,8 +764,30 @@ func DiscoverSensitiveSecrets(state *states.State, projectName string) ([]Sensit
 	var raw []rawSecret
 	for _, module := range state.Modules {
 		for _, res := range module.Resources {
+			providerName := res.ProviderConfig.Provider.String()
+			resourceType := res.Addr.Resource.Type
+
+			// The provider schema names sensitive attributes independently of
+			// the state's marks, and matchResources redacts on that basis, so
+			// discovery has to look there too — otherwise it would redact a
+			// value it never recorded a config key for, and injection would
+			// fail on a placeholder nothing can resolve.
+			schemaMap := bridgedSchemaMap(pulumiProviders, providerName, resourceType)
+			schemaSensitive := map[string]bool{}
+			if schemaMap != nil {
+				schemaMap.Range(func(name string, sch shim.Schema) bool {
+					if sch.Sensitive() {
+						schemaSensitive[name] = true
+					}
+					return true
+				})
+			}
+
 			for instKey, inst := range res.Instances {
-				if inst.Current == nil || len(inst.Current.AttrSensitivePaths) == 0 {
+				if inst.Current == nil {
+					continue
+				}
+				if len(inst.Current.AttrSensitivePaths) == 0 && len(schemaSensitive) == 0 {
 					continue
 				}
 
@@ -774,22 +809,34 @@ func DiscoverSensitiveSecrets(state *states.State, projectName string) ([]Sensit
 					continue
 				}
 
-				// Collect sensitive top-level attributes.
+				// Collect sensitive top-level attributes, from either source.
+				names := map[string]bool{}
 				for _, pvm := range inst.Current.AttrSensitivePaths {
 					if len(pvm.Path) != 1 {
 						continue
 					}
-					step, ok := pvm.Path[0].(cty.GetAttrStep)
-					if !ok {
-						continue
+					if step, ok := pvm.Path[0].(cty.GetAttrStep); ok {
+						names[step.Name] = true
 					}
-					value, exists := attrs[step.Name]
+				}
+				for name := range schemaSensitive {
+					names[name] = true
+				}
+
+				sorted := make([]string, 0, len(names))
+				for name := range names {
+					sorted = append(sorted, name)
+				}
+				sort.Strings(sorted)
+
+				for _, name := range sorted {
+					value, exists := attrs[name]
 					if !exists || value == nil {
 						continue
 					}
 					raw = append(raw, rawSecret{
 						address:   address,
-						attribute: step.Name,
+						attribute: name,
 						value:     fmt.Sprintf("%v", value),
 					})
 				}
