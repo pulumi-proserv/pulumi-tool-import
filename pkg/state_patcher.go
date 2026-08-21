@@ -82,16 +82,14 @@ type FieldInfo struct {
 	HashField     string      `json:"hashField,omitempty"`     // e.g. "source_code_hash"
 }
 
-// PatchStateResult contains statistics from the patch operation.
 // noMatchNote is the one format for a NoMatchNotes line, shared by every
-// patch loop (fields-file, schema, CFN) so the copies cannot drift. source
-// names where the patchable fields came from. The URN already carries the
-// type, so only the unmatched name is repeated.
+// patch loop (fields-file, schema, CFN) so the copies cannot drift.
 func noMatchNote(urn, name, source string) string {
 	return fmt.Sprintf("%s: %s has fields to patch, but no digest entry matched the name %q",
 		urn, source, name)
 }
 
+// PatchStateResult contains statistics from the patch operation.
 type PatchStateResult struct {
 	Patched                int
 	FieldsFromDigest       int
@@ -99,11 +97,8 @@ type PatchStateResult struct {
 	SkippedSensitive       int
 	SkippedFalsySuppressed int
 	NoMatch                int
-	// NoMatchNotes names, one line each, the resources counted in NoMatch:
-	// fields to patch exist for the type, no digest entry matched the name,
-	// and nothing was patched (a no-match resource that still took a default
-	// is counted in Patched, not here). Named rather than only counted, for
-	// the same reason as the delta counters (#37).
+	// NoMatchNotes names the resources counted in NoMatch, one line each (a
+	// no-match resource that still took a default counts in Patched, not here).
 	NoMatchNotes   []string
 	NoFields       int
 	DigestMapped   int
@@ -321,19 +316,14 @@ func lookupProviderVersion(providerRef string, providerVersions map[string]strin
 // mapped module, a normalized-name pass (stripping the `this["key"]` wrapper),
 // and finally "exactly one unused candidate of this type".
 //
-// The guessing is a stated decision, not an accident (issue #37): patching
-// fills in missing values on a resource that already imported correctly, so a
-// wrong match at worst patches a value the verifying preview then flags, and
-// a refusal to guess would leave real resources unpatched over cosmetic name
-// differences. InjectNonImportable deliberately takes the opposite stance —
-// exact type+name or fail — because injection writes whole resources into
-// state, where a wrong match corrupts rather than merely leaves unpatched.
-//
-// matchChildren (pkg/import_filler.go) is the import-file counterpart. The two
-// are near-identical, not identical: only this one has the normalized-name
-// pass, and only matchChildren warns on ambiguous type candidates (#37 tracks
-// consolidating them). A change to the shared fallback rules usually belongs
-// in both — check those divergences first.
+// The guessing is deliberate: a wrong match at worst patches a value the
+// verifying preview then flags, while refusing to guess would leave real
+// resources unpatched over cosmetic name differences. InjectNonImportable
+// takes the opposite stance — exact type+name or fail — because its wrong
+// match corrupts state. matchChildren (pkg/import_filler.go) is the
+// near-identical import-file counterpart: only this one has the
+// normalized-name pass, only that one warns on ambiguity, and a change to the
+// shared fallback rules usually belongs in both (#37 tracks consolidation).
 func BuildDigestNameMap(
 	digest *ModuleMap,
 	moduleMappings, resourceMappings map[string]string,
