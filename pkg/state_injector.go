@@ -21,6 +21,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/providermap"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
@@ -278,7 +279,7 @@ func buildInjectedResource(
 func checkNoPlaceholders(r *NonImportableResource, kind string, v interface{}, path string) error {
 	switch val := v.(type) {
 	case string:
-		if val == secretPlaceholder || val == redactedPlaceholder {
+		if val == secretPlaceholder || isRedactedPlaceholder(val) {
 			return fmt.Errorf(
 				"%s %q %s %s still contains the placeholder %q after secret resolution; "+
 					"the sidecar or stack config is missing the real value",
@@ -347,10 +348,20 @@ func attachRawStateDelta(r *NonImportableResource, obj, outputs map[string]inter
 	}
 
 	deltaJSON, err := json.Marshal(r.RawStateDelta)
-	if err == nil && bytes.Contains(deltaJSON, []byte(redactedPlaceholder)) {
-		return deltaDroppedSensitive, fmt.Sprintf(
-			"%s (%s %q): raw-state delta dropped, embedded an unresolvable %q placeholder",
-			r.TerraformAddress, r.Type, r.Name, redactedPlaceholder)
+	// Either placeholder form embedded in a delta's raw JSON is unresolvable.
+	if err == nil {
+		form := ""
+		switch {
+		case bytes.Contains(deltaJSON, []byte(redactedPlaceholder)):
+			form = redactedPlaceholder
+		case bytes.Contains(deltaJSON, []byte(taggedPlaceholderPrefix)):
+			form = taggedPlaceholderPrefix + "…)"
+		}
+		if form != "" {
+			return deltaDroppedSensitive, fmt.Sprintf(
+				"%s (%s %q): raw-state delta dropped, embedded an unresolvable %q placeholder",
+				r.TerraformAddress, r.Type, r.Name, form)
+		}
 	}
 
 	outputs[rawStateDeltaKey] = r.RawStateDelta
@@ -431,6 +442,11 @@ func resolveOutputSecrets(
 
 	resolved := 0
 	for _, tfName := range tfNames {
+		// Path-form keys (nested) belong to resolveTaggedPlaceholders; the
+		// top-level name mapping must not consume them.
+		if strings.ContainsAny(tfName, ".[") {
+			continue
+		}
 		configKey := r.RedactedAttributes[tfName]
 
 		pulumiName := snakeToCamel(tfName)
@@ -465,7 +481,79 @@ func resolveOutputSecrets(
 		}
 		resolved++
 	}
+
+	nested, err := resolveTaggedPlaceholders(r, outputs, configSecrets)
+	if err != nil {
+		return 0, err
+	}
+	resolved += nested
 	return resolved, nil
+}
+
+// resolveTaggedPlaceholders walks a property bag and replaces every
+// path-tagged placeholder with the enveloped secret from stack config, found
+// via the sidecar's RedactedAttributes entry for the path the tag carries. An
+// unresolvable one is a hard error, the same rule as top-level: writing a
+// placeholder into state is worse than refusing.
+func resolveTaggedPlaceholders(
+	r *NonImportableResource, v interface{}, configSecrets map[string]string,
+) (int, error) {
+	resolved := 0
+	var walk func(v interface{}) (interface{}, error)
+	walk = func(v interface{}) (interface{}, error) {
+		switch val := v.(type) {
+		case string:
+			path, ok := placeholderPath(val)
+			if !ok {
+				return v, nil
+			}
+			configKey, ok := r.RedactedAttributes[path]
+			if !ok {
+				return nil, fmt.Errorf(
+					"%s %q carries a redacted value at %s, but the sidecar records no config key "+
+						"for that path; re-run \"resolve tf\" to regenerate the sidecar",
+					r.Type, r.Name, path)
+			}
+			secret, ok := configSecrets[configKey]
+			if !ok || secret == "" {
+				return nil, fmt.Errorf(
+					"%s %q needs the secret for %s in stack config key %q, which is not set; "+
+						"pass --project-dir and --stack so it can be read",
+					r.Type, r.Name, path, configKey)
+			}
+			encoded, err := json.Marshal(secret)
+			if err != nil {
+				return nil, fmt.Errorf("encoding secret for %s: %w", configKey, err)
+			}
+			resolved++
+			return map[string]interface{}{
+				sigKey:      secretSig,
+				"plaintext": string(encoded),
+			}, nil
+		case map[string]interface{}:
+			for k, elem := range val {
+				replaced, err := walk(elem)
+				if err != nil {
+					return nil, err
+				}
+				val[k] = replaced
+			}
+			return val, nil
+		case []interface{}:
+			for i, elem := range val {
+				replaced, err := walk(elem)
+				if err != nil {
+					return nil, err
+				}
+				val[i] = replaced
+			}
+			return val, nil
+		default:
+			return v, nil
+		}
+	}
+	_, err := walk(v)
+	return resolved, err
 }
 
 func resolveSecretInputs(

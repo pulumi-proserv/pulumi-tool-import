@@ -139,7 +139,7 @@ of failing the run. This loads the Terraform provider pinned in
 ### 1b. Read the digest — and only the digest
 
 The digest is the agent-safe representation of TF state, containing everything
-needed for the migration with sensitive values replaced by `"(sensitive)"`. The
+needed for the migration with sensitive values replaced by `"(sensitive)"` — a nested redaction appears as `"(sensitive:<tf path>)"`, e.g. `"(sensitive:user[0].password)"`, and is handled the same way. The
 tool determines what to redact from the provider schema's `Sensitive` markings.
 
 - `modules{}` — keyed by module name, including the `for_each` key where present
