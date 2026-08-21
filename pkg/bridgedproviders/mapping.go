@@ -71,7 +71,7 @@ func GetMappingFromBinary(ctx context.Context, binaryPath string, opts GetMappin
 	host := &minimalHost{}
 
 	// Create a plugin context for the provider
-	pctx, err := plugin.NewContext(ctx, nil, nil, nil, nil, "", nil, false, nil, nil)
+	pctx, err := plugin.NewContext(ctx, nil, nil, host, nil, "", nil, false, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create plugin context: %w", err)
 	}
@@ -81,7 +81,7 @@ func GetMappingFromBinary(ctx context.Context, binaryPath string, opts GetMappin
 
 	// Load the provider from the binary path
 	// Use an empty package name since we only need GetMapping, not actual resource operations
-	provider, err := plugin.NewProviderFromPath(host, pctx, "", binaryPath)
+	provider, err := plugin.NewProviderFromPath(host, pctx, binaryPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load provider from %s: %w", binaryPath, err)
 	}
@@ -149,11 +149,11 @@ func (h *minimalHost) LogStatus(sev diag.Severity, urn resource.URN, msg string,
 	// No-op: we don't need logging for GetMapping
 }
 
-func (h *minimalHost) Analyzer(nm tokens.QName) (plugin.Analyzer, error) {
+func (h *minimalHost) Analyzer(_ *plugin.Context, nm tokens.QName) (plugin.Analyzer, error) {
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (h *minimalHost) PolicyAnalyzer(name tokens.QName, path string, opts *plugin.PolicyAnalyzerOptions) (plugin.Analyzer, error) {
+func (h *minimalHost) PolicyAnalyzer(_ *plugin.Context, name tokens.QName, path string, opts *plugin.PolicyAnalyzerOptions) (plugin.Analyzer, error) {
 	return nil, fmt.Errorf("not implemented")
 }
 
@@ -161,7 +161,7 @@ func (h *minimalHost) ListAnalyzers() []plugin.Analyzer {
 	return nil
 }
 
-func (h *minimalHost) Provider(descriptor workspace.PluginDescriptor, e env.Env) (plugin.Provider, error) {
+func (h *minimalHost) Provider(_ *plugin.Context, descriptor workspace.PluginDescriptor, e env.Env) (plugin.Provider, error) {
 	return nil, fmt.Errorf("not implemented")
 }
 
@@ -169,7 +169,7 @@ func (h *minimalHost) CloseProvider(provider plugin.Provider) error {
 	return fmt.Errorf("not implemented")
 }
 
-func (h *minimalHost) LanguageRuntime(runtime string) (plugin.LanguageRuntime, error) {
+func (h *minimalHost) LanguageRuntime(_ *plugin.Context, runtime string) (plugin.LanguageRuntime, error) {
 	return nil, fmt.Errorf("not implemented")
 }
 
@@ -177,7 +177,7 @@ func (h *minimalHost) EnsurePlugins(plugins []workspace.PluginSpec, kinds plugin
 	return fmt.Errorf("not implemented")
 }
 
-func (h *minimalHost) ResolvePlugin(spec workspace.PluginSpec) (*workspace.PluginInfo, error) {
+func (h *minimalHost) ResolvePlugin(_ *plugin.Context, spec workspace.PluginDescriptor) (*workspace.PluginInfo, error) {
 	return nil, fmt.Errorf("not implemented")
 }
 
@@ -200,6 +200,20 @@ func (h *minimalHost) AttachDebugger(spec plugin.DebugSpec) bool {
 func (h *minimalHost) LoaderAddr() string {
 	return ""
 }
+
+func (h *minimalHost) Loader(_ *plugin.Context) (*plugin.GrpcServer, error) {
+	return nil, nil
+}
+
+func (h *minimalHost) Mapper(_ *plugin.Context) (*plugin.GrpcServer, error) {
+	return nil, nil
+}
+
+func (h *minimalHost) Resolver(_ *plugin.Context) (*plugin.GrpcServer, error) {
+	return nil, nil
+}
+
+func (h *minimalHost) ReleaseContext(_ *plugin.Context) error { return nil }
 
 func (h *minimalHost) Close() error {
 	return nil

@@ -55,7 +55,7 @@ func GetMappingForTerraformProvider(
 	}
 
 	host := &minimalHost{}
-	pctx, err := plugin.NewContext(ctx, nil, nil, nil, nil, "", nil, false, nil, nil)
+	pctx, err := plugin.NewContext(ctx, nil, nil, host, nil, "", nil, false, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create plugin context: %w", err)
 	}
@@ -63,7 +63,7 @@ func GetMappingForTerraformProvider(
 		contract.IgnoreError(pctx.Close())
 	}()
 
-	provider, err := plugin.NewProviderFromPath(host, pctx, "", installResult.BinaryPath)
+	provider, err := plugin.NewProviderFromPath(host, pctx, installResult.BinaryPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load terraform-provider plugin: %w", err)
 	}

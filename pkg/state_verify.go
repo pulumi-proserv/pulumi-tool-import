@@ -63,7 +63,7 @@ func VerifyDeploymentIntegrity(stateData []byte) error {
 
 type verificationSecretsProvider struct{}
 
-func (verificationSecretsProvider) OfType(ty string, state json.RawMessage) (secrets.Manager, error) {
+func (verificationSecretsProvider) OfType(_ context.Context, ty string, state json.RawMessage) (secrets.Manager, error) {
 	return &passthroughSecretsManager{ty: ty, state: state}, nil
 }
 
