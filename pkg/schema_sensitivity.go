@@ -59,7 +59,7 @@ func collectSensitiveLeaks(attrs map[string]interface{}, schemaMap shim.SchemaMa
 		}
 
 		if sch.Sensitive() {
-			if s, ok := value.(string); !ok || s != redactedPlaceholder {
+			if s, ok := value.(string); !ok || !isRedactedPlaceholder(s) {
 				*leaks = append(*leaks, path)
 			}
 			// A sensitive block is redacted as a whole, so there is nothing
@@ -113,7 +113,7 @@ func redactSchemaSensitive(attrs map[string]interface{}, schemaMap shim.SchemaMa
 		if !present || value == nil {
 			return true
 		}
-		if s, ok := value.(string); ok && s == redactedPlaceholder {
+		if s, ok := value.(string); ok && isRedactedPlaceholder(s) {
 			return true
 		}
 		if recovered == nil {

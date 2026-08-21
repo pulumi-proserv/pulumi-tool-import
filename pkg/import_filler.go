@@ -89,15 +89,44 @@ const redactedPlaceholder = "(sensitive)"
 // value. Returns nil when nothing was redacted.
 func redactedAttributeKeys(tfAddress string, attrs map[string]interface{}) map[string]string {
 	var keys map[string]string
+	record := func(path string) {
+		if keys == nil {
+			keys = map[string]string{}
+		}
+		keys[path] = flattenAddressPath(tfAddress, path)
+	}
 	for name, value := range attrs {
-		if s, ok := value.(string); ok && s == redactedPlaceholder {
-			if keys == nil {
-				keys = map[string]string{}
+		switch v := value.(type) {
+		case string:
+			if v == redactedPlaceholder {
+				record(name)
 			}
-			keys[name] = flattenAddress(tfAddress, name)
+		default:
+			// Nested placeholders carry their own path in the tag, so the key
+			// map covers them without any name mapping (#28).
+			collectTaggedPlaceholders(value, record)
 		}
 	}
 	return keys
+}
+
+// collectTaggedPlaceholders walks a value and calls record with the path each
+// tagged placeholder carries.
+func collectTaggedPlaceholders(v interface{}, record func(path string)) {
+	switch val := v.(type) {
+	case string:
+		if path, ok := placeholderPath(val); ok {
+			record(path)
+		}
+	case map[string]interface{}:
+		for _, elem := range val {
+			collectTaggedPlaceholders(elem, record)
+		}
+	case []interface{}:
+		for _, elem := range val {
+			collectTaggedPlaceholders(elem, record)
+		}
+	}
 }
 
 // FillImportFile matches TF resources from a digest to Pulumi import file entries

@@ -403,18 +403,21 @@ func matchResources(
 						// recovers it into stack config from the same schema.
 						schemaMap := bridgedSchemaMap(pulumiProviders, providerName, resourceType)
 						redactSchemaSensitive(attrs, schemaMap)
-						// Nested recovery is top-level only throughout, so a
-						// nested attribute the state did not mark cannot be
-						// redacted here without making it unresolvable later.
-						// Failing is the honest answer for that case.
+						// A nested attribute the STATE marks is redacted with a
+						// path-tagged placeholder and recovered through stack
+						// config (#28). This backstop fires only for a nested
+						// attribute the schema marks and the state does not:
+						// schema-driven redaction is top-level, so failing —
+						// with the fix being a refresh that records the mark —
+						// is the honest answer for that remaining case.
 						if leaks := schemaSensitiveLeaks(attrs, schemaMap); len(leaks) > 0 {
 							return nil, fmt.Errorf(
 								"%s: the provider schema marks the nested attribute(s) %s sensitive, but the "+
 									"Terraform state carries no sensitive mark for them, so the digest would "+
-									"record the real values in plaintext. Recovering a nested secret from stack "+
-									"config is not implemented (see issue #28), so this cannot be redacted "+
-									"either. Re-run \"terraform refresh\" (or \"tofu refresh\") so the state "+
-									"records the marks, or exclude this resource",
+									"record the real values in plaintext. Re-run \"terraform refresh\" (or "+
+									"\"tofu refresh\") so the state records the marks — a marked nested "+
+									"secret is redacted and recovered through stack config — or exclude "+
+									"this resource",
 								address, strings.Join(leaks, ", "))
 						}
 						mr.Attributes = attrs
@@ -809,34 +812,45 @@ func DiscoverSensitiveSecrets(
 					continue
 				}
 
-				// Collect sensitive top-level attributes, from either source.
-				names := map[string]bool{}
+				// Collect sensitive attribute paths, from either source. Nested
+				// paths are recovered too: redaction walks them, so discovery
+				// must record a config key for every value redaction removes,
+				// or injection later meets a placeholder nothing can resolve
+				// (#28). A path the redaction fans out over (unresolvable
+				// index) is expanded to each concrete element the same way.
+				paths := map[string]bool{}
 				for _, pvm := range inst.Current.AttrSensitivePaths {
-					if len(pvm.Path) != 1 {
+					if len(pvm.Path) == 0 {
 						continue
 					}
-					if step, ok := pvm.Path[0].(cty.GetAttrStep); ok {
-						names[step.Name] = true
+					for _, p := range concreteSensitivePaths(attrs, pvm.Path, nil) {
+						paths[p] = true
 					}
 				}
 				for name := range schemaSensitive {
-					names[name] = true
+					paths[name] = true
 				}
 
-				sorted := make([]string, 0, len(names))
-				for name := range names {
-					sorted = append(sorted, name)
+				sorted := make([]string, 0, len(paths))
+				for p := range paths {
+					sorted = append(sorted, p)
 				}
 				sort.Strings(sorted)
 
-				for _, name := range sorted {
-					value, exists := attrs[name]
-					if !exists || value == nil {
+				for _, p := range sorted {
+					value, ok := lookupAttrPath(attrs, p)
+					if !ok || value == nil {
+						continue
+					}
+					if !isScalarSecretValue(value) {
+						fmt.Fprintf(os.Stderr, "  WARNING: sensitive attribute %s on %s is not a "+
+							"scalar; it cannot be recovered through stack config and is skipped\n",
+							p, address)
 						continue
 					}
 					raw = append(raw, rawSecret{
 						address:   address,
-						attribute: name,
+						attribute: p,
 						value:     fmt.Sprintf("%v", value),
 					})
 				}
@@ -861,7 +875,7 @@ func DiscoverSensitiveSecrets(
 	var tooLong []string
 
 	for _, r := range raw {
-		key := flattenAddress(r.address, r.attribute)
+		key := flattenAddressPath(r.address, r.attribute)
 		keyCounts[key]++
 		count := keyCounts[key]
 
@@ -1133,11 +1147,16 @@ func redactSensitivePaths(attrs map[string]interface{}, paths []cty.PathValueMar
 		if len(pvm.Path) == 0 {
 			continue
 		}
-		redactAtPath(attrs, pvm.Path)
+		redactAtPath(attrs, pvm.Path, nil)
 	}
 }
 
-func redactAtPath(container interface{}, path cty.Path) {
+// redactAtPath walks one sensitive path, accumulating the concrete steps taken
+// in walked (unresolvable indexes fan out, each element with its own index),
+// and writes the placeholder at the leaf: bare "(sensitive)" for a top-level
+// attribute, the path-tagged form for a nested one, so the value stays
+// recoverable (#28 — recovery correlates by the tagged path).
+func redactAtPath(container interface{}, path cty.Path, walked cty.Path) {
 	if len(path) == 0 {
 		return
 	}
@@ -1154,13 +1173,13 @@ func redactAtPath(container interface{}, path cty.Path) {
 			return
 		}
 		if !last {
-			redactAtPath(value, path[1:])
+			redactAtPath(value, path[1:], append(walked, step))
 			return
 		}
 		if value == nil {
 			return
 		}
-		m[step.Name] = redactedPlaceholder
+		m[step.Name] = leafPlaceholder(append(walked, step))
 
 	case cty.IndexStep:
 		switch c := container.(type) {
@@ -1168,11 +1187,11 @@ func redactAtPath(container interface{}, path cty.Path) {
 			idx, ok := indexStepOrdinal(step, len(c))
 			if !ok {
 				for i := range c {
-					redactSliceElement(c, i, path, last)
+					redactSliceElement(c, i, path, last, walked)
 				}
 				return
 			}
-			redactSliceElement(c, idx, path, last)
+			redactSliceElement(c, idx, path, last, walked)
 		case map[string]interface{}:
 			key, ok := indexStepKey(step)
 			if !ok {
@@ -1182,30 +1201,42 @@ func redactAtPath(container interface{}, path cty.Path) {
 			if !exists {
 				return
 			}
+			walkedStep := cty.IndexStep{Key: cty.StringVal(key)}
 			if !last {
-				redactAtPath(value, path[1:])
+				redactAtPath(value, path[1:], append(walked, walkedStep))
 				return
 			}
 			if value == nil {
 				return
 			}
-			c[key] = redactedPlaceholder
+			c[key] = leafPlaceholder(append(walked, walkedStep))
 		}
 	}
 }
 
-func redactSliceElement(s []interface{}, i int, path cty.Path, last bool) {
+func redactSliceElement(s []interface{}, i int, path cty.Path, last bool, walked cty.Path) {
 	if i < 0 || i >= len(s) {
 		return
 	}
+	step := cty.IndexStep{Key: cty.NumberIntVal(int64(i))}
 	if !last {
-		redactAtPath(s[i], path[1:])
+		redactAtPath(s[i], path[1:], append(walked, step))
 		return
 	}
 	if s[i] == nil {
 		return
 	}
-	s[i] = redactedPlaceholder
+	s[i] = leafPlaceholder(append(walked, step))
+}
+
+// leafPlaceholder picks the placeholder form for a redacted leaf: bare for a
+// top-level attribute (unchanged behaviour, and the key map stays keyed by
+// name), path-tagged for anything nested.
+func leafPlaceholder(walked cty.Path) string {
+	if len(walked) == 1 {
+		return redactedPlaceholder
+	}
+	return taggedPlaceholder(renderAttrPath(walked))
 }
 
 func indexStepOrdinal(step cty.IndexStep, length int) (int, bool) {
