@@ -96,8 +96,10 @@ That second path loses three things at once:
    (`1234567890123456789` → `1234567890123456800`). The loss is silent — it
    takes an integer above 2^53 to trigger it, and scientific notation only
    appears at ≥1e21 — so nothing downstream can detect that it happened. The
-   raw `.tfstate` path was fixed on this branch (`decodeAttrs`,
-   [pkg/module_map.go:459](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L459)); **this path was not**. See
+   raw `.tfstate` path was fixed first (`decodeAttrs`,
+   [pkg/module_map.go:459](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L459)); this path is fixed too, via
+   `State.UseJSONNumber(true)` — the only hook that reaches `tfjson`'s own
+   decoder. See
    [#27](https://github.com/pulumi-proserv/pulumi-tool-import/issues/27) and
    [Weaknesses §1](#weaknesses-and-open-questions).
 2. **Sensitivity.** `sensitivePathsFromTfjson` derives sensitive paths from
@@ -729,13 +731,16 @@ state).
 
 Ordered roughly by how much damage each can do.
 
-### 1. `UseNumber` is applied at the reading end; the producing end is now only partly covered
+### 1. `UseNumber` at the producing end — audited and closed (#27)
 
-**Partly fixed on this branch.** The original finding was that `UseNumber`
-appeared only where the tool *read* a document it did not write, while every
-site that *produced* one decoded plainly — so the precision was already gone
-before the careful reader saw it. Three sites on the path into Pulumi state have
-since been fixed:
+**Resolved.** The original finding was that `UseNumber` appeared only where the
+tool *read* a document it did not write, while every site that *produced* one
+decoded plainly — so the precision was already gone before the careful reader
+saw it. The audit #27 asked for is complete: every producing site on the path
+into Pulumi state is fixed, and the remaining plain decodes were each traced
+and are precision-safe by usage or by construction (`VerifyDeploymentIntegrity`
+only reads and its caller keeps the original bytes; the stack Export/Import
+envelope is `json.RawMessage`, kept opaque by the SDK). The fixed sites:
 
 | Site | Fix |
 |---|---|
@@ -745,6 +750,7 @@ since been fixed:
 | [pkg/module_map.go:805](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L805), [:826](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L826) | `DiscoverSensitiveSecrets` decodes with `decodeAttrs`. It still stringifies with `fmt.Sprintf("%v", …)`, which is safe because `json.Number` is a string type and prints its original digits. That value goes into stack config, and injection writes it back into state, so a plain decode here corrupts a real secret. |
 | [cmd/resolve_cfn.go:44](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/cmd/resolve_cfn.go#L44), [cmd/patch_state_cfn.go:89](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/cmd/patch_state_cfn.go#L89) | The CFN digest decodes use `UseNumber` too, matching the two TF ones. |
 | [pkg/generate_module_map.go:136](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/generate_module_map.go#L136) | `tfjson.State.UseJSONNumber(true)` on the `tofu show -json` entry path. `tfjson.State` has a custom `UnmarshalJSON` running its own decoder, so `UseNumber` at the call site is ignored — this setter is the only hook that reaches it. |
+| `pkg/set_secrets.go` (`extractSecretValues`) | The `set-secrets` state decode uses `UseNumber` (and rejects trailing data and composite values), so an integer secret above 2^53 reaches stack config exact rather than in scientific notation. |
 
 What the fix does **not** cover, and why each still matters:
 
@@ -760,10 +766,12 @@ IDs are not affected: they appear in state as strings. So the realistic damage
 is a silently wrong large integer (snowflake IDs, epoch-nanosecond timestamps,
 some resource IDs), not a crash.
 
-The remaining fix is the same shape as the one applied: a single decode-with-
-`UseNumber` helper used at every `json.Unmarshal` that touches state or digest
-data. See
-[#27](https://github.com/pulumi-proserv/pulumi-tool-import/issues/27).
+What remains is consolidation, not correctness: the decode-with-`UseNumber`
+idiom is open-coded at each site rather than shared through one helper (the
+sites decode into different shapes, so the helper is not a drop-in). The
+consuming-side ceiling — `resource.PropertyValue` holding numbers as `float64`
+— is [#29](https://github.com/pulumi-proserv/pulumi-tool-import/issues/29),
+blocked on a bridge-side change.
 
 ### 2. Two provider loaders, neither able to do the other's job (#26)
 
@@ -945,7 +953,8 @@ cannot see (resources absent from one preview entirely), not the primary gate.
 - [#26](https://github.com/pulumi-proserv/pulumi-tool-import/issues/26) — the
   two loaders; §2.
 - [#27](https://github.com/pulumi-proserv/pulumi-tool-import/issues/27) — JSON
-  number precision; §1. Three sites fixed on this branch, the rest outstanding.
+  number precision; §1. Closed: the producing-side audit is complete; the
+  consuming-side `float64` ceiling is #29.
 - [#28](https://github.com/pulumi-proserv/pulumi-tool-import/issues/28) —
   sensitive values: the three implementations, the two uncovered paths, and the
   recomputed config-key link; §3.

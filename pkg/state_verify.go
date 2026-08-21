@@ -26,8 +26,13 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/config"
 )
 
+// VerifyDeploymentIntegrity checks the snapshot's structural invariants.
 func VerifyDeploymentIntegrity(stateData []byte) error {
 	var untyped apitype.UntypedDeployment
+	// Decoded without UseNumber, deliberately: this function only reads — the
+	// caller keeps the original bytes, and nothing decoded here is written
+	// back — so float64 rounding of large integers cannot corrupt anything
+	// (issue #27's audit). Adding any write-back path invalidates this.
 	if err := json.Unmarshal(stateData, &untyped); err != nil {
 		return fmt.Errorf("parsing state for verification: %w", err)
 	}

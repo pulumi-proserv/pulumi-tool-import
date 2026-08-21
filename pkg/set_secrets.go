@@ -15,6 +15,7 @@
 package pkg
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -60,12 +61,37 @@ func ParseSecretMapping(s string) (SecretMapping, error) {
 //
 // It initializes the stack if it doesn't exist.
 func SetSecrets(stateFilePath, projectDir, projectName, stack, runtime string, mappings []SecretMapping) error {
-	// Read and parse the state file.
+	// Read the state file.
 	data, err := os.ReadFile(stateFilePath)
 	if err != nil {
 		return fmt.Errorf("reading state file: %w", err)
 	}
 
+	configMap, err := extractSecretValues(data, mappings)
+	if err != nil {
+		return err
+	}
+
+	// Ensure a Pulumi project exists before stack operations.
+	if err := ensurePulumiProject(projectDir, projectName, runtime); err != nil {
+		return err
+	}
+
+	if err := writeConfigValues(projectDir, stack, configMap); err != nil {
+		return err
+	}
+
+	fmt.Fprintf(os.Stderr, "Set %d secrets on stack %s\n", len(mappings), stack)
+	return nil
+}
+
+// extractSecretValues pulls each mapping's attribute value out of a Terraform
+// state file and returns it as a secret config entry, reporting each mapping
+// to stderr. Decoded with UseNumber: these values become the stack's secrets,
+// and a plain decode turns a large integer into a float64 that %v renders in
+// scientific notation — a wrong secret, not a cosmetic difference. Same rule
+// as decodeAttrs (pkg/module_map.go) for every decode that feeds state.
+func extractSecretValues(data []byte, mappings []SecretMapping) (auto.ConfigMap, error) {
 	var stateFile struct {
 		Resources []struct {
 			Type      string `json:"type"`
@@ -78,8 +104,15 @@ func SetSecrets(stateFilePath, projectDir, projectName, stack, runtime string, m
 			} `json:"instances"`
 		} `json:"resources"`
 	}
-	if err := json.Unmarshal(data, &stateFile); err != nil {
-		return fmt.Errorf("parsing state file: %w", err)
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	if err := dec.Decode(&stateFile); err != nil {
+		return nil, fmt.Errorf("parsing state file: %w", err)
+	}
+	// Decode reads one JSON value and ignores what follows; a concatenated or
+	// doubly-written state file must be a parse error, not a wrong secret.
+	if dec.More() {
+		return nil, fmt.Errorf("parsing state file: unexpected trailing data")
 	}
 
 	// Build a lookup map: terraform address -> attributes.
@@ -101,40 +134,36 @@ func SetSecrets(stateFilePath, projectDir, projectName, stack, runtime string, m
 				switch key := inst.IndexKey.(type) {
 				case string:
 					addr += fmt.Sprintf("[%q]", key)
-				case float64:
-					addr += fmt.Sprintf("[%d]", int(key))
+				case json.Number:
+					addr += fmt.Sprintf("[%s]", key.String())
 				}
 			}
 			attrsByAddress[addr] = inst.Attributes
 		}
 	}
 
-	// Ensure a Pulumi project exists before stack operations.
-	if err := ensurePulumiProject(projectDir, projectName, runtime); err != nil {
-		return err
-	}
-
-	// Extract secret values and build config map.
 	configMap := make(auto.ConfigMap, len(mappings))
 	for _, m := range mappings {
 		attrs, ok := attrsByAddress[m.TerraformAddress]
 		if !ok {
-			return fmt.Errorf("terraform address %q not found in state", m.TerraformAddress)
+			return nil, fmt.Errorf("terraform address %q not found in state", m.TerraformAddress)
 		}
 
 		value, ok := attrs[m.Attribute]
 		if !ok {
-			return fmt.Errorf("attribute %q not found on resource %q", m.Attribute, m.TerraformAddress)
+			return nil, fmt.Errorf("attribute %q not found on resource %q", m.Attribute, m.TerraformAddress)
 		}
 
+		switch value.(type) {
+		case string, bool, json.Number:
+		default:
+			// %v on a map or list writes Go syntax into config — a wrong
+			// secret nothing can parse back. Refuse rather than corrupt.
+			return nil, fmt.Errorf("attribute %q on %q is not a scalar; only string, bool and "+
+				"number secrets can be set as stack config", m.Attribute, m.TerraformAddress)
+		}
 		fmt.Fprintf(os.Stderr, "  Mapping secret %s from %s:%s\n", m.ConfigKey, m.TerraformAddress, m.Attribute)
 		configMap[m.ConfigKey] = auto.ConfigValue{Value: fmt.Sprintf("%v", value), Secret: true}
 	}
-
-	if err := writeConfigValues(projectDir, stack, configMap); err != nil {
-		return err
-	}
-
-	fmt.Fprintf(os.Stderr, "Set %d secrets on stack %s\n", len(mappings), stack)
-	return nil
+	return configMap, nil
 }
