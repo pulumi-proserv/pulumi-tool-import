@@ -509,19 +509,21 @@ func loadProvidersForDigest(
 		return nil, nil
 	}
 	names := make([]providermap.TerraformProviderName, 0, len(digest.Providers))
-	unrecorded := false
+	var unrecorded []string
 	for addr, resolved := range digest.Providers {
 		names = append(names, providermap.TerraformProviderName(addr))
 		if resolved == "" {
-			unrecorded = true
+			unrecorded = append(unrecorded, addr)
 		}
 	}
 	sort.Slice(names, func(i, j int) bool { return names[i] < names[j] })
+	sort.Strings(unrecorded)
 
-	if unrecorded {
-		fmt.Fprintf(os.Stderr, "  WARNING: the digest records no provider versions (written by an older "+
-			"tool version); property names will come from this build's recommended providers, "+
-			"which may differ from the digest's. Re-run \"digest tf\" to record them.\n")
+	if len(unrecorded) > 0 {
+		fmt.Fprintf(os.Stderr, "  WARNING: the digest records no provider version for %s (an older "+
+			"tool version wrote it?); property names for those come from this build's "+
+			"recommendation, which may differ from the digest's. Re-run \"digest tf\" to record "+
+			"them.\n", strings.Join(unrecorded, ", "))
 	}
 	// Pinned to the versions the digest recorded, so the property names used
 	// at injection come from the same schema the digest's did (issue #38).

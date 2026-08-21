@@ -78,7 +78,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   provider version this build recommends today — and a digest computed against
   one provider major consumed against another produced wrong Pulumi property
   names before the raw-state delta was ever consulted (#38). `digest tf` now
-  records the resolved provider (`name@version`, or `dynamic`), `patch-state`
+  records the resolved provider (`name@version`, or `dynamic[@tfVersion]`
+  with the Terraform version from the lock file), `patch-state`
   pins its schema loading to exactly that, and a recorded provider that this
   build maps differently is an error naming both, telling the operator to
   re-run the digest. A digest from an older tool (no versions recorded) warns

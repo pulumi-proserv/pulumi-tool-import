@@ -45,7 +45,13 @@ type ModuleMap struct {
 	FormatVersion int                        `json:"digestFormatVersion,omitempty"`
 	Modules       map[string]*ModuleMapEntry `json:"modules"`
 	RootResources []ModuleResource           `json:"rootResources,omitempty"`
-	Providers     map[string]string          `json:"providers,omitempty"`
+	// Providers maps each Terraform provider address to the Pulumi provider
+	// the digest's property names were computed with — the pin patch-state
+	// loads schemas by. Values: "name@version" (statically bridged),
+	// "dynamic@<tfVersion>" or bare "dynamic" (dynamically bridged, with the
+	// Terraform version when the lock file supplied one), or "" (digest
+	// written before versions were recorded — unpinned, warned at load).
+	Providers map[string]string `json:"providers,omitempty"`
 	// ImportSupportChecked records whether resource types were checked for
 	// import support. Without it, a digest built with the check skipped is
 	// indistinguishable from one where the check ran and flagged nothing, and

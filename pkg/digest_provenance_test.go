@@ -56,7 +56,7 @@ func TestApplyPin_OverridesTheStaticVersion(t *testing.T) {
 			Identifier: "aws", Version: "v99.0.0",
 		},
 	}
-	pinned, err := applyProviderPin(rec, "aws@v7.12.0")
+	pinned, _, err := applyProviderPin(rec, "aws@v7.12.0")
 	require.NoError(t, err)
 	assert.Equal(t, "v7.12.0", pinned.StaticallyBridgedProvider.Version,
 		"injection must load the version the digest was computed against, not today's recommendation")
@@ -76,7 +76,7 @@ func TestApplyPin_RejectsAnIdentifierMismatch(t *testing.T) {
 			Identifier: "aws", Version: "v7.12.0",
 		},
 	}
-	_, err := applyProviderPin(rec, "aws-native@v3.0.0")
+	_, _, err := applyProviderPin(rec, "aws-native@v3.0.0")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "aws-native")
 	assert.Contains(t, err.Error(), "aws")
@@ -94,29 +94,28 @@ func TestApplyPin_EmptyIsUnrecordedButDynamicIsDrift(t *testing.T) {
 			Identifier: "aws", Version: "v7.12.0",
 		},
 	}
-	got, err := applyProviderPin(rec, "")
+	got, _, err := applyProviderPin(rec, "")
 	require.NoError(t, err)
 	assert.Equal(t, "v7.12.0", got.StaticallyBridgedProvider.Version)
 
-	_, err = applyProviderPin(rec, "dynamic")
+	_, _, err = applyProviderPin(rec, "dynamic")
 	require.Error(t, err)
 
 	// And "dynamic" against a dynamic recommendation is a matched pair.
 	dyn := providermap.RecommendedPulumiProvider{UseDynamicBridging: true}
-	got, err = applyProviderPin(dyn, "dynamic")
+	got, _, err = applyProviderPin(dyn, "dynamic")
 	require.NoError(t, err)
 	assert.True(t, got.UseDynamicBridging)
 }
 
-func TestApplyPin_DynamicRecommendationIgnoresStaticPin(t *testing.T) {
+func TestApplyPin_RejectsStaticPinAgainstDynamicRecommendation(t *testing.T) {
 	t.Parallel()
 
 	rec := providermap.RecommendedPulumiProvider{UseDynamicBridging: true}
-	got, err := applyProviderPin(rec, "aws@v7.12.0")
+	_, _, err := applyProviderPin(rec, "aws@v7.12.0")
 	require.Error(t, err,
 		"a static pin against a build that now recommends dynamic bridging is the same mapping drift "+
 			"as an identifier mismatch")
-	_ = got
 }
 
 // The digest file itself carries a format version, so a consumer built before
@@ -162,4 +161,23 @@ func TestLoadDigest_PreservesLargeIntegers(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, mm.RootResources, 1)
 	assert.Equal(t, "1234567890123456789", mm.RootResources[0].Attributes["n"].(interface{ String() string }).String())
+}
+
+// A dynamic pin's Terraform version must come back out, so injection can hand
+// it to dynamic bridging rather than resolving latest (#38 for dynamic
+// providers). An empty pinned version ("aws@") is malformed, not "latest".
+func TestApplyPin_DynamicVersionAndMalformedPins(t *testing.T) {
+	t.Parallel()
+
+	dyn := providermap.RecommendedPulumiProvider{UseDynamicBridging: true}
+	got, tfVersion, err := applyProviderPin(dyn, "dynamic@5.1.0")
+	require.NoError(t, err)
+	assert.True(t, got.UseDynamicBridging)
+	assert.Equal(t, "5.1.0", tfVersion)
+
+	rec := providermap.RecommendedPulumiProvider{
+		StaticallyBridgedProvider: &providermap.BridgedPulumiProvider{Identifier: "aws", Version: "v7.12.0"},
+	}
+	_, _, err = applyProviderPin(rec, "aws@")
+	require.Error(t, err, "an empty version must not silently degrade to latest")
 }

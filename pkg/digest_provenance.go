@@ -66,35 +66,39 @@ func LoadDigest(path string) (*ModuleMap, error) {
 // own mapping changed between digest and injection; either choice would use
 // property names the other half of the pipeline did not, so that is an error
 // telling the operator to re-run the digest.
+// The second return is the Terraform provider version a "dynamic@<v>" pin
+// carries — the dynamic path has no Pulumi version to pin, so the TF version
+// is what keeps the mapping stable across the digest/injection boundary.
 func applyProviderPin(
 	rec providermap.RecommendedPulumiProvider, pin string,
-) (providermap.RecommendedPulumiProvider, error) {
+) (providermap.RecommendedPulumiProvider, string, error) {
 	if pin == "" {
-		return rec, nil
+		return rec, "", nil
 	}
 	if pin == dynamicPin || strings.HasPrefix(pin, dynamicPin+"@") {
 		if rec.StaticallyBridgedProvider != nil {
-			return rec, fmt.Errorf(
+			return rec, "", fmt.Errorf(
 				"the digest resolved this provider by dynamic bridging, but this build recommends "+
 					"the statically bridged %q: the tool's provider mapping changed since the digest "+
 					"was written. Re-run \"digest tf\" with this build",
 				rec.StaticallyBridgedProvider.Identifier)
 		}
-		return rec, nil
+		_, tfVersion, _ := strings.Cut(pin, "@")
+		return rec, tfVersion, nil
 	}
 	name, version, ok := strings.Cut(pin, "@")
-	if !ok {
-		return rec, fmt.Errorf("digest records malformed provider version %q (want name@version)", pin)
+	if !ok || name == "" || version == "" {
+		return rec, "", fmt.Errorf("digest records malformed provider version %q (want name@version)", pin)
 	}
 	if rec.StaticallyBridgedProvider == nil {
-		return rec, fmt.Errorf(
+		return rec, "", fmt.Errorf(
 			"the digest resolved this provider to the statically bridged %s, but this build "+
 				"recommends dynamic bridging: the tool's provider mapping changed since the digest "+
 				"was written. Re-run \"digest tf\" with this build",
 			pin)
 	}
 	if rec.StaticallyBridgedProvider.Identifier != name {
-		return rec, fmt.Errorf(
+		return rec, "", fmt.Errorf(
 			"the digest was computed against Pulumi provider %s, but this build maps the same "+
 				"Terraform provider to %q: property names would come from a different schema than "+
 				"the digest's. Re-run \"digest tf\" with this build",
@@ -102,5 +106,5 @@ func applyProviderPin(
 	}
 	pinned := *rec.StaticallyBridgedProvider
 	pinned.Version = version
-	return providermap.RecommendedPulumiProvider{StaticallyBridgedProvider: &pinned}, nil
+	return providermap.RecommendedPulumiProvider{StaticallyBridgedProvider: &pinned}, "", nil
 }

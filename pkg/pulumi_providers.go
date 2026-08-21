@@ -26,6 +26,7 @@ import (
 
 	tfjson "github.com/hashicorp/terraform-json"
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/bridgedproviders"
+	"github.com/pulumi-proserv/pulumi-tool-import/pkg/provideraddr"
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/providermap"
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/tofu"
 	"github.com/pulumi/opentofu/states"
@@ -107,7 +108,14 @@ func pulumiProvidersForTerraformProviders(
 		// Get the version for this provider from the version map
 		version := ""
 		if providerVersions != nil {
-			version = providerVersions[string(providerName)]
+			// The version map may be keyed by a different registry host than
+			// the state-derived provider name (lock file vs state).
+			for _, addr := range provideraddr.Equivalents(string(providerName)) {
+				if v := providerVersions[addr]; v != "" {
+					version = v
+					break
+				}
+			}
 		}
 
 		pulumiProvider := providermap.RecommendPulumiProvider(providermap.TerraformProvider{
@@ -115,11 +123,17 @@ func pulumiProvidersForTerraformProviders(
 			Version:    version,
 		})
 		if pin := pins[string(providerName)]; pin != "" {
-			pinned, err := applyProviderPin(pulumiProvider, pin)
+			pinned, pinnedTFVersion, err := applyProviderPin(pulumiProvider, pin)
 			if err != nil {
 				return nil, fmt.Errorf("provider %s: %w", providerName, err)
 			}
 			pulumiProvider = pinned
+			// A dynamic pin carries the Terraform provider version the digest
+			// resolved; use it so injection maps through the same schema
+			// rather than whatever is latest today (#38 for dynamic providers).
+			if pinnedTFVersion != "" {
+				version = pinnedTFVersion
+			}
 		}
 
 		var providerInfo *info.Provider
