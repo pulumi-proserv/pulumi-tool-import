@@ -348,9 +348,7 @@ func attachRawStateDelta(r *NonImportableResource, obj, outputs map[string]inter
 	}
 
 	deltaJSON, err := json.Marshal(r.RawStateDelta)
-	// Matches both placeholder forms: the bare "(sensitive)" and the
-	// path-tagged "(sensitive:…)" a nested redaction writes — either one
-	// embedded in a delta's raw JSON is unresolvable there.
+	// Either placeholder form embedded in a delta's raw JSON is unresolvable.
 	if err == nil {
 		form := ""
 		switch {
@@ -444,9 +442,8 @@ func resolveOutputSecrets(
 
 	resolved := 0
 	for _, tfName := range tfNames {
-		// Path-form keys (nested) belong exclusively to
-		// resolveTaggedPlaceholders; running them through the top-level name
-		// mapping is at best wasted work and at worst a collision.
+		// Path-form keys (nested) belong to resolveTaggedPlaceholders; the
+		// top-level name mapping must not consume them.
 		if strings.ContainsAny(tfName, ".[") {
 			continue
 		}
@@ -485,9 +482,6 @@ func resolveOutputSecrets(
 		resolved++
 	}
 
-	// Nested placeholders carry their own Terraform path in the tag, so they
-	// resolve by direct lookup — the top-level loop above cannot reach them,
-	// and no Pulumi→Terraform name mapping is needed (#28).
 	nested, err := resolveTaggedPlaceholders(r, outputs, configSecrets)
 	if err != nil {
 		return 0, err

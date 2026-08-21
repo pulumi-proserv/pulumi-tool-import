@@ -24,14 +24,6 @@ import (
 	"github.com/zclconf/go-cty/cty"
 )
 
-// The nested-secret gap (#28): redaction walked nested paths but recovery was
-// top-level-only in three places, so a nested secret was redacted, no config
-// key was ever recorded, and injection hard-errored on a placeholder nothing
-// could resolve. The fix threads the Terraform path through the placeholder
-// itself — "(sensitive:user[0].password)" — so the sidecar, discovery, and
-// resolution all correlate by path with no name inversion anywhere.
-// Top-level redaction keeps the bare "(sensitive)" placeholder unchanged.
-
 func TestTaggedPlaceholderRoundTrip(t *testing.T) {
 	t.Parallel()
 
@@ -56,14 +48,13 @@ func TestTaggedPlaceholderRoundTrip(t *testing.T) {
 func TestFlattenAddressPath(t *testing.T) {
 	t.Parallel()
 
-	// A nested path's key embeds the whole path, indexes included, so
-	// user[0].password and user[1].password get distinct keys. Exact values
-	// are pinned: the key is a compatibility contract with written digests.
+	// Exact values are pinned: the key is a compatibility contract with
+	// written digests.
 	assert.Equal(t, "b_user_0_password", flattenAddressPath("aws_mq_broker.b", "user[0].password"))
 	assert.Equal(t, "b_user_1_password", flattenAddressPath("aws_mq_broker.b", "user[1].password"))
 
-	// A single-segment path is the top-level case and must produce the same
-	// key flattenAddress always has, so existing digests stay compatible.
+	// A single-segment path must produce the same key flattenAddress always
+	// has, so existing digests stay compatible.
 	assert.Equal(t, flattenAddress("aws_x.n", "password"),
 		flattenAddressPath("aws_x.n", "password"))
 }
@@ -107,11 +98,6 @@ func nestedSecretState(t *testing.T) *states.State {
 	return state
 }
 
-// The whole loop, from a state whose nested secrets Terraform marked: the
-// digest carries tagged placeholders, the sidecar records a key per path, and
-// discovery recovers each value under that same key. Before the fix every one
-// of these assertions failed — redaction succeeded and everything downstream
-// came back empty.
 func TestNestedMarkedSecret_RedactedAndRecoverable(t *testing.T) {
 	t.Parallel()
 
@@ -148,9 +134,6 @@ func TestNestedMarkedSecret_RedactedAndRecoverable(t *testing.T) {
 	assert.Equal(t, "OTHER-SECRET", byKey[keys["user[1].password"]])
 }
 
-// Resolution closes the loop: a tagged placeholder anywhere in the injected
-// outputs is replaced with the enveloped secret from stack config, found by
-// the path the tag itself carries — no Pulumi→Terraform name inversion.
 func TestResolveOutputSecrets_ResolvesNestedTaggedPlaceholders(t *testing.T) {
 	t.Parallel()
 
@@ -182,9 +165,6 @@ func TestResolveOutputSecrets_ResolvesNestedTaggedPlaceholders(t *testing.T) {
 	require.NoError(t, checkNoPlaceholders(r, "output", outputs, "outputs"))
 }
 
-// A tagged placeholder whose config key is missing stays a hard error — the
-// same rule as top-level: writing a placeholder into state is worse than
-// refusing.
 func TestResolveOutputSecrets_MissingNestedKeyIsAnError(t *testing.T) {
 	t.Parallel()
 
@@ -203,8 +183,6 @@ func TestResolveOutputSecrets_MissingNestedKeyIsAnError(t *testing.T) {
 	assert.NotContains(t, err.Error(), "NESTED-SECRET")
 }
 
-// checkNoPlaceholders must recognise the tagged form as a placeholder, so an
-// unresolved one can never be written into state as an ordinary string.
 func TestCheckNoPlaceholders_CatchesTaggedForm(t *testing.T) {
 	t.Parallel()
 
@@ -218,9 +196,6 @@ func TestCheckNoPlaceholders_CatchesTaggedForm(t *testing.T) {
 	assert.Contains(t, err.Error(), "nested[0].password")
 }
 
-// The schema cross-check must recognise the tagged form as redacted: a state
-// whose marks redacted a nested secret (now tagged) is clean, not a leak, even
-// when the provider schema is present to check against.
 func TestSchemaSensitiveLeaks_TaggedPlaceholderIsClean(t *testing.T) {
 	t.Parallel()
 
@@ -232,8 +207,6 @@ func TestSchemaSensitiveLeaks_TaggedPlaceholderIsClean(t *testing.T) {
 	assert.Empty(t, leaks)
 }
 
-// And redactSchemaSensitive must not re-redact a tagged placeholder into a
-// bare one, which would sever the path the tag carries.
 func TestRedactSchemaSensitive_LeavesTaggedPlaceholdersAlone(t *testing.T) {
 	t.Parallel()
 
@@ -243,9 +216,6 @@ func TestRedactSchemaSensitive_LeavesTaggedPlaceholdersAlone(t *testing.T) {
 	assert.Equal(t, taggedPlaceholder("password"), attrs["password"])
 }
 
-// A raw-state delta embedding a TAGGED placeholder must be dropped exactly as
-// one embedding the bare form is: the delta is raw JSON no resolver walks, so
-// either form inside it reaches state verbatim.
 func TestAttachRawStateDelta_DropsTaggedPlaceholderDeltas(t *testing.T) {
 	t.Parallel()
 
@@ -271,10 +241,6 @@ func TestAttachRawStateDelta_DropsTaggedPlaceholderDeltas(t *testing.T) {
 		"the note names the form actually matched, so the operator greps for the right string")
 }
 
-// Discovery must fan out over an unresolvable marked index exactly as
-// redaction does — the mirror between the two walkers is the invariant the
-// whole recovery scheme rests on, and the fan-out branch is where they have
-// the most room to diverge.
 func TestDiscoverSensitiveSecrets_FansOutUnresolvableIndexes(t *testing.T) {
 	t.Parallel()
 
@@ -315,9 +281,8 @@ func TestDiscoverSensitiveSecrets_FansOutUnresolvableIndexes(t *testing.T) {
 	assert.True(t, values["P0"] && values["P1"])
 }
 
-// The two walkers must agree on which leaves exist: after redaction, the set
-// of tagged paths equals the set of leaf paths discovery resolves. This is
-// the drift-catching mirror test.
+// The drift-catching mirror: redaction's tagged paths must equal the leaves
+// discovery resolves.
 func TestRedactionAndDiscoveryAgreeOnLeaves(t *testing.T) {
 	t.Parallel()
 
