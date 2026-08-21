@@ -31,6 +31,17 @@ digest (tf|cfn)  →  resolve (tf|cfn)  →  import  →  patch-state  →  zero
 - **`set-secrets`** — extract secret values from the source and set them as
   encrypted Pulumi config secrets.
 
+## Intended use: with the migration skills
+
+The tool is designed to be driven by the skills in [`skills/`](skills/): an AI
+agent (e.g. Claude Code) loads the one matching the source —
+[`pulumi-terraform-workspace-migration`](skills/pulumi-terraform-workspace-migration/SKILL.md)
+for Terraform/OpenTofu,
+[`cdk-to-pulumi-classic`](skills/cdk-to-pulumi-classic/SKILL.md) for
+CDK/CloudFormation — and the skill orchestrates the pipeline while writing the
+Pulumi program the migration lands on. Every command also runs standalone, and
+the reference below documents each one for manual use.
+
 For general migration guidance, see the
 [official Pulumi migration docs](https://www.pulumi.com/docs/iac/guides/migration/migrating-to-pulumi/from-terraform/).
 
