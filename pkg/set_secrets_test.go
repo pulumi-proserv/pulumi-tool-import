@@ -59,9 +59,6 @@ func TestParseSecretMapping(t *testing.T) {
 	})
 }
 
-// A large-integer sensitive attribute must reach stack config with its exact
-// digits: this value is set as the secret consumers later resolve, so a
-// float64 round-trip here writes a wrong secret, not a cosmetic difference.
 func TestExtractSecretValues_PreservesLargeIntegers(t *testing.T) {
 	t.Parallel()
 
@@ -75,8 +72,6 @@ func TestExtractSecretValues_PreservesLargeIntegers(t *testing.T) {
 	assert.True(t, cm["k"].Secret)
 }
 
-// An integer index_key decodes to json.Number and must render as [0] in the
-// address, or an indexed resource's mapping can never match.
 func TestExtractSecretValues_IntegerIndexKeyRendersAsBracketZero(t *testing.T) {
 	t.Parallel()
 
@@ -89,8 +84,6 @@ func TestExtractSecretValues_IntegerIndexKeyRendersAsBracketZero(t *testing.T) {
 	assert.Equal(t, "hunter2", cm["k"].Value)
 }
 
-// Address construction is how a mapping finds its secret; each prefix and
-// index form the builder handles gets a case.
 func TestExtractSecretValues_AddressForms(t *testing.T) {
 	t.Parallel()
 
@@ -117,8 +110,6 @@ func TestExtractSecretValues_AddressForms(t *testing.T) {
 	}
 }
 
-// A composite value cannot round-trip through string config: %v would write
-// Go syntax as the secret. Refusing beats corrupting.
 func TestExtractSecretValues_RejectsCompositeValues(t *testing.T) {
 	t.Parallel()
 
@@ -132,8 +123,6 @@ func TestExtractSecretValues_RejectsCompositeValues(t *testing.T) {
 	assert.NotContains(t, err.Error(), "arn:x", "the error must not echo the value")
 }
 
-// Decode reads one JSON value; trailing data means a concatenated or
-// doubly-written state file and must be a parse error, not a wrong secret.
 func TestExtractSecretValues_RejectsTrailingData(t *testing.T) {
 	t.Parallel()
 

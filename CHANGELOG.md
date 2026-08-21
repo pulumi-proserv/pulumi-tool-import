@@ -38,17 +38,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **`set-secrets` corrupted large-integer secrets.** The state file was
-  decoded with a plain `json.Unmarshal` and the value stringified with `%v`,
-  so an integer secret above 2^53 was written into stack config in scientific
-  notation — a wrong secret, the same defect fixed in
-  `DiscoverSensitiveSecrets`. The decode now preserves precision, integer
-  `index_key` addressing included, rejects trailing data, and refuses
-  composite values — which `%v` would have written into config as unparseable
-  Go syntax. This closes #27's audit: the remaining plain decodes were traced
-  and are safe — the stack Export/Import envelope by construction
-  (`json.RawMessage`), `state_verify` because it only reads and its caller
-  keeps the original bytes.
+- **`set-secrets` corrupted large-integer secrets.** A plain decode wrote
+  integer secrets above 2^53 into stack config in scientific notation. The
+  decode now preserves precision, rejects trailing data, and refuses
+  composite values. Closes the #27 audit; the remaining plain decodes were
+  traced and are read-only or opaque by construction.
 
 - **Secrets could reach state in plaintext, two ways.** State in
   `tofu show -json` format got no redaction at all — the format is selected
