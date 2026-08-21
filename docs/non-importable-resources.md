@@ -138,7 +138,9 @@ pulumi plugin run import -- patch-state tf \
   --project-dir . --stack dev
 ```
 
-Omitting `--state`/`--out` selects stack mode. In order, the command:
+Omitting `--state` selects stack mode (`--out` may still be set — the
+verified state is also written there, after verification). In order, the
+command:
 
 1. exports the stack's current deployment;
 2. writes a backup of that export and prints its absolute path;
@@ -203,7 +205,8 @@ pulumi stack import --file injected.json
 pulumi preview   # must report zero operations
 ```
 
-File mode is selected by passing both `--state` and `--out`. `--non-importable`
+File mode is selected by passing `--state` (with `--out` for the result), and
+its output is not verified by the tool. `--non-importable`
 still requires a preview to source injected resources' URN, parent, provider
 and dependencies from — supply it with `--preview-json` since there is no stack
 to preview directly, and `--preview-json` is rejected in stack mode for the
