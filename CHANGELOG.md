@@ -38,6 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`set-secrets` corrupted large-integer secrets.** A plain decode wrote
+  integer secrets above 2^53 into stack config in scientific notation. The
+  decode now preserves precision, rejects trailing data, and refuses
+  composite values. Closes the #27 audit; the remaining plain decodes were
+  traced and are read-only or opaque by construction.
+
 - **Secrets could reach state in plaintext, two ways.** State in
   `tofu show -json` format got no redaction at all — the format is selected
   automatically on the presence of a `format_version` key, with no flag to
