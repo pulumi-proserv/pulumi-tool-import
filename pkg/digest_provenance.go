@@ -33,9 +33,8 @@ const CurrentDigestFormatVersion = 1
 // rather than a statically bridged Pulumi provider.
 const dynamicPin = "dynamic"
 
-// LoadDigest reads a tf-digest.json, preserving large-integer precision
-// (json.Number — the digest's values are what patch-state writes into state)
-// and refusing a digest whose format version this build does not know.
+// LoadDigest reads a tf-digest.json with UseNumber (the digest's values end
+// up in state) and refuses a format version newer than this build knows.
 func LoadDigest(path string) (*ModuleMap, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -56,16 +55,12 @@ func LoadDigest(path string) (*ModuleMap, error) {
 	return &mm, nil
 }
 
-// applyProviderPin returns rec with its version overridden by a pin the digest
-// recorded ("name@version"), so injection loads the provider the digest's
-// property names came from rather than whatever this build recommends today.
-//
-// An empty pin — a digest from before versions were recorded — is "unrecorded",
-// not "no pin", and leaves rec unchanged. A pin that disagrees with rec about
-// WHICH provider (different identifier, or static vs dynamic) means the tool's
-// own mapping changed between digest and injection; either choice would use
-// property names the other half of the pipeline did not, so that is an error
-// telling the operator to re-run the digest.
+// applyProviderPin overrides rec's version with the pin the digest recorded
+// ("name@version"), so injection loads the provider the digest's property
+// names came from. An empty pin (older digest, versions unrecorded) leaves
+// rec unchanged. A pin that disagrees about WHICH provider — identifier, or
+// static vs dynamic — is mapping drift between digest and injection, and
+// errors telling the operator to re-run the digest.
 func applyProviderPin(
 	rec providermap.RecommendedPulumiProvider, pin string,
 ) (providermap.RecommendedPulumiProvider, error) {
