@@ -330,6 +330,32 @@ values out of stack config.
 					fmt.Fprintf(os.Stderr, "\nVerified: the patch introduced no new operations "+
 						"(%d outstanding change(s) remain in the preview).\n", outstanding)
 				}
+
+				// The refresh report is the only check that consults the
+				// deployed resource; the preview above compares the program
+				// against the injected state, which is only as current as the
+				// Terraform state it came from. Report, never gate: a diff has
+				// three possible causes (stale TF state, a wrong program, Read
+				// normalisation) and only the operator can tell them apart. A
+				// failure to produce the report is a warning for the same
+				// reason — the mutation is already verified and kept.
+				if len(injectedURNs) > 0 {
+					refresh, err := session.RefreshPreviewJSON(ctx)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "\nWARNING: could not run the refresh report "+
+							"(pulumi refresh --preview-only): %v\n", err)
+					} else {
+						report := pkg.BuildRefreshReport(refresh, injectedURNs)
+						fmt.Fprintf(os.Stderr, "\nRefresh report — what the provider's Read says "+
+							"about each injected resource (informational, nothing is gated on it):\n")
+						for _, line := range report {
+							fmt.Fprintf(os.Stderr, "  %s\n", line)
+						}
+						fmt.Fprintf(os.Stderr, "A \"no change\" line is not confirmation: for many "+
+							"non-importable types, Read returns exactly what it was given. See "+
+							"docs/non-importable-resources.md.\n")
+					}
+				}
 			} else {
 				if err := os.WriteFile(outPath, patched, 0o600); err != nil {
 					return fmt.Errorf("writing output: %w", err)
