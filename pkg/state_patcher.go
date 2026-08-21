@@ -83,6 +83,15 @@ type FieldInfo struct {
 }
 
 // PatchStateResult contains statistics from the patch operation.
+// noMatchNote is the one format for a NoMatchNotes line, shared by every
+// patch loop (fields-file, schema, CFN) so the copies cannot drift. source
+// names where the patchable fields came from. The URN already carries the
+// type, so only the unmatched name is repeated.
+func noMatchNote(urn, name, source string) string {
+	return fmt.Sprintf("%s: %s has fields to patch, but no digest entry matched the name %q",
+		urn, source, name)
+}
+
 type PatchStateResult struct {
 	Patched                int
 	FieldsFromDigest       int
@@ -91,11 +100,10 @@ type PatchStateResult struct {
 	SkippedFalsySuppressed int
 	NoMatch                int
 	// NoMatchNotes names, one line each, the resources counted in NoMatch:
-	// covered by the fields file but matched to no digest entry, so they were
-	// left unpatched. Mirrors the delta counters' shape — an aggregate cannot
-	// distinguish "nothing to do" from "something went wrong", and a migration
-	// that silently patched 40 of 41 resources looks identical to one that
-	// patched all 41 except for a number nobody has a baseline for.
+	// fields to patch exist for the type, no digest entry matched the name,
+	// and nothing was patched (a no-match resource that still took a default
+	// is counted in Patched, not here). Named rather than only counted, for
+	// the same reason as the delta counters (#37).
 	NoMatchNotes   []string
 	NoFields       int
 	DigestMapped   int
@@ -308,11 +316,10 @@ func lookupProviderVersion(providerRef string, providerVersions map[string]strin
 	return providerVersions[providerRef]
 }
 
-// BuildDigestNameMap builds a mapping from Pulumi resource name → ModuleResource
-// using the same matching logic as FillImportFile: resource-level mappings first,
-// then module-level type+name matching with type-only fallback.
-// BuildDigestNameMap matches state resources to digest resources by name,
-// through fallbacks ending in "exactly one unused candidate of this type".
+// BuildDigestNameMap matches state resources to digest resources by name, in
+// four phases: explicit resource-level mappings, exact type+name within a
+// mapped module, a normalized-name pass (stripping the `this["key"]` wrapper),
+// and finally "exactly one unused candidate of this type".
 //
 // The guessing is a stated decision, not an accident (issue #37): patching
 // fills in missing values on a resource that already imported correctly, so a
@@ -321,9 +328,12 @@ func lookupProviderVersion(providerRef string, providerVersions map[string]strin
 // differences. InjectNonImportable deliberately takes the opposite stance —
 // exact type+name or fail — because injection writes whole resources into
 // state, where a wrong match corrupts rather than merely leaves unpatched.
-// The same algorithm exists in FillImportFile/matchChildren
-// (pkg/import_filler.go) over the import-file shape; a change to the fallback
-// rules belongs in both.
+//
+// matchChildren (pkg/import_filler.go) is the import-file counterpart. The two
+// are near-identical, not identical: only this one has the normalized-name
+// pass, and only matchChildren warns on ambiguous type candidates (#37 tracks
+// consolidating them). A change to the shared fallback rules usually belongs
+// in both — check those divergences first.
 func BuildDigestNameMap(
 	digest *ModuleMap,
 	moduleMappings, resourceMappings map[string]string,
@@ -880,9 +890,7 @@ func PatchState(
 		}
 		if !patchResult.patched && digResource == nil {
 			result.NoMatch++
-			result.NoMatchNotes = append(result.NoMatchNotes, fmt.Sprintf(
-				"%s (%s): fields file covers this type, but no digest entry matched the name %q",
-				urn, resType, name))
+			result.NoMatchNotes = append(result.NoMatchNotes, noMatchNote(urn, name, "the fields file"))
 		}
 
 		rMap["inputs"] = inputsRaw
@@ -1798,9 +1806,7 @@ func PatchStateFromSchema(
 		}
 		if !patchResult.patched && digResource == nil {
 			result.NoMatch++
-			result.NoMatchNotes = append(result.NoMatchNotes, fmt.Sprintf(
-				"%s (%s): fields file covers this type, but no digest entry matched the name %q",
-				urn, resType, name))
+			result.NoMatchNotes = append(result.NoMatchNotes, noMatchNote(urn, name, "the provider schema"))
 		}
 
 		rMap["inputs"] = inputsRaw

@@ -210,6 +210,7 @@ func PatchStateFromCFN(
 		}
 		if !patchResult.patched && digResource == nil {
 			result.NoMatch++
+			result.NoMatchNotes = append(result.NoMatchNotes, noMatchNote(urn, name, "the fields file"))
 		}
 
 		rMap["inputs"] = inputsRaw

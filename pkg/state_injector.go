@@ -53,6 +53,14 @@ type InjectResult struct {
 	URNs                       []string
 }
 
+// InjectNonImportable appends the sidecar's resources to an exported
+// deployment, matching each to a preview create step by exact Pulumi type and
+// name — never by the single-candidate guess BuildDigestNameMap
+// (pkg/state_patcher.go) and matchChildren (pkg/import_filler.go) fall back
+// to. The strictness is deliberate (issue #37): their wrong matches fail
+// loudly downstream (a flagged preview, a failed import), while a wrong match
+// here writes a corrupted resource into state. A duplicate or a miss is an
+// error, not a guess.
 func InjectNonImportable(
 	stateData []byte,
 	sidecar *NonImportableFile,

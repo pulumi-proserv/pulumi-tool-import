@@ -2044,28 +2044,67 @@ func TestDeepCopyJSONValue_SharesNothingMutable(t *testing.T) {
 	assert.Equal(t, "v", orig["a"].([]interface{})[0].(map[string]interface{})["k"])
 }
 
-// A fields-file-covered resource with no digest match must be named, not just
-// counted: an aggregate cannot distinguish "nothing to do" from "something
-// went wrong" (issue #37, mirroring the delta counters).
+// A covered resource with no digest match must be named per resource, not
+// aggregated (issue #37). Two unmatched resources prove per-resource notes;
+// a matched-and-patched neighbour proves only the unmatched ones are listed.
 func TestPatchState_NoMatchIsNamedPerResource(t *testing.T) {
 	t.Parallel()
 
-	state := buildTestState("aws:s3/bucketObject:BucketObject", "unmatched-name", map[string]any{})
+	// The two unmatched resources use a type with NO digest entry at all, so
+	// even the single-unused-candidate guess cannot match them; the matched
+	// resource uses a different type with a direct resource mapping.
+	state := []byte(`{"version":3,"deployment":{"resources":[
+		{"urn":"urn:pulumi:dev::proj::aws:ecs/service:Service::unmatched-one","type":"aws:ecs/service:Service","custom":true,"id":"a","inputs":{},"outputs":{}},
+		{"urn":"urn:pulumi:dev::proj::aws:ecs/service:Service::unmatched-two","type":"aws:ecs/service:Service","custom":true,"id":"b","inputs":{},"outputs":{}},
+		{"urn":"urn:pulumi:dev::proj::aws:s3/bucketObject:BucketObject::matched","type":"aws:s3/bucketObject:BucketObject","custom":true,"id":"c","inputs":{},"outputs":{}}
+	]}}`)
+	fields := &FieldsFile{
+		Fields: map[string]FieldCategory{
+			// No defaults: with no digest match there is nothing to patch
+			// from, which is exactly the case that must be named.
+			"service:Service":           {NotRead: map[string]FieldInfo{"waitForSteadyState": {}}},
+			"bucketObject:BucketObject": {NotRead: map[string]FieldInfo{"content": {}}},
+		},
+	}
+	digest := &ModuleMap{
+		RootResources: []ModuleResource{{
+			Mode:             "managed",
+			TranslatedURN:    "urn:pulumi:dev::proj::aws:s3/bucketObject:BucketObject::matched",
+			TerraformAddress: "aws_s3_bucket_object.matched",
+			Attributes:       map[string]interface{}{"content": "hello"},
+		}},
+		Modules: map[string]*ModuleMapEntry{},
+	}
+
+	_, result, err := PatchState(state, digest, fields, nil,
+		map[string]string{"aws_s3_bucket_object.matched": "matched"}, nil, "")
+	require.NoError(t, err)
+	require.Equal(t, 2, result.NoMatch)
+	require.Len(t, result.NoMatchNotes, 2, "one note per unmatched resource")
+	joined := strings.Join(result.NoMatchNotes, "\n")
+	assert.Contains(t, joined, "unmatched-one")
+	assert.Contains(t, joined, "unmatched-two")
+	assert.NotContains(t, joined, `"matched"`, "a matched resource must not be listed")
+}
+
+// The CFN patch loop is a third producer of NoMatch and must fill the notes
+// too — it shipped without the append once, behind a test that covered only
+// one of the three sites.
+func TestPatchStateFromCFN_NoMatchIsNamed(t *testing.T) {
+	t.Parallel()
+
+	state := buildTestState("aws:s3/bucketObject:BucketObject", "cfn-unmatched", map[string]any{})
 	fields := &FieldsFile{
 		Fields: map[string]FieldCategory{
 			"bucketObject:BucketObject": {
-				// No default: with no digest match there is nothing to patch
-				// from, which is exactly the case that must be named.
 				NotRead: map[string]FieldInfo{"content": {}},
 			},
 		},
 	}
-	digest := &ModuleMap{Modules: map[string]*ModuleMapEntry{}}
 
-	_, result, err := PatchState(state, digest, fields, nil, nil, nil, "")
+	_, result, err := PatchStateFromCFN(state, map[string]*ModuleResource{}, fields, nil, "")
 	require.NoError(t, err)
 	require.Equal(t, 1, result.NoMatch)
 	require.Len(t, result.NoMatchNotes, 1)
-	assert.Contains(t, result.NoMatchNotes[0], "unmatched-name")
-	assert.Contains(t, result.NoMatchNotes[0], "aws:s3/bucketObject:BucketObject")
+	assert.Contains(t, result.NoMatchNotes[0], "cfn-unmatched")
 }
