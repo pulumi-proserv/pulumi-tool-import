@@ -38,6 +38,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Injection re-resolved provider schemas with no version, silently.** The
+  digest's provider map recorded only names, so `patch-state` loaded whatever
+  provider version this build recommends today — and a digest computed against
+  one provider major consumed against another produced wrong Pulumi property
+  names before the raw-state delta was ever consulted (#38). `digest tf` now
+  records the resolved provider (`name@version`, or `dynamic`), `patch-state`
+  pins its schema loading to exactly that, and a recorded provider that this
+  build maps differently is an error naming both, telling the operator to
+  re-run the digest. A digest from an older tool (no versions recorded) warns
+  instead of failing. The digest also carries a `digestFormatVersion`, so a
+  consumer built before a format change refuses the file rather than
+  half-reading it.
 - **Secrets could reach state in plaintext, two ways.** State in
   `tofu show -json` format got no redaction at all — the format is selected
   automatically on the presence of a `format_version` key, with no flag to

@@ -15,9 +15,7 @@
 package cmd
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -157,16 +155,11 @@ values out of stack config.
 			}
 
 			// Load digest.
-			digestData, err := os.ReadFile(digestPath)
+			digestPtr, err := pkg.LoadDigest(digestPath)
 			if err != nil {
-				return fmt.Errorf("reading digest: %w", err)
+				return err
 			}
-			var digest pkg.ModuleMap
-			digestDec := json.NewDecoder(bytes.NewReader(digestData))
-			digestDec.UseNumber()
-			if err := digestDec.Decode(&digest); err != nil {
-				return fmt.Errorf("parsing digest: %w", err)
-			}
+			digest := *digestPtr
 
 			// Load mappings.
 			moduleMappings := make(map[string]string)
@@ -430,12 +423,23 @@ func loadProvidersForDigest(
 		return nil, nil
 	}
 	names := make([]providermap.TerraformProviderName, 0, len(digest.Providers))
-	for addr := range digest.Providers {
+	unrecorded := false
+	for addr, resolved := range digest.Providers {
 		names = append(names, providermap.TerraformProviderName(addr))
+		if resolved == "" {
+			unrecorded = true
+		}
 	}
 	sort.Slice(names, func(i, j int) bool { return names[i] < names[j] })
 
-	providers, err := pkg.PulumiProvidersForTerraformProviders(names, nil)
+	if unrecorded {
+		fmt.Fprintf(os.Stderr, "  WARNING: the digest records no provider versions (written by an older "+
+			"tool version); property names will come from this build's recommended providers, "+
+			"which may differ from the digest's. Re-run \"digest tf\" to record them.\n")
+	}
+	// Pinned to the versions the digest recorded, so the property names used
+	// at injection come from the same schema the digest's did (issue #38).
+	providers, err := pkg.PulumiProvidersForTerraformProvidersPinned(names, digest.Providers)
 	if err != nil {
 		return nil, fmt.Errorf("loading provider schemas for property name mapping: %w", err)
 	}
