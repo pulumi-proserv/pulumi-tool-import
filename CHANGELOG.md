@@ -12,7 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Stack mode's `--out`: `patch-state tf --project-dir/--stack` can now also
   write the state to a file — after verification passes, so the file is always
   the verified artifact, never a state the run went on to revert. Choosing
-  verification no longer means giving up the file (#39).
+  verification no longer means giving up the file (#39). The file carries
+  decrypted secrets, like the backup, and says so; its path is checked for
+  writability before the stack is touched, so a bad `--out` can never leave a
+  mutated stack behind a non-zero exit. An explicitly empty `--state` (an
+  unset shell variable) is an error rather than a silent switch into stack
+  mode.
 
 - `version` command, printing the version stamped into the binary at release
   time. Previously `pkg/version.Version` was set via ldflags but no command

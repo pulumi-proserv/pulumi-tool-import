@@ -21,48 +21,79 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Mode selection is what decides whether a run gets verification, so it is
-// pinned directly. File mode is chosen by --state; stack mode is everything
-// else, and may also write --out — the verified artifact — so an operator
-// never has to choose between verification and having the file.
+// Mode selection decides whether a run gets verification, so it is pinned
+// directly (the rules live on patchStateMode's doc).
 func TestPatchStateMode(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name                                  string
-		statePath, outPath, projectDir, stack string
-		previewJSON, nonImportable            string
-		wantStack                             bool
-		wantErr                               string
+		name      string
+		flags     patchStateFlags
+		wantStack bool
+		wantErr   string
 	}{
-		{name: "file mode", statePath: "s.json", outPath: "o.json", wantStack: false},
-		{name: "stack mode", projectDir: ".", stack: "dev", wantStack: true},
+		{name: "file mode", flags: patchStateFlags{StatePath: "s.json", StateFlagSet: true, OutPath: "o.json"}},
+		{name: "stack mode", flags: patchStateFlags{ProjectDir: ".", Stack: "dev"}, wantStack: true},
 		{
-			name:       "stack mode with --out writes the verified artifact",
-			projectDir: ".", stack: "dev", outPath: "o.json", wantStack: true,
+			// --out does not force file mode; stack mode may also write it.
+			name:      "--out does not force file mode",
+			flags:     patchStateFlags{ProjectDir: ".", Stack: "dev", OutPath: "o.json"},
+			wantStack: true,
 		},
 		{
-			name: "--state without --out", statePath: "s.json",
+			// File mode with the stack flags present (documented for reading
+			// config secrets) stays file mode — the combination that would be
+			// a live mutation if --state selection ever regressed.
+			name: "state and out with stack flags stays file mode",
+			flags: patchStateFlags{
+				StatePath: "s.json", StateFlagSet: true, OutPath: "o.json",
+				ProjectDir: ".", Stack: "dev",
+			},
+		},
+		{
+			// An unset shell variable expands --state to "": this was a hard
+			// error before --out became legal in stack mode, and it must stay
+			// one rather than silently mutating a live stack.
+			name: "explicitly empty --state is an error, never stack mode",
+			flags: patchStateFlags{
+				StatePath: "", StateFlagSet: true, OutPath: "o.json",
+				ProjectDir: ".", Stack: "dev",
+			},
+			wantErr: "--state is empty",
+		},
+		{
+			name:    "--state without --out",
+			flags:   patchStateFlags{StatePath: "s.json", StateFlagSet: true},
 			wantErr: "file mode needs both",
 		},
 		{
-			name: "stack mode without a stack", outPath: "",
+			name:    "--out alone, no stack flags",
+			flags:   patchStateFlags{OutPath: "o.json"},
 			wantErr: "stack mode needs",
 		},
 		{
-			name: "preview-json is file mode only", projectDir: ".", stack: "dev",
-			previewJSON: "p.json", wantErr: "--preview-json",
+			name:    "no flags at all",
+			flags:   patchStateFlags{},
+			wantErr: "stack mode needs",
 		},
 		{
-			name: "injection in file mode needs a preview", statePath: "s.json", outPath: "o.json",
-			nonImportable: "n.json", wantErr: "--non-importable requires --preview-json",
+			name:    "preview-json is file mode only",
+			flags:   patchStateFlags{ProjectDir: ".", Stack: "dev", PreviewJSON: "p.json"},
+			wantErr: "--preview-json",
+		},
+		{
+			name: "injection in file mode needs a preview",
+			flags: patchStateFlags{
+				StatePath: "s.json", StateFlagSet: true, OutPath: "o.json",
+				NonImportable: "n.json",
+			},
+			wantErr: "--non-importable requires --preview-json",
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			stackMode, err := patchStateMode(
-				tc.statePath, tc.outPath, tc.projectDir, tc.stack, tc.previewJSON, tc.nonImportable)
+			stackMode, err := patchStateMode(tc.flags)
 			if tc.wantErr != "" {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tc.wantErr)

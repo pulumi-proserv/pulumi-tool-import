@@ -195,6 +195,9 @@ Example:
 			}
 
 			fmt.Fprintf(os.Stderr, "Patched state written to %s\n", outPath)
+			fmt.Fprintf(os.Stderr, "NOT VERIFIED: patch-state cfn has no stack mode, so nothing checks "+
+				"this result until you import it and preview:\n"+
+				"  pulumi stack import --file %s && pulumi preview\n", outPath)
 			fmt.Fprintf(os.Stderr, "  Patched:            %d resources\n", result.Patched)
 			fmt.Fprintf(os.Stderr, "  Fields from digest: %d\n", result.FieldsFromDigest)
 			fmt.Fprintf(os.Stderr, "  Fields from defaults: %d\n", result.FieldsFromDefaults)

@@ -217,17 +217,19 @@ Injection needs a preview to source each resource's URN, parent, provider and
 dependencies from — the sidecar only carries the ID and Terraform attributes.
 Where the preview comes from depends on which of two modes the command runs in:
 
-- **File mode** — `--state` and `--out` are both set, same as ordinary
-  patching. Supply the preview yourself with `--preview-json <file>`, produced
-  by `pulumi preview --json > preview.json`. After patching, `pulumi stack
-  import --file <out>` and `pulumi preview` are still your responsibility; a
-  correct injection previews as zero operations.
-- **Stack mode** — `--state` and `--out` are both omitted; `--project-dir` and
+- **File mode** — `--state` is set (with `--out` for the result), same as
+  ordinary patching. Supply the preview yourself with `--preview-json <file>`,
+  produced by `pulumi preview --json > preview.json`. The output is NOT
+  verified: `pulumi stack import --file <out>` and `pulumi preview` are your
+  responsibility, and a correct injection previews as zero operations.
+- **Stack mode** — `--state` is omitted; `--project-dir` and
   `--stack` select the stack directly, and `--preview-json` is rejected (the
   command runs its own previews). In order: export the stack, write a
   timestamped backup and print its absolute path, take a baseline preview,
   patch and inject, import, take a verifying preview, and revert to the
-  pre-mutation export if verification fails. `--backup-dir` chooses where the
+  pre-mutation export if verification fails. `--out` may also be set: the
+  verified state is then written there too, after verification passes (it
+  contains decrypted secrets, like the backup). `--backup-dir` chooses where the
   backup is written (default: the current directory).
 
   **The backup contains decrypted secrets** — the Automation API's export runs
