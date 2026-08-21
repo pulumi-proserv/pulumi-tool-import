@@ -32,6 +32,36 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// patchStateMode decides between the two modes and validates the flag
+// combination. File mode is chosen by --state; everything else is stack mode,
+// which may also take --out to write the verified state as a file. The two
+// modes offer materially different safety — stack mode verifies with a
+// before/after preview and reverts on regression, file mode cannot verify
+// anything — so the choice is pinned by tests rather than left implicit.
+func patchStateMode(
+	statePath, outPath, projectDir, stack, previewJSONPath, nonImportablePath string,
+) (stackMode bool, err error) {
+	stackMode = statePath == ""
+	if !stackMode && outPath == "" {
+		return false, fmt.Errorf("file mode needs both --state and --out; " +
+			"omit --state to operate on the stack directly via --project-dir and --stack")
+	}
+	if stackMode && (projectDir == "" || stack == "") {
+		return false, fmt.Errorf("stack mode needs --project-dir and --stack; " +
+			"pass --state and --out for file mode instead")
+	}
+	if stackMode && previewJSONPath != "" {
+		return false, fmt.Errorf("--preview-json applies to file mode only; " +
+			"stack mode runs the preview itself")
+	}
+	if nonImportablePath != "" && !stackMode && previewJSONPath == "" {
+		return false, fmt.Errorf("--non-importable requires --preview-json: injected resources take " +
+			"their URN, parent, provider and dependencies from the program, so a preview is " +
+			"needed; produce one with \"pulumi preview --json > preview.json\"")
+	}
+	return stackMode, nil
+}
+
 func newPatchStateTfCmd() *cobra.Command {
 	var statePath string
 	var digestPath string
@@ -58,11 +88,15 @@ resource, if the state input is nil:
   1. Use the digest value if available (from TF state)
   2. Fall back to the default from the fields file
 
-This command runs in one of two modes, chosen by which flags are set:
+This command runs in one of two modes, chosen by whether --state is set.
+The two modes offer materially different safety: stack mode verifies the
+mutation with a before/after preview comparison and reverts on regression;
+file mode cannot verify anything — you are choosing to verify by hand.
 
 File mode (--state and --out): reads an exported state file, writes a
-patched copy, and touches nothing live. Re-import the result yourself with:
-pulumi stack import --file <output>.
+patched copy, and touches nothing live. Nothing checks the result until
+you import it and run "pulumi preview" yourself:
+pulumi stack import --file <output> && pulumi preview.
 
   pulumi stack export > state.json
   pulumi plugin run import -- patch-state \
@@ -73,9 +107,11 @@ pulumi stack import --file <output>.
     --out patched-state.json
   pulumi stack import --file patched-state.json
 
-Stack mode (--project-dir and --stack, omit --state and --out): exports the
+Stack mode (--project-dir and --stack, omit --state): exports the
 live stack, patches it, and imports the result straight back into that
-stack — it mutates a live stack. A pre-mutation backup is written first and
+stack — it mutates a live stack. Add --out to also write the state to a
+file after verification passes, so choosing verification never means
+giving up the file. A pre-mutation backup is written first and
 the command prints the exact "pulumi stack import" command to restore it.
 After importing, the command runs "pulumi preview" itself to verify the
 change and, if verification fails or finds regressions, automatically
@@ -85,22 +121,10 @@ and dependencies from a preview of the program, and for resolving secret
 values out of stack config.
 `,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			stackMode := statePath == "" && outPath == ""
-			if !stackMode && (statePath == "" || outPath == "") {
-				return fmt.Errorf("file mode needs both --state and --out; " +
-					"omit both to operate on the stack directly via --project-dir and --stack")
-			}
-			if stackMode && (projectDir == "" || stack == "") {
-				return fmt.Errorf("stack mode needs --project-dir and --stack")
-			}
-			if stackMode && previewJSONPath != "" {
-				return fmt.Errorf("--preview-json applies to file mode only; " +
-					"stack mode runs the preview itself")
-			}
-			if nonImportablePath != "" && !stackMode && previewJSONPath == "" {
-				return fmt.Errorf("--non-importable requires --preview-json: injected resources take " +
-					"their URN, parent, provider and dependencies from the program, so a preview is " +
-					"needed; produce one with \"pulumi preview --json > preview.json\"")
+			stackMode, err := patchStateMode(
+				statePath, outPath, projectDir, stack, previewJSONPath, nonImportablePath)
+			if err != nil {
+				return err
 			}
 
 			var session *pkg.StackSession
@@ -330,11 +354,26 @@ values out of stack config.
 					fmt.Fprintf(os.Stderr, "\nVerified: the patch introduced no new operations "+
 						"(%d outstanding change(s) remain in the preview).\n", outstanding)
 				}
+
+				// Written only now, after verification: the file is the
+				// verified artifact, never a state the run went on to revert.
+				if outPath != "" {
+					if err := os.WriteFile(outPath, patched, 0o600); err != nil {
+						return fmt.Errorf("writing verified state to --out: %w", err)
+					}
+					fmt.Fprintf(os.Stderr, "Verified state also written to %s\n", outPath)
+				}
 			} else {
 				if err := os.WriteFile(outPath, patched, 0o600); err != nil {
 					return fmt.Errorf("writing output: %w", err)
 				}
 				fmt.Fprintf(os.Stderr, "Patched state written to %s\n", outPath)
+				fmt.Fprintf(os.Stderr, "NOT VERIFIED: file mode cannot run the before/after preview "+
+					"comparison that stack mode gates on. Verification is yours:\n"+
+					"  pulumi stack import --file %s && pulumi preview\n"+
+					"Or re-run in stack mode (--project-dir/--stack, no --state) to have the tool "+
+					"verify and auto-revert; add --out there to still get this file, post-verification.\n",
+					outPath)
 			}
 
 			// Print stats.
@@ -385,10 +424,11 @@ values out of stack config.
 					}
 				}
 				if !stackMode {
-					fmt.Fprintf(os.Stderr, "\nVerify with: pulumi stack import --file %s && pulumi preview\n"+
-						"A correct injection previews as zero operations. Do not use \"pulumi refresh\" "+
-						"to check: it reports these resources unchanged even when their values are wrong.\n",
-						outPath)
+					// The general NOT VERIFIED notice above carries the import
+					// + preview instruction; injection adds the refresh caveat.
+					fmt.Fprintf(os.Stderr, "\nA correct injection previews as zero operations. "+
+						"Do not use \"pulumi refresh\" to check: it reports these resources "+
+						"unchanged even when their values are wrong.\n")
 				}
 			}
 
@@ -400,7 +440,7 @@ values out of stack config.
 	cmd.Flags().StringVar(&digestPath, "digest", "", "TF digest (tf-digest.json)")
 	cmd.Flags().StringVar(&fieldsPath, "fields", "", "Curated fields file (aws-import-diff-fields.json)")
 	cmd.Flags().StringVar(&mappingFile, "mapping-file", "", "Path to YAML mapping file")
-	cmd.Flags().StringVarP(&outPath, "out", "o", "", "Output path for patched state")
+	cmd.Flags().StringVarP(&outPath, "out", "o", "", "Output path for patched state (required in file mode; in stack mode, also writes the state here after verification passes)")
 	cmd.Flags().StringVar(&projectDir, "project-dir", "", "Pulumi project directory. Selects stack mode "+
 		"(mutates the live stack: export, patch, import, verify with preview, auto-revert on failure) "+
 		"when --state/--out are omitted; also used to read stack config secrets in either mode")
