@@ -59,6 +59,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and are safe — the stack Export/Import envelope by construction
   (`json.RawMessage`), `state_verify` because it only reads and its caller
   keeps the original bytes.
+- **A provider named `registry.terraform.io/...` in one place and
+  `registry.opentofu.org/...` in another was treated as two providers.** The
+  digest's two loaders key their maps from different sources — the
+  import-support probe from the lock file, the bridged schemas from state
+  addresses — and terraform writes one host where tofu writes the other, so a
+  mixed terraform/tofu history split the pair. The equivalence now lives in
+  one package (`pkg/provideraddr`, host-less forms included) and is applied at
+  every correlation point: the import-support probe's version lookup — where
+  the split previously sent every probe to the curated fallback before the
+  pair was ever resolved — the pair resolver itself, the schema lookup behind
+  redaction's cross-check, and URN translation. The pair resolver names which
+  half is missing, distinguishably: a provider with no bridge at all reads
+  differently from a bridged provider that lacks one resource type (#26).
 
 - **Secrets could reach state in plaintext, two ways.** State in
   `tofu show -json` format got no redaction at all — the format is selected
