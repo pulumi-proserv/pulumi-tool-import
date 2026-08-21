@@ -326,7 +326,7 @@ avoid re-patching secret fields.
 `*.non-importable.json` `resolve tf` writes, and injects those resources
 directly into state. Injection needs a preview to source each resource's URN,
 parent, provider and dependencies from: pass one with `--preview-json` (file
-mode), or omit `--state`/`--out` and pass `--project-dir`/`--stack` instead, in
+mode), or omit `--state` and pass `--project-dir`/`--stack` instead, in
 which case the command operates on the stack directly — exporting, backing up,
 patching, injecting, importing and verifying with its own previews
 (`--preview-json` is rejected in this mode). The stack-mode backup contains

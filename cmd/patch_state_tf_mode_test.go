@@ -21,7 +21,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestPatchStateTf_StateWithoutOutIsRejected(t *testing.T) {
+// These prove the command wires the flags — including cobra's Changed("state"),
+// which the unit table cannot exercise — into patchStateMode.
+
+func TestPatchStateTf_CommandRoutesFlagsIntoModeSelection(t *testing.T) {
 	t.Parallel()
 	cmd := newPatchStateTfCmd()
 	cmd.SetArgs([]string{
@@ -38,37 +41,22 @@ func TestPatchStateTf_StateWithoutOutIsRejected(t *testing.T) {
 	assert.Contains(t, err.Error(), "file mode needs both --state and --out")
 }
 
-func TestPatchStateTf_StackModeRequiresProjectDirAndStack(t *testing.T) {
+func TestPatchStateTf_ExplicitlyEmptyStateIsRejected(t *testing.T) {
 	t.Parallel()
 	cmd := newPatchStateTfCmd()
 	cmd.SetArgs([]string{
-		"--digest", "digest.json",
-		"--fields", "fields.json",
-		"--config-dir", ".",
-	})
-	cmd.SilenceUsage = true
-	cmd.SilenceErrors = true
-
-	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "stack mode needs --project-dir and --stack")
-}
-
-func TestPatchStateTf_PreviewJSONRejectedInStackMode(t *testing.T) {
-	t.Parallel()
-	cmd := newPatchStateTfCmd()
-	cmd.SetArgs([]string{
-		"--digest", "digest.json",
-		"--fields", "fields.json",
-		"--config-dir", ".",
+		"--state", "",
+		"--out", "o.json",
 		"--project-dir", ".",
 		"--stack", "dev",
-		"--preview-json", "preview.json",
+		"--digest", "digest.json",
+		"--fields", "fields.json",
+		"--config-dir", ".",
 	})
 	cmd.SilenceUsage = true
 	cmd.SilenceErrors = true
 
 	err := cmd.Execute()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--preview-json applies to file mode only")
+	assert.Contains(t, err.Error(), "--state is empty")
 }

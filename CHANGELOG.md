@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Stack mode's `--out`: `patch-state tf --project-dir/--stack` can also write
+  the state to a file, after verification passes — the file is always the
+  verified artifact (#39). It carries decrypted secrets like the backup;
+  writability is checked before the stack is touched. An explicitly empty
+  `--state` is an error rather than a silent switch into stack mode.
+
 - `version` command, printing the version stamped into the binary at release
   time. Previously `pkg/version.Version` was set via ldflags but no command
   surfaced it, so an installed plugin could not identify itself.
@@ -97,6 +103,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Pulumi state the same way (#27).
 
 ### Changed
+
+- File mode's output now states plainly that it is **not verified**, naming
+  the manual check and the stack-mode alternative; `--help` describes the
+  safety split between the modes (#39).
 
 - `patch-state` now reports `Deltas validated (imported)` and
   `Deltas attached (injected): X of Y` rather than an unqualified
