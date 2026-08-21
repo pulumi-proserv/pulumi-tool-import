@@ -59,7 +59,7 @@ func collectSensitiveLeaks(attrs map[string]interface{}, schemaMap shim.SchemaMa
 		}
 
 		if sch.Sensitive() {
-			if s, ok := value.(string); !ok || s != redactedPlaceholder {
+			if s, ok := value.(string); !ok || !isRedactedPlaceholder(s) {
 				*leaks = append(*leaks, path)
 			}
 			// A sensitive block is redacted as a whole, so there is nothing
@@ -95,11 +95,13 @@ func collectSensitiveLeaks(attrs map[string]interface{}, schemaMap shim.SchemaMa
 // from the address and the attribute name, never from the state's marks — so
 // an attribute the marks missed is just as recoverable as one they caught.
 //
-// Top-level only, deliberately: recovery is top-level throughout
-// (redactedAttributeKeys, DiscoverSensitiveSecrets, and the resolvers in
-// state_injector.go), so redacting a nested attribute here would replace a
-// leak with a placeholder nothing can resolve. schemaSensitiveLeaks still
-// reports those, and the caller still fails on them.
+// Top-level only, deliberately — but not because recovery cannot reach
+// nested values (it can, for STATE-marked paths, via the tagged placeholder).
+// A schema-marked attribute the state did not mark has no cty path to walk
+// and tag: this function sees only a name per nesting level, and inventing
+// the concrete indexes a tag needs would guess. So a nested schema-only
+// sensitivity stays a digest failure (schemaSensitiveLeaks reports it, the
+// caller fails), which is honest where a wrong tag would not be.
 func redactSchemaSensitive(attrs map[string]interface{}, schemaMap shim.SchemaMap) map[string]string {
 	if schemaMap == nil || attrs == nil {
 		return nil
@@ -113,7 +115,7 @@ func redactSchemaSensitive(attrs map[string]interface{}, schemaMap shim.SchemaMa
 		if !present || value == nil {
 			return true
 		}
-		if s, ok := value.(string); ok && s == redactedPlaceholder {
+		if s, ok := value.(string); ok && isRedactedPlaceholder(s) {
 			return true
 		}
 		if recovered == nil {

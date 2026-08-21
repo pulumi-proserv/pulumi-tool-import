@@ -17,6 +17,7 @@ package pkg
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -784,7 +785,9 @@ func TestRedactSensitivePaths_NestedPathIsRedacted(t *testing.T) {
 	}})
 
 	user := attrs["user"].([]interface{})[0].(map[string]interface{})
-	assert.Equal(t, redactedPlaceholder, user["password"])
+	// A nested leaf carries the path-tagged placeholder, so the value stays
+	// recoverable (#28); only a top-level leaf uses the bare form.
+	assert.Equal(t, taggedPlaceholder("user[0].password"), user["password"])
 	assert.Equal(t, "admin", user["username"], "only the marked path may be redacted")
 	assert.Equal(t, "b", attrs["broker_name"])
 }
@@ -808,8 +811,10 @@ func TestRedactSensitivePaths_UnresolvableIndexRedactsEveryElement(t *testing.T)
 	}})
 
 	for i, elem := range attrs["user"].([]interface{}) {
-		assert.Equal(t, redactedPlaceholder, elem.(map[string]interface{})["password"],
-			"element %d must be redacted when the index cannot be resolved", i)
+		assert.Equal(t, taggedPlaceholder(fmt.Sprintf("user[%d].password", i)),
+			elem.(map[string]interface{})["password"],
+			"element %d must be redacted, with its own concrete index, when the "+
+				"marked index cannot be resolved", i)
 	}
 }
 
@@ -863,7 +868,8 @@ func TestSensitivePathsFromTfjson(t *testing.T) {
 	assert.Equal(t, redactedPlaceholder, attrs["password"])
 	assert.Equal(t, "public", attrs["tags"], "a false leaf is not sensitive")
 	user := attrs["user"].([]interface{})[0].(map[string]interface{})
-	assert.Equal(t, redactedPlaceholder, user["password"])
+	assert.Equal(t, taggedPlaceholder("user[0].password"), user["password"],
+		"a nested leaf carries the path-tagged form so it stays recoverable (#28)")
 	assert.Equal(t, "admin", user["name"])
 }
 

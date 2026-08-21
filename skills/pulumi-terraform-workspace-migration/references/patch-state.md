@@ -72,7 +72,7 @@ For each resource in state whose type appears in the fields file:
 3. **Asset sentinel construction** — for `FileAsset`/`FileArchive` fields, TF
    file paths become Pulumi asset/archive sentinels with SHA-256 hashes, falling
    back to downloading the deployed Lambda code.
-4. **Secret resolution** — fields redacted as `"(sensitive)"` in the digest are
+4. **Secret resolution** — fields redacted as `"(sensitive)"` — or, for a nested attribute, `"(sensitive:<tf path>)"` such as `"(sensitive:user[0].password)"` — in the digest are
    resolved from the decrypted stack config.
 5. **Output patching** — simple values and asset sentinels are mirrored into
    outputs, because the bridge reconstructs TF state from outputs when diffing.

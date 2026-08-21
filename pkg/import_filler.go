@@ -65,13 +65,16 @@ type NonImportableResource struct {
 	// Attributes are the Terraform state attributes, carried through for
 	// state injection.
 	Attributes map[string]interface{} `json:"attributes,omitempty"`
-	// RedactedAttributes maps each attribute whose value the digest replaced
-	// with a redaction placeholder to the Pulumi stack config key holding the
-	// real value. "digest tf" writes sensitive Terraform state values into
-	// stack config as secrets (unless --skip-secrets), so the value is not
-	// lost — but the copy in Attributes is a placeholder and must be resolved
-	// from config before the resource is written to state, the same way
-	// patch-state resolves sensitive fields.
+	// RedactedAttributes maps each redacted Terraform attribute PATH to the
+	// Pulumi stack config key holding the real value. Keys come in two forms:
+	// a bare top-level attribute name ("password"), resolved by the top-level
+	// name-mapping loop, and a rendered nested path in renderAttrPath syntax
+	// ("user[0].password", `tags["key"]`), which is exactly the string the
+	// tagged placeholder carries and is resolved by string equality — never
+	// parsed. "digest tf" writes the real values into stack config as secrets
+	// (unless --skip-secrets), so nothing is lost; the copies in Attributes
+	// are placeholders that must be resolved from config before the resource
+	// is written to state.
 	RedactedAttributes   map[string]string      `json:"redactedAttributes,omitempty"`
 	PulumiOutputs        map[string]interface{} `json:"pulumiOutputs,omitempty"`
 	RawStateDelta        map[string]interface{} `json:"rawStateDelta,omitempty"`
@@ -84,20 +87,49 @@ type NonImportableResource struct {
 // Terraform marked sensitive; see redactSensitivePaths.
 const redactedPlaceholder = "(sensitive)"
 
-// redactedAttributeKeys maps every attribute carrying the redaction
-// placeholder to the stack config key where "digest tf" stored its real
-// value. Returns nil when nothing was redacted.
+// redactedAttributeKeys maps every redacted attribute path — bare top-level
+// names and the rendered paths nested tags carry — to the stack config key
+// where "digest tf" stored the real value. Returns nil when nothing was
+// redacted. A tagged placeholder never appears at the top level
+// (leafPlaceholder tags only depth > 1), but the walk covers every value
+// uniformly rather than relying on that.
 func redactedAttributeKeys(tfAddress string, attrs map[string]interface{}) map[string]string {
 	var keys map[string]string
+	record := func(path string) {
+		if keys == nil {
+			keys = map[string]string{}
+		}
+		keys[path] = flattenAddressPath(tfAddress, path)
+	}
 	for name, value := range attrs {
 		if s, ok := value.(string); ok && s == redactedPlaceholder {
-			if keys == nil {
-				keys = map[string]string{}
-			}
-			keys[name] = flattenAddress(tfAddress, name)
+			record(name)
+			continue
 		}
+		// Nested placeholders carry their own path in the tag, so the key
+		// map covers them without any name mapping (#28).
+		collectTaggedPlaceholders(value, record)
 	}
 	return keys
+}
+
+// collectTaggedPlaceholders walks a value and calls record with the path each
+// tagged placeholder carries.
+func collectTaggedPlaceholders(v interface{}, record func(path string)) {
+	switch val := v.(type) {
+	case string:
+		if path, ok := placeholderPath(val); ok {
+			record(path)
+		}
+	case map[string]interface{}:
+		for _, elem := range val {
+			collectTaggedPlaceholders(elem, record)
+		}
+	case []interface{}:
+		for _, elem := range val {
+			collectTaggedPlaceholders(elem, record)
+		}
+	}
 }
 
 // FillImportFile matches TF resources from a digest to Pulumi import file entries

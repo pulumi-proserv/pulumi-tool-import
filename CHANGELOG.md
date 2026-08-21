@@ -86,6 +86,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of failing. The digest also carries a `digestFormatVersion`, so a
   consumer built before a format change refuses the file rather than
   half-reading it.
+- **A nested sensitive attribute was redacted but never recoverable.**
+  Redaction walked nested paths, but recovery was top-level-only in three
+  places: discovery skipped any path longer than one segment (so no stack
+  config entry was written), the sidecar's key map only scanned top-level
+  attributes, and injection's resolvers only mapped top-level names — so a
+  nested secret Terraform marked correctly (an MQ broker user's password, a
+  VPN tunnel's preshared key) was redacted to a placeholder nothing could
+  resolve, and injection hard-errored on it (#28). A nested redaction now
+  writes a placeholder that carries the Terraform path itself —
+  `(sensitive:user[0].password)` — and the sidecar, stack-config discovery,
+  and injection-time resolution all correlate by that path, with no
+  Pulumi→Terraform name inversion anywhere. Top-level redaction keeps the bare
+  `(sensitive)` placeholder, so existing digests are unchanged. A sensitive
+  value that is not a scalar is skipped with a warning rather than stringified
+  into config as garbage — recovering a composite through string config would
+  inject a wrong value.
+
 - **Secrets could reach state in plaintext, two ways.** State in
   `tofu show -json` format got no redaction at all — the format is selected
   automatically on the presence of a `format_version` key, with no flag to
@@ -104,10 +121,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   attribute name, never from the marks, which is what makes recovery possible
   at all.
 
-  A **nested** attribute in the same position fails the digest instead, naming
-  the paths but never the values. Recovering a nested secret from stack config
-  is not implemented anywhere in the pipeline (#28), so redacting one would
-  replace a leak with a placeholder nothing can resolve.
+  A **nested** attribute in the same position — schema-marked but not
+  state-marked — fails the digest instead, naming the paths but never the
+  values: with no state mark there is no concrete path to tag, so redacting it
+  would strand an unrecoverable placeholder. (A nested attribute the state
+  DOES mark is redacted and recovered — see the entry above.)
 
   Both paths are backed by a check that runs for every resource, so a
   redaction that runs and does nothing can no longer report success.
