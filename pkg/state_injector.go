@@ -41,8 +41,7 @@ const (
 )
 
 // isReservedOutputKey reports whether k is tool/bridge bookkeeping rather
-// than a resource property. The one predicate for every loop that walks an
-// outputs bag — a new reserved key added here covers them all.
+// than a resource property; every loop that walks an outputs bag uses it.
 func isReservedOutputKey(k string) bool {
 	return k == rawStateDeltaKey || k == metaKey || k == reservedDefaultsKey
 }

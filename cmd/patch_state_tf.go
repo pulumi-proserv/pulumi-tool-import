@@ -450,10 +450,9 @@ func loadProvidersForDigest(
 	return providers, nil
 }
 
-// reportRefresh runs the refresh report after a verified stack-mode mutation:
-// see pkg.BuildRefreshReport for what it says and why it is a report, never a
-// gate. A failure to produce it is a warning for the same reason — the
-// mutation is already verified and kept.
+// reportRefresh runs the refresh report after a verified stack-mode mutation.
+// A failure to produce it is only a warning: the mutation is already verified
+// and kept.
 func reportRefresh(ctx context.Context, session *pkg.StackSession, injectedURNs []string) {
 	refresh, err := session.RefreshPreviewJSON(ctx)
 	if err != nil {
