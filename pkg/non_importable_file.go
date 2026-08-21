@@ -21,9 +21,20 @@ import (
 	"os"
 )
 
+// CurrentSidecarFormatVersion is stamped into every sidecar this build
+// writes. Bump it on a change an older consumer would half-read rather than
+// reject — the tagged nested placeholder is version 1's reason to exist: a
+// pre-tagging build's placeholder screen knows only the bare "(sensitive)"
+// literal and would write a tagged one into state as an ordinary string.
+const CurrentSidecarFormatVersion = 1
+
 type NonImportableFile struct {
-	Comment   string                  `json:"_comment,omitempty"`
-	Resources []NonImportableResource `json:"resources"`
+	Comment string `json:"_comment,omitempty"`
+	// FormatVersion is the sidecar format this tool wrote. 0 (absent)
+	// predates the field; LoadNonImportableFile refuses a version newer than
+	// this build knows.
+	FormatVersion int                     `json:"formatVersion,omitempty"`
+	Resources     []NonImportableResource `json:"resources"`
 }
 
 func LoadNonImportableFile(path string) (*NonImportableFile, error) {
@@ -36,6 +47,12 @@ func LoadNonImportableFile(path string) (*NonImportableFile, error) {
 	dec.UseNumber()
 	if err := dec.Decode(&f); err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", path, err)
+	}
+	if f.FormatVersion > CurrentSidecarFormatVersion {
+		return nil, fmt.Errorf(
+			"sidecar %s has format version %d, but this build reads at most version %d; "+
+				"re-run \"resolve tf\" with this build, or upgrade the tool",
+			path, f.FormatVersion, CurrentSidecarFormatVersion)
 	}
 	return &f, nil
 }

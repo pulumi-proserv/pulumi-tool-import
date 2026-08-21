@@ -58,10 +58,15 @@ func isRedactedPlaceholder(s string) bool {
 	return tagged
 }
 
-// renderAttrPath renders a cty attribute path in the same syntax the tagged
+// renderAttrPath renders a cty attribute path in the syntax the tagged
 // placeholder carries: attribute steps join with ".", index steps render as
-// [0] or ["key"].
-func renderAttrPath(path cty.Path) string {
+// [0] or ["key"]. The rendered string is an opaque correlation key — the
+// sidecar's RedactedAttributes entry and the placeholder carry the same
+// string, matched by equality, never re-parsed — so key escaping only has to
+// be deterministic, not invertible. ok is false when the path holds an index
+// key of a type this cannot render; a silently shortened path would correlate
+// wrongly, so the caller must skip the path instead.
+func renderAttrPath(path cty.Path) (string, bool) {
 	var b strings.Builder
 	for _, step := range path {
 		switch s := step.(type) {
@@ -71,16 +76,20 @@ func renderAttrPath(path cty.Path) string {
 			}
 			b.WriteString(s.Name)
 		case cty.IndexStep:
-			switch {
-			case s.Key.Type() == cty.String:
+			switch s.Key.Type() {
+			case cty.String:
 				fmt.Fprintf(&b, "[%q]", s.Key.AsString())
-			case s.Key.Type() == cty.Number:
+			case cty.Number:
 				f, _ := s.Key.AsBigFloat().Float64()
 				fmt.Fprintf(&b, "[%d]", int(f))
+			default:
+				return "", false
 			}
+		default:
+			return "", false
 		}
 	}
-	return b.String()
+	return b.String(), true
 }
 
 // flattenAddressPath derives the stack config key for an attribute path. A
@@ -103,12 +112,32 @@ func flattenAddressPath(address, path string) string {
 	return flattenAddress(address, strings.Trim(sanitized, "_"))
 }
 
-// concreteSensitivePaths expands one marked path against the actual attribute
-// value into the concrete path strings redaction would have tagged: an
-// unresolvable index fans out to every element, exactly mirroring redactAtPath.
-func concreteSensitivePaths(container interface{}, path cty.Path, walked cty.Path) []string {
+// sensitiveLeaf is one concrete leaf a marked path resolves to: the rendered
+// path string (the correlation key) and the value found there.
+type sensitiveLeaf struct {
+	path  string
+	value interface{}
+}
+
+// concreteSensitiveLeaves expands one marked path against the actual attribute
+// value into the concrete leaves redaction would tag — path AND value, so the
+// caller never re-parses a rendered path to find the value it was already
+// standing on. An unresolvable index fans out to every element, exactly
+// mirroring redactAtPath. A path segment that cannot be rendered is skipped
+// whole (never truncated): a shortened path would correlate wrongly.
+//
+// walked is copied at every branch (full slice expression) so sibling
+// recursions can never share a backing array.
+func concreteSensitiveLeaves(container interface{}, path cty.Path, walked cty.Path) []sensitiveLeaf {
 	if len(path) == 0 {
-		return []string{renderAttrPath(walked)}
+		rendered, ok := renderAttrPath(walked)
+		if !ok {
+			return nil
+		}
+		return []sensitiveLeaf{{path: rendered, value: container}}
+	}
+	next := func(step cty.PathStep) cty.Path {
+		return append(walked[:len(walked):len(walked)], step)
 	}
 	switch step := path[0].(type) {
 	case cty.GetAttrStep:
@@ -120,7 +149,7 @@ func concreteSensitivePaths(container interface{}, path cty.Path, walked cty.Pat
 		if !exists {
 			return nil
 		}
-		return concreteSensitivePaths(value, path[1:], append(walked, step))
+		return concreteSensitiveLeaves(value, path[1:], next(step))
 	case cty.IndexStep:
 		switch c := container.(type) {
 		case []interface{}:
@@ -128,13 +157,13 @@ func concreteSensitivePaths(container interface{}, path cty.Path, walked cty.Pat
 				if idx < 0 || idx >= len(c) {
 					return nil
 				}
-				return concreteSensitivePaths(c[idx], path[1:],
-					append(walked, cty.IndexStep{Key: cty.NumberIntVal(int64(idx))}))
+				return concreteSensitiveLeaves(c[idx], path[1:],
+					next(cty.IndexStep{Key: cty.NumberIntVal(int64(idx))}))
 			}
-			var out []string
+			var out []sensitiveLeaf
 			for i, elem := range c {
-				out = append(out, concreteSensitivePaths(elem, path[1:],
-					append(walked, cty.IndexStep{Key: cty.NumberIntVal(int64(i))}))...)
+				out = append(out, concreteSensitiveLeaves(elem, path[1:],
+					next(cty.IndexStep{Key: cty.NumberIntVal(int64(i))}))...)
 			}
 			return out
 		case map[string]interface{}:
@@ -146,76 +175,19 @@ func concreteSensitivePaths(container interface{}, path cty.Path, walked cty.Pat
 			if !exists {
 				return nil
 			}
-			return concreteSensitivePaths(value, path[1:],
-				append(walked, cty.IndexStep{Key: cty.StringVal(key)}))
+			return concreteSensitiveLeaves(value, path[1:],
+				next(cty.IndexStep{Key: cty.StringVal(key)}))
 		}
 	}
 	return nil
 }
 
-// lookupAttrPath resolves a rendered path string ("user[0].password") against
-// a decoded attribute map.
-func lookupAttrPath(attrs map[string]interface{}, path string) (interface{}, bool) {
-	var cur interface{} = attrs
-	for _, seg := range splitAttrPath(path) {
-		switch c := cur.(type) {
-		case map[string]interface{}:
-			v, ok := c[seg]
-			if !ok {
-				return nil, false
-			}
-			cur = v
-		case []interface{}:
-			var idx int
-			if _, err := fmt.Sscanf(seg, "%d", &idx); err != nil || idx < 0 || idx >= len(c) {
-				return nil, false
-			}
-			cur = c[idx]
-		default:
-			return nil, false
-		}
-	}
-	return cur, true
-}
-
-// splitAttrPath splits "user[0].password" into ["user", "0", "password"] and
-// `tags["a.b"]` into ["tags", "a.b"] — quoted keys keep their dots.
-func splitAttrPath(path string) []string {
-	var segs []string
-	var cur strings.Builder
-	flush := func() {
-		if cur.Len() > 0 {
-			segs = append(segs, cur.String())
-			cur.Reset()
-		}
-	}
-	for i := 0; i < len(path); i++ {
-		switch path[i] {
-		case '.':
-			flush()
-		case '[':
-			flush()
-			end := strings.IndexByte(path[i:], ']')
-			if end < 0 {
-				cur.WriteString(path[i:])
-				i = len(path)
-				break
-			}
-			seg := path[i+1 : i+end]
-			segs = append(segs, strings.Trim(seg, "\""))
-			i += end
-		default:
-			cur.WriteByte(path[i])
-		}
-	}
-	flush()
-	return segs
-}
-
-// isScalarSecretValue reports whether a sensitive value can round-trip through
-// a string stack-config entry. Composite values cannot — stringifying a map
-// and later injecting the string would write a wrong value, so they are
-// skipped with a warning rather than corrupted.
+// isScalarSecretValue reports whether a sensitive value is a scalar JSON
+// value. Composite values cannot pass through a string stack-config entry —
+// stringifying a map and later injecting the string would write a wrong
+// value — so they are skipped with a warning rather than corrupted. (Numbers
+// arrive as json.Number from the UseNumber decodes; float64 is accepted
+// defensively but %v rendering of one is not exactness-preserving.)
 func isScalarSecretValue(v interface{}) bool {
 	switch v.(type) {
 	case string, bool, float64, json.Number:

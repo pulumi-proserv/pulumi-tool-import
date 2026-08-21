@@ -210,9 +210,16 @@ Depth and format coverage are handled in the primary mechanism instead:
 populates `AttrSensitivePaths` from the `tofu show -json` format's own
 `sensitive_values` document.
 
-A nested secret gets no stack config key, because the key format is an address
-plus one attribute name. That is deliberate: injection meets the placeholder and
-hard-fails in `checkNoPlaceholders` rather than leaking.
+A nested secret redacts to a **path-tagged placeholder** —
+`(sensitive:user[0].password)` — whose tag is the correlation key: the
+sidecar's `RedactedAttributes` records the same rendered path against a stack
+config key (`flattenAddressPath`), discovery writes the value under that key,
+and injection's `resolveTaggedPlaceholders` substitutes it back by string
+equality on the tag, with no Pulumi→Terraform name inversion anywhere.
+Top-level attributes keep the bare `(sensitive)` form and their original keys.
+The one nested case that still hard-fails the digest is a schema-marked but
+state-unmarked attribute: with no state mark there is no concrete path to tag
+(#28).
 
 ### S2b — the non-importable enrichment
 
@@ -822,7 +829,8 @@ Two directions worth evaluating, neither traced here:
   ([pkg/generate_module_map.go:205-207](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/generate_module_map.go#L205-L207)), so `digest tf` fails. See S2.
 - The **second placeholder is now live**, not just designed: `[secret]`, from
   `MassageSecrets` on the preview path, arrives in injected *inputs* while
-  `(sensitive)` arrives in injected *outputs*, and each is resolved by a
+  `(sensitive)` — or its path-tagged nested form `(sensitive:<path>)` —
+  arrives in injected *outputs*, and each is resolved by a
   different function using a different name mapping
   ([pkg/state_injector.go:647](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_injector.go#L647), [:716](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_injector.go#L716)). `checkNoPlaceholders` ([:412](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_injector.go#L412)) is the
   name-independent backstop that makes the pair safe, and its existence is a

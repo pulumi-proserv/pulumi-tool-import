@@ -73,10 +73,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   attribute name, never from the marks, which is what makes recovery possible
   at all.
 
-  A **nested** attribute in the same position fails the digest instead, naming
-  the paths but never the values. Recovering a nested secret from stack config
-  is not implemented anywhere in the pipeline (#28), so redacting one would
-  replace a leak with a placeholder nothing can resolve.
+  A **nested** attribute in the same position — schema-marked but not
+  state-marked — fails the digest instead, naming the paths but never the
+  values: with no state mark there is no concrete path to tag, so redacting it
+  would strand an unrecoverable placeholder. (A nested attribute the state
+  DOES mark is redacted and recovered — see the entry above.)
 
   Both paths are backed by a check that runs for every resource, so a
   redaction that runs and does nothing can no longer report success.

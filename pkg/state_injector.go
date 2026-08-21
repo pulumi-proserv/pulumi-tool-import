@@ -21,6 +21,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/providermap"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
@@ -350,11 +351,19 @@ func attachRawStateDelta(r *NonImportableResource, obj, outputs map[string]inter
 	// Matches both placeholder forms: the bare "(sensitive)" and the
 	// path-tagged "(sensitive:…)" a nested redaction writes — either one
 	// embedded in a delta's raw JSON is unresolvable there.
-	if err == nil && (bytes.Contains(deltaJSON, []byte(redactedPlaceholder)) ||
-		bytes.Contains(deltaJSON, []byte(taggedPlaceholderPrefix))) {
-		return deltaDroppedSensitive, fmt.Sprintf(
-			"%s (%s %q): raw-state delta dropped, embedded an unresolvable %q placeholder",
-			r.TerraformAddress, r.Type, r.Name, redactedPlaceholder)
+	if err == nil {
+		form := ""
+		switch {
+		case bytes.Contains(deltaJSON, []byte(redactedPlaceholder)):
+			form = redactedPlaceholder
+		case bytes.Contains(deltaJSON, []byte(taggedPlaceholderPrefix)):
+			form = taggedPlaceholderPrefix + "…)"
+		}
+		if form != "" {
+			return deltaDroppedSensitive, fmt.Sprintf(
+				"%s (%s %q): raw-state delta dropped, embedded an unresolvable %q placeholder",
+				r.TerraformAddress, r.Type, r.Name, form)
+		}
 	}
 
 	outputs[rawStateDeltaKey] = r.RawStateDelta
@@ -435,6 +444,12 @@ func resolveOutputSecrets(
 
 	resolved := 0
 	for _, tfName := range tfNames {
+		// Path-form keys (nested) belong exclusively to
+		// resolveTaggedPlaceholders; running them through the top-level name
+		// mapping is at best wasted work and at worst a collision.
+		if strings.ContainsAny(tfName, ".[") {
+			continue
+		}
 		configKey := r.RedactedAttributes[tfName]
 
 		pulumiName := snakeToCamel(tfName)

@@ -812,34 +812,45 @@ func DiscoverSensitiveSecrets(
 					continue
 				}
 
-				// Collect sensitive attribute paths, from either source. Nested
-				// paths are recovered too: redaction walks them, so discovery
-				// must record a config key for every value redaction removes,
-				// or injection later meets a placeholder nothing can resolve
-				// (#28). A path the redaction fans out over (unresolvable
-				// index) is expanded to each concrete element the same way.
-				paths := map[string]bool{}
+				// Collect sensitive leaves, from either source. Nested paths
+				// are recovered too: redaction walks them, so discovery must
+				// record a config key for every value redaction removes, or
+				// injection later meets a placeholder nothing can resolve
+				// (#28). Each marked path resolves to (path, value) pairs by
+				// the same walk redaction performs — fanning out over an
+				// unresolvable index the same way — so the value is the one
+				// the walk stood on, never re-derived by parsing the rendered
+				// path back.
+				leaves := map[string]interface{}{}
 				for _, pvm := range inst.Current.AttrSensitivePaths {
 					if len(pvm.Path) == 0 {
 						continue
 					}
-					for _, p := range concreteSensitivePaths(attrs, pvm.Path, nil) {
-						paths[p] = true
+					found := concreteSensitiveLeaves(attrs, pvm.Path, nil)
+					if len(found) == 0 && attrsHaveMarkedPath(attrs, pvm.Path) {
+						fmt.Fprintf(os.Stderr, "  WARNING: sensitive path on %s could not be "+
+							"resolved for recovery; its value is redacted but will not be in "+
+							"stack config\n", address)
+					}
+					for _, leaf := range found {
+						leaves[leaf.path] = leaf.value
 					}
 				}
 				for name := range schemaSensitive {
-					paths[name] = true
+					if v, ok := attrs[name]; ok {
+						leaves[name] = v
+					}
 				}
 
-				sorted := make([]string, 0, len(paths))
-				for p := range paths {
+				sorted := make([]string, 0, len(leaves))
+				for p := range leaves {
 					sorted = append(sorted, p)
 				}
 				sort.Strings(sorted)
 
 				for _, p := range sorted {
-					value, ok := lookupAttrPath(attrs, p)
-					if !ok || value == nil {
+					value := leaves[p]
+					if value == nil {
 						continue
 					}
 					if !isScalarSecretValue(value) {
@@ -1231,12 +1242,18 @@ func redactSliceElement(s []interface{}, i int, path cty.Path, last bool, walked
 
 // leafPlaceholder picks the placeholder form for a redacted leaf: bare for a
 // top-level attribute (unchanged behaviour, and the key map stays keyed by
-// name), path-tagged for anything nested.
+// name), path-tagged for anything nested. A path that cannot be rendered
+// falls back to the bare form — still redacted, just not recoverable, which
+// is the pre-tagging behaviour for that leaf.
 func leafPlaceholder(walked cty.Path) string {
 	if len(walked) == 1 {
 		return redactedPlaceholder
 	}
-	return taggedPlaceholder(renderAttrPath(walked))
+	rendered, ok := renderAttrPath(walked)
+	if !ok {
+		return redactedPlaceholder
+	}
+	return taggedPlaceholder(rendered)
 }
 
 func indexStepOrdinal(step cty.IndexStep, length int) (int, bool) {
@@ -1324,4 +1341,16 @@ func WriteModuleMap(mm *ModuleMap, path string) error {
 		return fmt.Errorf("writing module map to %s: %w", path, err)
 	}
 	return nil
+}
+
+// attrsHaveMarkedPath reports whether the first attribute step of a marked
+// path exists in attrs at all — the discriminator between "nothing there to
+// recover" (silent, matches redaction) and "there but unresolvable" (warned).
+func attrsHaveMarkedPath(attrs map[string]interface{}, path cty.Path) bool {
+	step, ok := path[0].(cty.GetAttrStep)
+	if !ok {
+		return false
+	}
+	v, exists := attrs[step.Name]
+	return exists && v != nil
 }

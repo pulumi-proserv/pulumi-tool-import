@@ -57,11 +57,10 @@ func TestFlattenAddressPath(t *testing.T) {
 	t.Parallel()
 
 	// A nested path's key embeds the whole path, indexes included, so
-	// user[0].password and user[1].password get distinct keys.
-	k0 := flattenAddressPath("aws_mq_broker.b", "user[0].password")
-	k1 := flattenAddressPath("aws_mq_broker.b", "user[1].password")
-	assert.NotEqual(t, k0, k1)
-	assert.Contains(t, k0, "password")
+	// user[0].password and user[1].password get distinct keys. Exact values
+	// are pinned: the key is a compatibility contract with written digests.
+	assert.Equal(t, "b_user_0_password", flattenAddressPath("aws_mq_broker.b", "user[0].password"))
+	assert.Equal(t, "b_user_1_password", flattenAddressPath("aws_mq_broker.b", "user[1].password"))
 
 	// A single-segment path is the top-level case and must produce the same
 	// key flattenAddress always has, so existing digests stay compatible.
@@ -268,5 +267,95 @@ func TestAttachRawStateDelta_DropsTaggedPlaceholderDeltas(t *testing.T) {
 	outcome, note := attachRawStateDelta(r, obj, map[string]interface{}{})
 	assert.Equal(t, deltaDroppedSensitive, outcome)
 	assert.Contains(t, note, "aws_mq_broker.b")
-	assert.NotContains(t, note, "password", "the note must not echo the path's leaf either")
+	assert.Contains(t, note, taggedPlaceholderPrefix,
+		"the note names the form actually matched, so the operator greps for the right string")
+}
+
+// Discovery must fan out over an unresolvable marked index exactly as
+// redaction does — the mirror between the two walkers is the invariant the
+// whole recovery scheme rests on, and the fan-out branch is where they have
+// the most room to diverge.
+func TestDiscoverSensitiveSecrets_FansOutUnresolvableIndexes(t *testing.T) {
+	t.Parallel()
+
+	state := states.NewState()
+	state.RootModule().SetResourceInstanceCurrent(
+		addrs.ResourceInstance{
+			Resource: addrs.Resource{Mode: addrs.ManagedResourceMode, Type: "aws_mq_broker", Name: "b"},
+			Key:      addrs.NoKey,
+		},
+		&states.ResourceInstanceObjectSrc{
+			AttrsJSON: []byte(`{"id":"b1","user":[` +
+				`{"username":"a","password":"P0"},{"username":"b","password":"P1"}]}`),
+			AttrSensitivePaths: []cty.PathValueMarks{{
+				// An object index key cannot resolve against a JSON list, so
+				// redaction redacts EVERY element's password; discovery must
+				// record a key for each.
+				Path: cty.Path{
+					cty.GetAttrStep{Name: "user"},
+					cty.IndexStep{Key: cty.ObjectVal(map[string]cty.Value{"username": cty.StringVal("a")})},
+					cty.GetAttrStep{Name: "password"},
+				},
+				Marks: cty.NewValueMarks("sensitive"),
+			}},
+		},
+		addrs.AbsProviderConfig{
+			Provider: addrs.MustParseProviderSourceString("registry.opentofu.org/hashicorp/aws"),
+		},
+		nil,
+	)
+
+	secrets, err := DiscoverSensitiveSecrets(state, "proj", nil)
+	require.NoError(t, err)
+	require.Len(t, secrets, 2, "one config entry per fanned-out element")
+	values := map[string]bool{}
+	for _, s := range secrets {
+		values[s.Value] = true
+	}
+	assert.True(t, values["P0"] && values["P1"])
+}
+
+// The two walkers must agree on which leaves exist: after redaction, the set
+// of tagged paths equals the set of leaf paths discovery resolves. This is
+// the drift-catching mirror test.
+func TestRedactionAndDiscoveryAgreeOnLeaves(t *testing.T) {
+	t.Parallel()
+
+	marked := []cty.PathValueMarks{
+		{Path: cty.Path{
+			cty.GetAttrStep{Name: "user"},
+			cty.IndexStep{Key: cty.NumberIntVal(0)},
+			cty.GetAttrStep{Name: "password"},
+		}, Marks: cty.NewValueMarks("sensitive")},
+		{Path: cty.Path{
+			cty.GetAttrStep{Name: "tags"},
+			cty.IndexStep{Key: cty.StringVal("secret key")},
+		}, Marks: cty.NewValueMarks("sensitive")},
+	}
+	mkAttrs := func() map[string]interface{} {
+		return map[string]interface{}{
+			"user": []interface{}{
+				map[string]interface{}{"username": "a", "password": "P0"},
+			},
+			"tags": map[string]interface{}{"secret key": "V", "plain": "W"},
+		}
+	}
+
+	// Discovery's view of the leaves.
+	discovered := map[string]bool{}
+	for _, pvm := range marked {
+		for _, leaf := range concreteSensitiveLeaves(mkAttrs(), pvm.Path, nil) {
+			discovered[leaf.path] = true
+		}
+	}
+
+	// Redaction's view: collect the tagged paths it wrote.
+	attrs := mkAttrs()
+	redactSensitivePaths(attrs, marked)
+	tagged := map[string]bool{}
+	collectTaggedPlaceholders(attrs["user"], func(p string) { tagged[p] = true })
+	collectTaggedPlaceholders(attrs["tags"], func(p string) { tagged[p] = true })
+
+	assert.Equal(t, discovered, tagged,
+		"a leaf redaction tags but discovery cannot resolve is a secret lost silently")
 }
