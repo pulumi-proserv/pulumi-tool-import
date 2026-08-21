@@ -32,10 +32,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// patchStateFlags is the flag combination patchStateMode judges. A struct
-// rather than positional strings: every field is the same type, and a silent
-// transposition here selects the wrong mode — which decides whether the run
-// mutates a live stack.
+// patchStateFlags is the flag combination patchStateMode judges.
 type patchStateFlags struct {
 	StatePath     string
 	StateFlagSet  bool // --state was passed at all, even as ""
@@ -46,17 +43,10 @@ type patchStateFlags struct {
 	NonImportable string
 }
 
-// patchStateMode decides between the two modes and validates the flag
-// combination. File mode is chosen by --state; everything else is stack mode,
-// which may also take --out to write the verified state as a file. The two
-// modes offer materially different safety — stack mode verifies with a
-// before/after preview and reverts on regression, file mode cannot verify
-// anything.
+// patchStateMode decides between file mode (chosen by --state) and stack mode
+// (which may also take --out, written post-verification) and validates the
+// flag combination. The mode decides whether the run mutates a live stack.
 func patchStateMode(f patchStateFlags) (stackMode bool, err error) {
-	// An explicitly empty --state is an unset shell variable
-	// (--state "$STATE_FILE"), not a request for stack mode. Before --out was
-	// legal in stack mode this failed as "file mode needs both"; it must not
-	// silently become a live-stack mutation now.
 	if f.StateFlagSet && f.StatePath == "" {
 		return false, fmt.Errorf("--state is empty; if a shell variable did not expand, fix it — " +
 			"omit --state entirely to run in stack mode")
@@ -154,9 +144,8 @@ secrets are read whenever --project-dir and --stack are set, in either mode.
 				return err
 			}
 
-			// Fail a bad --out before anything mutates the stack: after the
-			// import, a non-zero exit must keep meaning "untouched or
-			// reverted", and a typo'd path must not break that contract.
+			// Fail a bad --out before anything mutates the stack: a non-zero
+			// exit must keep meaning "untouched or reverted".
 			if stackMode && outPath != "" {
 				probe, err := os.OpenFile(outPath, os.O_CREATE|os.O_WRONLY, 0o600)
 				if err != nil {
@@ -393,8 +382,8 @@ secrets are read whenever --project-dir and --stack are set, in either mode.
 						"(%d outstanding change(s) remain in the preview).\n", outstanding)
 				}
 
-				// Written only now, after verification: the file is the
-				// verified artifact, never a state the run went on to revert.
+				// After verification only: the file must never hold a state
+				// the run went on to revert.
 				if outPath != "" {
 					if err := os.WriteFile(outPath, patched, 0o600); err != nil {
 						return fmt.Errorf("writing verified state to --out failed — the stack itself "+

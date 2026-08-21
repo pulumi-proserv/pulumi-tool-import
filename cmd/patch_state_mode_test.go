@@ -21,8 +21,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Mode selection decides whether a run gets verification, so it is pinned
-// directly (the rules live on patchStateMode's doc).
 func TestPatchStateMode(t *testing.T) {
 	t.Parallel()
 
@@ -35,15 +33,11 @@ func TestPatchStateMode(t *testing.T) {
 		{name: "file mode", flags: patchStateFlags{StatePath: "s.json", StateFlagSet: true, OutPath: "o.json"}},
 		{name: "stack mode", flags: patchStateFlags{ProjectDir: ".", Stack: "dev"}, wantStack: true},
 		{
-			// --out does not force file mode; stack mode may also write it.
 			name:      "--out does not force file mode",
 			flags:     patchStateFlags{ProjectDir: ".", Stack: "dev", OutPath: "o.json"},
 			wantStack: true,
 		},
 		{
-			// File mode with the stack flags present (documented for reading
-			// config secrets) stays file mode — the combination that would be
-			// a live mutation if --state selection ever regressed.
 			name: "state and out with stack flags stays file mode",
 			flags: patchStateFlags{
 				StatePath: "s.json", StateFlagSet: true, OutPath: "o.json",
@@ -51,9 +45,6 @@ func TestPatchStateMode(t *testing.T) {
 			},
 		},
 		{
-			// An unset shell variable expands --state to "": this was a hard
-			// error before --out became legal in stack mode, and it must stay
-			// one rather than silently mutating a live stack.
 			name: "explicitly empty --state is an error, never stack mode",
 			flags: patchStateFlags{
 				StatePath: "", StateFlagSet: true, OutPath: "o.json",

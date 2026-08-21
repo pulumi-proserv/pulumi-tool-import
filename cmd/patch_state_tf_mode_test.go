@@ -21,9 +21,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The mode rules themselves are pinned by TestPatchStateMode; these two prove
-// the command wires the flags — including cobra's Changed("state"), which the
-// unit table cannot exercise — into patchStateMode.
+// These prove the command wires the flags — including cobra's Changed("state"),
+// which the unit table cannot exercise — into patchStateMode.
 
 func TestPatchStateTf_CommandRoutesFlagsIntoModeSelection(t *testing.T) {
 	t.Parallel()
@@ -42,8 +41,6 @@ func TestPatchStateTf_CommandRoutesFlagsIntoModeSelection(t *testing.T) {
 	assert.Contains(t, err.Error(), "file mode needs both --state and --out")
 }
 
-// An unset shell variable expands to --state "": at the CLI boundary that must
-// be the empty-state error, never a silent switch to mutating the live stack.
 func TestPatchStateTf_ExplicitlyEmptyStateIsRejected(t *testing.T) {
 	t.Parallel()
 	cmd := newPatchStateTfCmd()
