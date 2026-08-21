@@ -204,6 +204,12 @@ Example:
 			}
 			fmt.Fprintf(os.Stderr, "  No fields to patch: %d\n", result.NoFields)
 			fmt.Fprintf(os.Stderr, "  Digest mapped:      %d\n", result.DigestMapped)
+			if result.NoMatch > 0 {
+				fmt.Fprintf(os.Stderr, "  No digest match:    %d resource(s) with fields to patch matched no digest entry and were left unpatched:\n", result.NoMatch)
+				for _, note := range result.NoMatchNotes {
+					fmt.Fprintf(os.Stderr, "    %s\n", note)
+				}
+			}
 			fmt.Fprintf(os.Stderr, "  Deltas validated (imported): %d\n", result.DeltaValidated)
 			if result.DeltaFailed > 0 {
 				fmt.Fprintf(os.Stderr, "  Deltas failed (imported):    %d (outputs reverted)\n", result.DeltaFailed)

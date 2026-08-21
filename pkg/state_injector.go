@@ -53,6 +53,11 @@ type InjectResult struct {
 	URNs                       []string
 }
 
+// InjectNonImportable appends the sidecar's resources to an exported
+// deployment, matching each to a preview create step by exact Pulumi type and
+// name — never by the fallback guess BuildDigestNameMap and matchChildren
+// use. Their wrong matches fail loudly downstream; a wrong match here writes
+// a corrupted resource into state, so a duplicate or a miss is an error.
 func InjectNonImportable(
 	stateData []byte,
 	sidecar *NonImportableFile,

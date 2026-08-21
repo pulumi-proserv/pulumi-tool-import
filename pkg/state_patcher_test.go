@@ -2043,3 +2043,60 @@ func TestDeepCopyJSONValue_SharesNothingMutable(t *testing.T) {
 	assert.Equal(t, "v", orig["m"].(map[string]interface{})["k"])
 	assert.Equal(t, "v", orig["a"].([]interface{})[0].(map[string]interface{})["k"])
 }
+
+func TestPatchState_NoMatchIsNamedPerResource(t *testing.T) {
+	t.Parallel()
+
+	// The unmatched resources use a type with no digest entry at all, so even
+	// the single-unused-candidate guess cannot match them.
+	state := []byte(`{"version":3,"deployment":{"resources":[
+		{"urn":"urn:pulumi:dev::proj::aws:ecs/service:Service::unmatched-one","type":"aws:ecs/service:Service","custom":true,"id":"a","inputs":{},"outputs":{}},
+		{"urn":"urn:pulumi:dev::proj::aws:ecs/service:Service::unmatched-two","type":"aws:ecs/service:Service","custom":true,"id":"b","inputs":{},"outputs":{}},
+		{"urn":"urn:pulumi:dev::proj::aws:s3/bucketObject:BucketObject::matched","type":"aws:s3/bucketObject:BucketObject","custom":true,"id":"c","inputs":{},"outputs":{}}
+	]}}`)
+	fields := &FieldsFile{
+		Fields: map[string]FieldCategory{
+			// No defaults, so an unmatched resource has nothing to patch from.
+			"service:Service":           {NotRead: map[string]FieldInfo{"waitForSteadyState": {}}},
+			"bucketObject:BucketObject": {NotRead: map[string]FieldInfo{"content": {}}},
+		},
+	}
+	digest := &ModuleMap{
+		RootResources: []ModuleResource{{
+			Mode:             "managed",
+			TranslatedURN:    "urn:pulumi:dev::proj::aws:s3/bucketObject:BucketObject::matched",
+			TerraformAddress: "aws_s3_bucket_object.matched",
+			Attributes:       map[string]interface{}{"content": "hello"},
+		}},
+		Modules: map[string]*ModuleMapEntry{},
+	}
+
+	_, result, err := PatchState(state, digest, fields, nil,
+		map[string]string{"aws_s3_bucket_object.matched": "matched"}, nil, "")
+	require.NoError(t, err)
+	require.Equal(t, 2, result.NoMatch)
+	require.Len(t, result.NoMatchNotes, 2, "one note per unmatched resource")
+	joined := strings.Join(result.NoMatchNotes, "\n")
+	assert.Contains(t, joined, "unmatched-one")
+	assert.Contains(t, joined, "unmatched-two")
+	assert.NotContains(t, joined, `"matched"`, "a matched resource must not be listed")
+}
+
+func TestPatchStateFromCFN_NoMatchIsNamed(t *testing.T) {
+	t.Parallel()
+
+	state := buildTestState("aws:s3/bucketObject:BucketObject", "cfn-unmatched", map[string]any{})
+	fields := &FieldsFile{
+		Fields: map[string]FieldCategory{
+			"bucketObject:BucketObject": {
+				NotRead: map[string]FieldInfo{"content": {}},
+			},
+		},
+	}
+
+	_, result, err := PatchStateFromCFN(state, map[string]*ModuleResource{}, fields, nil, "")
+	require.NoError(t, err)
+	require.Equal(t, 1, result.NoMatch)
+	require.Len(t, result.NoMatchNotes, 1)
+	assert.Contains(t, result.NoMatchNotes[0], "cfn-unmatched")
+}

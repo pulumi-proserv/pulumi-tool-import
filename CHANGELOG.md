@@ -98,6 +98,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `patch-state` now names every resource the fields file covers that matched
+  no digest entry, instead of counting them into an aggregate nothing printed
+  (#37). The deliberate asymmetry between patching's name-guessing and
+  injection's exact-or-fail matching is documented at the matchers.
+
 - `patch-state` now reports `Deltas validated (imported)` and
   `Deltas attached (injected): X of Y` rather than an unqualified
   `Delta validated`. The two count different populations with different
