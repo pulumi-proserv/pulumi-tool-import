@@ -83,6 +83,15 @@ type FieldInfo struct {
 }
 
 // PatchStateResult contains statistics from the patch operation.
+// noMatchNote is the one format for a NoMatchNotes line, shared by every
+// patch loop (fields-file, schema, CFN) so the copies cannot drift. source
+// names where the patchable fields came from. The URN already carries the
+// type, so only the unmatched name is repeated.
+func noMatchNote(urn, name, source string) string {
+	return fmt.Sprintf("%s: %s has fields to patch, but no digest entry matched the name %q",
+		urn, source, name)
+}
+
 type PatchStateResult struct {
 	Patched                int
 	FieldsFromDigest       int
@@ -90,10 +99,16 @@ type PatchStateResult struct {
 	SkippedSensitive       int
 	SkippedFalsySuppressed int
 	NoMatch                int
-	NoFields               int
-	DigestMapped           int
-	DeltaValidated         int // resources whose delta passed Recover validation
-	DeltaFailed            int // resources whose delta failed Recover (outputs reverted)
+	// NoMatchNotes names, one line each, the resources counted in NoMatch:
+	// fields to patch exist for the type, no digest entry matched the name,
+	// and nothing was patched (a no-match resource that still took a default
+	// is counted in Patched, not here). Named rather than only counted, for
+	// the same reason as the delta counters (#37).
+	NoMatchNotes   []string
+	NoFields       int
+	DigestMapped   int
+	DeltaValidated int // resources whose delta passed Recover validation
+	DeltaFailed    int // resources whose delta failed Recover (outputs reverted)
 }
 
 // patchFieldDescriptor describes a single field to consider for patching.
@@ -301,9 +316,24 @@ func lookupProviderVersion(providerRef string, providerVersions map[string]strin
 	return providerVersions[providerRef]
 }
 
-// BuildDigestNameMap builds a mapping from Pulumi resource name → ModuleResource
-// using the same matching logic as FillImportFile: resource-level mappings first,
-// then module-level type+name matching with type-only fallback.
+// BuildDigestNameMap matches state resources to digest resources by name, in
+// four phases: explicit resource-level mappings, exact type+name within a
+// mapped module, a normalized-name pass (stripping the `this["key"]` wrapper),
+// and finally "exactly one unused candidate of this type".
+//
+// The guessing is a stated decision, not an accident (issue #37): patching
+// fills in missing values on a resource that already imported correctly, so a
+// wrong match at worst patches a value the verifying preview then flags, and
+// a refusal to guess would leave real resources unpatched over cosmetic name
+// differences. InjectNonImportable deliberately takes the opposite stance —
+// exact type+name or fail — because injection writes whole resources into
+// state, where a wrong match corrupts rather than merely leaves unpatched.
+//
+// matchChildren (pkg/import_filler.go) is the import-file counterpart. The two
+// are near-identical, not identical: only this one has the normalized-name
+// pass, and only matchChildren warns on ambiguous type candidates (#37 tracks
+// consolidating them). A change to the shared fallback rules usually belongs
+// in both — check those divergences first.
 func BuildDigestNameMap(
 	digest *ModuleMap,
 	moduleMappings, resourceMappings map[string]string,
@@ -860,6 +890,7 @@ func PatchState(
 		}
 		if !patchResult.patched && digResource == nil {
 			result.NoMatch++
+			result.NoMatchNotes = append(result.NoMatchNotes, noMatchNote(urn, name, "the fields file"))
 		}
 
 		rMap["inputs"] = inputsRaw
@@ -1775,6 +1806,7 @@ func PatchStateFromSchema(
 		}
 		if !patchResult.patched && digResource == nil {
 			result.NoMatch++
+			result.NoMatchNotes = append(result.NoMatchNotes, noMatchNote(urn, name, "the provider schema"))
 		}
 
 		rMap["inputs"] = inputsRaw

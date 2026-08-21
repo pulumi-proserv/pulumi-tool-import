@@ -318,8 +318,19 @@ func collectModuleResources(modules map[string]*ModuleMapEntry, out map[string][
 // extract the suffix after the parent prefix and match it against the TF
 // resource name (last segment of the terraform address).
 //
-// Falls back to type-only matching when there's exactly one candidate of a
-// given type (for components that predate the naming convention).
+// Falls back to type-only matching when there's exactly one unused candidate
+// of a given type (for components that predate the naming convention),
+// warning when more than one candidate makes the guess ambiguous.
+//
+// The guess is deliberate (issue #37): a wrong import ID fails loudly at
+// "pulumi import", it does not corrupt state — the same stance as
+// BuildDigestNameMap (pkg/state_patcher.go), and the opposite of
+// InjectNonImportable (pkg/state_injector.go), which requires exact type+name
+// because its wrong match writes a corrupted resource into state. This and
+// BuildDigestNameMap are near-identical, not identical: only that one has a
+// normalized-name pass, and only this one warns on ambiguity. A change to the
+// shared fallback rules usually belongs in both — check those divergences
+// first.
 func matchChildren(tfResources []ModuleResource, importEntries []*ImportEntry, state *fillState) (warnings []string) {
 	// Index TF resources by type::name key for exact matching.
 	type typeNameKey struct{ pulumiType, tfName string }
