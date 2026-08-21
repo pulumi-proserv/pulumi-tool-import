@@ -38,6 +38,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A provider named `registry.terraform.io/...` in one place and
+  `registry.opentofu.org/...` in another was treated as two providers.** The
+  digest's two loaders key their maps from different sources — the
+  import-support probe from the lock file, the bridged schemas from state
+  addresses — and terraform writes one host where tofu writes the other, so a
+  mixed terraform/tofu history split the pair and the resource silently lost
+  its schema-aware injection state. The pairing is now resolved in one place
+  (`resolveInjectionProviders`), which treats the two registry hosts as the
+  same provider in both directions and names which half is missing (#26).
+
 - **Secrets could reach state in plaintext, two ways.** State in
   `tofu show -json` format got no redaction at all — the format is selected
   automatically on the presence of a `format_version` key, with no flag to

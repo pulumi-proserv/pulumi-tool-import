@@ -496,31 +496,13 @@ func populateInjectionState(
 		mr.InjectionStateReason = "no live Terraform provider (import-support probe not run)"
 		return
 	}
-	prov, ok := accessor.Provider(ctx, providerName)
-	if !ok {
-		mr.InjectionStateReason = fmt.Sprintf(
-			"the import-support probe holds no open provider for %s", providerName)
+	pair := resolveInjectionProviders(ctx, accessor, pulumiProviders, providerName, resourceType)
+	if pair.MissingReason != "" {
+		mr.InjectionStateReason = pair.MissingReason
 		warnInjectionState(mr)
 		return
 	}
-
-	var schemaMap shim.SchemaMap
-	var schemaInfos map[string]*tfbridge.SchemaInfo
-	if pwm, ok := pulumiProviders[providermap.TerraformProviderName(providerName)]; ok && pwm != nil {
-		if shimResource := pwm.P.ResourcesMap().Get(resourceType); shimResource != nil {
-			schemaMap = shimResource.Schema()
-		}
-		if ri := pwm.Resources[resourceType]; ri != nil {
-			schemaInfos = ri.Fields
-		}
-	}
-	if schemaMap == nil {
-		mr.InjectionStateReason = fmt.Sprintf(
-			"no bridged Pulumi schema for %s, though the import-support probe loaded %s: "+
-				"the provider loaders disagree (see issue #26)", resourceType, providerName)
-		warnInjectionState(mr)
-		return
-	}
+	prov, schemaMap, schemaInfos := pair.Live, pair.SchemaMap, pair.SchemaInfos
 
 	attrsJSON, err := json.Marshal(attrs)
 	if err != nil {
