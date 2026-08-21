@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A refresh report after injection** (#41). Stack mode runs
+  `pulumi refresh --preview-only --json` after verification and reports, per
+  injected resource: **GONE**, a property live disagrees on (with both
+  values), or "no diff" — never presented as confirmation. A report, not a
+  gate, and it never writes; `--skip-refresh-report` opts out.
+
 - `version` command, printing the version stamped into the binary at release
   time. Previously `pkg/version.Version` was set via ldflags but no command
   surfaced it, so an installed plugin could not identify itself.

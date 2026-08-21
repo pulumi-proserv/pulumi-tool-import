@@ -71,6 +71,28 @@ func (s *StackSession) Import(ctx context.Context, state []byte) error {
 	return nil
 }
 
+// refreshPreviewJSONArgs builds the CLI args for the refresh report run.
+// --preview-only is load-bearing: a real refresh can DELETE an injected
+// resource from state when Read reports it gone, resurrecting the destructive
+// create this feature exists to prevent. This path must never write.
+func refreshPreviewJSONArgs(stackName string) []string {
+	return []string{"refresh", "--preview-only", "--json", "--stack", stackName}
+}
+
+// RefreshPreviewJSON runs "pulumi refresh --preview-only --json" and parses
+// the result — the same step envelope as PreviewJSON, with oldState populated.
+func (s *StackSession) RefreshPreviewJSON(ctx context.Context) (*PreviewDigest, error) {
+	stdout, stderr, code, err := s.stack.Workspace().PulumiCommand().Run(
+		ctx, s.projectDir, nil, nil, nil, nil, refreshPreviewJSONArgs(s.stackName)...)
+	if err != nil {
+		return nil, fmt.Errorf("pulumi refresh --preview-only failed (exit %d): %w\n%s", code, err, stderr)
+	}
+	if code != 0 {
+		return nil, fmt.Errorf("pulumi refresh --preview-only failed (exit %d)\n%s", code, stderr)
+	}
+	return ParsePreviewJSON([]byte(stdout))
+}
+
 // PreviewJSON runs "pulumi preview --json" and parses the result.
 // auto.Stack.Preview cannot be used: it tails an event stream whose
 // StepEventStateMetadata carries no dependency edges, and optpreview has no

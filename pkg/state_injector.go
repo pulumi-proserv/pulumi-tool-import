@@ -40,6 +40,12 @@ const (
 	metaKey          = "__meta"
 )
 
+// isReservedOutputKey reports whether k is tool/bridge bookkeeping rather
+// than a resource property; every loop that walks an outputs bag uses it.
+func isReservedOutputKey(k string) bool {
+	return k == rawStateDeltaKey || k == metaKey || k == reservedDefaultsKey
+}
+
 type InjectResult struct {
 	Injected                   int
 	SecretsResolved            int
@@ -318,7 +324,7 @@ const reservedDefaultsKey = "__defaults"
 
 func fillOutputsFromInputs(inputs, outputs map[string]interface{}) {
 	for k, v := range inputs {
-		if k == reservedDefaultsKey || k == metaKey || k == rawStateDeltaKey {
+		if isReservedOutputKey(k) {
 			continue
 		}
 		if _, exists := outputs[k]; exists {
