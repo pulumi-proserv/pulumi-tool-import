@@ -25,12 +25,11 @@ import (
 	shim "github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfshim"
 )
 
-// InjectionProviderPair is the declared relationship between "digest tf"'s two
-// provider loaders (issue #26). Neither can replace the other — the live
-// Terraform provider knows cty types and schema versions but no Pulumi names;
-// the bridged schema knows the mapping but its mock carries no instance state —
-// so computing injection state needs both, and this is the one place that
-// resolves the pair and names which half is missing.
+// InjectionProviderPair is the relationship between "digest tf"'s two
+// provider loaders. Neither can replace the other — the live Terraform
+// provider knows cty types and schema versions but no Pulumi names; the
+// bridged schema knows the mapping but carries no instance state — so
+// computing injection state needs both.
 type InjectionProviderPair struct {
 	// Live is the running Terraform provider the import-support probe holds.
 	Live tfprovider.Provider
@@ -42,18 +41,14 @@ type InjectionProviderPair struct {
 	MissingReason string
 }
 
-// equivalentProviderAddrs is provideraddr.Equivalents — the one home for the
-// two-registries-one-provider fact. Kept as a local alias so this package's
-// correlation sites read uniformly.
+// equivalentProviderAddrs is provideraddr.Equivalents, aliased locally.
 func equivalentProviderAddrs(addr string) []string {
 	return provideraddr.Equivalents(addr)
 }
 
-// resolveInjectionProviders resolves both halves of the pair for one provider
-// address — the live Terraform provider and the bridged schema for
-// resourceType — or names the missing half in MissingReason. It is the one
-// place the pair is correlated; every lookup tries the equivalent registry
-// forms of the address.
+// resolveInjectionProviders resolves both halves of the pair — the live
+// Terraform provider and the bridged schema for resourceType — or names the
+// missing half in MissingReason. It is the one place the pair is correlated.
 func resolveInjectionProviders(
 	ctx context.Context,
 	accessor ProviderAccessor,
@@ -98,9 +93,8 @@ func resolveInjectionProviders(
 }
 
 // lookupBridgedProvider finds the bridged provider for an address, trying the
-// equivalent registry forms, and guarding every level a partially-populated
-// entry can leave nil. It is the only way this package keys pulumiProviders by
-// a state- or lock-derived address.
+// equivalent registry forms and guarding every level a partially-populated
+// entry can leave nil.
 func lookupBridgedProvider(
 	pulumiProviders map[providermap.TerraformProviderName]*ProviderWithMetadata,
 	providerName string,

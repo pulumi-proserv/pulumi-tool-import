@@ -153,16 +153,9 @@ func (p *Prober) Provider(ctx context.Context, providerAddr string) (tfprovider.
 }
 
 // provider returns a running provider, loading it on first use. The caller
-// holds p.mu.
-//
-// Every map here is keyed by whatever address its source used — p.versions by
-// the lock file, the caller's providerAddr by state — and terraform writes
-// registry.terraform.io where tofu writes registry.opentofu.org for the same
-// provider, so a mixed terraform/tofu history names one provider both ways in
-// one run. Lookups therefore try the equivalent forms; without that, the
-// version lookup misses, the probe falls back to the curated list, and a type
-// outside it is never flagged non-importable at all (issue #26's address-form
-// half).
+// holds p.mu. The maps are keyed by whatever address their source used —
+// p.versions by the lock file, providerAddr by state — and the registry host
+// differs between terraform and tofu, so lookups try the equivalent forms.
 func (p *Prober) provider(ctx context.Context, providerAddr string) (tfprovider.Provider, bool) {
 	for _, addr := range provideraddr.Equivalents(providerAddr) {
 		if provider, ok := p.providers[addr]; ok {

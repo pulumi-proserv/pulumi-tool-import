@@ -14,11 +14,9 @@
 
 // Package provideraddr is the single home for the fact that
 // registry.terraform.io and registry.opentofu.org name the same providers.
-// The repo encodes that fact in three other ways — a state rewrite in
-// pkg/tofu/loader.go, duplicated rows in pkg/providermap, and lookups keyed
-// from lock files versus state addresses — and #26 is what happens when they
-// drift. New correlation points must use Equivalents rather than adding a
-// fourth encoding.
+// The repo also encodes it as a state rewrite (pkg/tofu/loader.go) and
+// duplicated rows (pkg/providermap); new correlation points must use
+// Equivalents rather than adding another encoding.
 package provideraddr
 
 import "strings"
@@ -29,11 +27,8 @@ const (
 )
 
 // Equivalents returns every address form that names the same provider as
-// addr, the requested form first: the two registry hosts are interchangeable
-// (terraform writes one where tofu writes the other, and the two loaders key
-// their maps from different sources — the lock file vs state addresses — so a
-// mixed history names one provider both ways in one run), and a host-less
-// "namespace/type" is the same provider under either host.
+// addr, the requested form first: the two registry hosts are interchangeable,
+// and a host-less "namespace/type" matches either host.
 func Equivalents(addr string) []string {
 	switch {
 	case strings.HasPrefix(addr, terraformHost):

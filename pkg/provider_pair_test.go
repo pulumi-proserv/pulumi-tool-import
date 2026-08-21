@@ -27,8 +27,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// fakeAccessor holds live providers under specific addresses, like the
-// import-support prober does — keyed by whatever address its source used.
+// fakeAccessor holds live providers keyed by exact address, like the prober.
 type fakeAccessor struct {
 	providers map[string]tfprovider.Provider
 }
@@ -42,8 +41,8 @@ func (f *fakeAccessor) Provider(_ context.Context, addr string) (tfprovider.Prov
 // embedded interface is nil, so an accidental call panics the test.
 type stubProvider struct{ tfprovider.Provider }
 
-// bridgedProvidersFor builds the BRIDGED half of the pair only — the
-// pulumiProviders map; the live half comes from the accessor.
+// bridgedProvidersFor builds the bridged half of the pair only; the live half
+// comes from the accessor.
 func bridgedProvidersFor(addr string) map[providermap.TerraformProviderName]*ProviderWithMetadata {
 	shimProv := &shimschema.Provider{
 		ResourcesMap: shimschema.ResourceMap{
@@ -66,9 +65,6 @@ func bridgedProvidersFor(addr string) map[providermap.TerraformProviderName]*Pro
 	}
 }
 
-// The pairing this repo depends on, stated as one call: for a provider address,
-// either both halves resolve — the live Terraform provider and the bridged
-// schema — or the result names which half is missing.
 func TestResolveInjectionProviders_BothHalvesResolve(t *testing.T) {
 	t.Parallel()
 
@@ -84,11 +80,6 @@ func TestResolveInjectionProviders_BothHalvesResolve(t *testing.T) {
 	assert.NotNil(t, pair.SchemaMap)
 }
 
-// The two loaders key their maps from different sources — the prober from the
-// lock file, the bridged map from state addresses — and terraform writes
-// registry.terraform.io where tofu writes registry.opentofu.org for the same
-// provider. The correlation must treat those hosts as the same provider, in
-// both directions, or a mixed terraform/tofu history splits the pair.
 func TestResolveInjectionProviders_RegistryHostsAreEquivalent(t *testing.T) {
 	t.Parallel()
 
@@ -152,8 +143,8 @@ func TestResolveInjectionProviders_NamesTheMissingHalf(t *testing.T) {
 		"resource-type absence is distinguishable from provider absence")
 }
 
-// The equivalence rules themselves are pinned in pkg/provideraddr; this pins
-// only that the local alias delegates there.
+// The equivalence rules are pinned in pkg/provideraddr; this pins only that
+// the local alias delegates there.
 func TestEquivalentProviderAddrs_Delegates(t *testing.T) {
 	t.Parallel()
 

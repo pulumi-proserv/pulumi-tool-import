@@ -63,8 +63,6 @@ type LoadTerraformStateOptions struct {
 // OpenTofu sometimes has a problem reading states created by Terraform proper that rely on providers from the
 // Terraform registry. LoadTerraformState works around this by rewriting registry.terraform.io provider references
 // to registry.opentofu.org in the state JSON, then parsing the rewritten state with `tofu show -json`.
-// (This is one of the places the two registries are treated as the same provider; the shared rule lives in
-// pkg/provideraddr, which correlation-point lookups must use — see issue #26.)
 //
 // Common errors:
 //
