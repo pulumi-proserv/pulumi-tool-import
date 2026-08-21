@@ -320,6 +320,12 @@ func collectModuleResources(modules map[string]*ModuleMapEntry, out map[string][
 //
 // Falls back to type-only matching when there's exactly one candidate of a
 // given type (for components that predate the naming convention).
+// matchChildren fills placeholder import IDs by matching entries to digest
+// resources — exact type+name, then a single-unused-candidate guess. The
+// guess is deliberate for the same reason as BuildDigestNameMap's
+// (pkg/state_patcher.go): a wrong import ID fails loudly at "pulumi import",
+// it does not corrupt state. The two are the same algorithm over different
+// input shapes; a change to the fallback rules belongs in both.
 func matchChildren(tfResources []ModuleResource, importEntries []*ImportEntry, state *fillState) (warnings []string) {
 	// Index TF resources by type::name key for exact matching.
 	type typeNameKey struct{ pulumiType, tfName string }

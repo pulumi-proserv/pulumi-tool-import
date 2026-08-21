@@ -2043,3 +2043,29 @@ func TestDeepCopyJSONValue_SharesNothingMutable(t *testing.T) {
 	assert.Equal(t, "v", orig["m"].(map[string]interface{})["k"])
 	assert.Equal(t, "v", orig["a"].([]interface{})[0].(map[string]interface{})["k"])
 }
+
+// A fields-file-covered resource with no digest match must be named, not just
+// counted: an aggregate cannot distinguish "nothing to do" from "something
+// went wrong" (issue #37, mirroring the delta counters).
+func TestPatchState_NoMatchIsNamedPerResource(t *testing.T) {
+	t.Parallel()
+
+	state := buildTestState("aws:s3/bucketObject:BucketObject", "unmatched-name", map[string]any{})
+	fields := &FieldsFile{
+		Fields: map[string]FieldCategory{
+			"bucketObject:BucketObject": {
+				// No default: with no digest match there is nothing to patch
+				// from, which is exactly the case that must be named.
+				NotRead: map[string]FieldInfo{"content": {}},
+			},
+		},
+	}
+	digest := &ModuleMap{Modules: map[string]*ModuleMapEntry{}}
+
+	_, result, err := PatchState(state, digest, fields, nil, nil, nil, "")
+	require.NoError(t, err)
+	require.Equal(t, 1, result.NoMatch)
+	require.Len(t, result.NoMatchNotes, 1)
+	assert.Contains(t, result.NoMatchNotes[0], "unmatched-name")
+	assert.Contains(t, result.NoMatchNotes[0], "aws:s3/bucketObject:BucketObject")
+}

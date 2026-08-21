@@ -90,10 +90,17 @@ type PatchStateResult struct {
 	SkippedSensitive       int
 	SkippedFalsySuppressed int
 	NoMatch                int
-	NoFields               int
-	DigestMapped           int
-	DeltaValidated         int // resources whose delta passed Recover validation
-	DeltaFailed            int // resources whose delta failed Recover (outputs reverted)
+	// NoMatchNotes names, one line each, the resources counted in NoMatch:
+	// covered by the fields file but matched to no digest entry, so they were
+	// left unpatched. Mirrors the delta counters' shape — an aggregate cannot
+	// distinguish "nothing to do" from "something went wrong", and a migration
+	// that silently patched 40 of 41 resources looks identical to one that
+	// patched all 41 except for a number nobody has a baseline for.
+	NoMatchNotes   []string
+	NoFields       int
+	DigestMapped   int
+	DeltaValidated int // resources whose delta passed Recover validation
+	DeltaFailed    int // resources whose delta failed Recover (outputs reverted)
 }
 
 // patchFieldDescriptor describes a single field to consider for patching.
@@ -304,6 +311,19 @@ func lookupProviderVersion(providerRef string, providerVersions map[string]strin
 // BuildDigestNameMap builds a mapping from Pulumi resource name → ModuleResource
 // using the same matching logic as FillImportFile: resource-level mappings first,
 // then module-level type+name matching with type-only fallback.
+// BuildDigestNameMap matches state resources to digest resources by name,
+// through fallbacks ending in "exactly one unused candidate of this type".
+//
+// The guessing is a stated decision, not an accident (issue #37): patching
+// fills in missing values on a resource that already imported correctly, so a
+// wrong match at worst patches a value the verifying preview then flags, and
+// a refusal to guess would leave real resources unpatched over cosmetic name
+// differences. InjectNonImportable deliberately takes the opposite stance —
+// exact type+name or fail — because injection writes whole resources into
+// state, where a wrong match corrupts rather than merely leaves unpatched.
+// The same algorithm exists in FillImportFile/matchChildren
+// (pkg/import_filler.go) over the import-file shape; a change to the fallback
+// rules belongs in both.
 func BuildDigestNameMap(
 	digest *ModuleMap,
 	moduleMappings, resourceMappings map[string]string,
@@ -860,6 +880,9 @@ func PatchState(
 		}
 		if !patchResult.patched && digResource == nil {
 			result.NoMatch++
+			result.NoMatchNotes = append(result.NoMatchNotes, fmt.Sprintf(
+				"%s (%s): fields file covers this type, but no digest entry matched the name %q",
+				urn, resType, name))
 		}
 
 		rMap["inputs"] = inputsRaw
@@ -1775,6 +1798,9 @@ func PatchStateFromSchema(
 		}
 		if !patchResult.patched && digResource == nil {
 			result.NoMatch++
+			result.NoMatchNotes = append(result.NoMatchNotes, fmt.Sprintf(
+				"%s (%s): fields file covers this type, but no digest entry matched the name %q",
+				urn, resType, name))
 		}
 
 		rMap["inputs"] = inputsRaw
