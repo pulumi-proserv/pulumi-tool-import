@@ -38,6 +38,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A provider named `registry.terraform.io/...` in one place and
+  `registry.opentofu.org/...` in another was treated as two providers**,
+  silently splitting the digest's provider-loader pair on mixed terraform/tofu
+  histories. The host equivalence now lives in `pkg/provideraddr` and is
+  applied at every correlation point, and the pair resolver names which half
+  is missing — a provider with no bridge reads differently from a bridged
+  provider lacking one resource type (#26).
+
 - **Secrets could reach state in plaintext, two ways.** State in
   `tofu show -json` format got no redaction at all — the format is selected
   automatically on the presence of a `format_version` key, with no flag to
