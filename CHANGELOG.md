@@ -38,6 +38,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Injection re-resolved provider schemas with no version.** The digest
+  recorded only provider names, so `patch-state` loaded whatever version this
+  build recommends — property names could silently come from a different
+  schema than the digest's (#38). The digest now records the resolved
+  provider, `patch-state` pins to it (erroring on mapping drift, warning on
+  older digests), and the file carries a `digestFormatVersion` so older
+  consumers refuse newer files.
 - **Secrets could reach state in plaintext, two ways.** State in
   `tofu show -json` format got no redaction at all — the format is selected
   automatically on the presence of a `format_version` key, with no flag to

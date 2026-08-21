@@ -15,7 +15,6 @@
 package cmd
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -77,16 +76,11 @@ Examples:
 `,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Load TF digest.
-			digestData, err := os.ReadFile(digestPath)
+			digestPtr, err := pkg.LoadDigest(digestPath)
 			if err != nil {
-				return fmt.Errorf("reading digest file: %w", err)
+				return err
 			}
-			var digest pkg.ModuleMap
-			digestDec := json.NewDecoder(bytes.NewReader(digestData))
-			digestDec.UseNumber()
-			if err := digestDec.Decode(&digest); err != nil {
-				return fmt.Errorf("parsing digest file: %w", err)
-			}
+			digest := *digestPtr
 
 			// Load import file.
 			importData, err := os.ReadFile(importFilePath)

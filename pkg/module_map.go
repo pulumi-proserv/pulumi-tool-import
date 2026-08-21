@@ -40,6 +40,9 @@ import (
 
 // ModuleMap is the top-level structure for the module-map.json sidecar file.
 type ModuleMap struct {
+	// FormatVersion is the digest file format this tool wrote. LoadDigest
+	// refuses a version newer than it knows; 0 (absent) predates the field.
+	FormatVersion int                        `json:"digestFormatVersion,omitempty"`
 	Modules       map[string]*ModuleMapEntry `json:"modules"`
 	RootResources []ModuleResource           `json:"rootResources,omitempty"`
 	Providers     map[string]string          `json:"providers,omitempty"`
@@ -143,8 +146,8 @@ func BuildModuleMap(
 	// Store provider registry addresses for downstream consumers (e.g., patch-state).
 	if pulumiProviders != nil {
 		mm.Providers = make(map[string]string, len(pulumiProviders))
-		for tfAddr := range pulumiProviders {
-			mm.Providers[string(tfAddr)] = ""
+		for tfAddr, pwm := range pulumiProviders {
+			mm.Providers[string(tfAddr)] = pwm.ResolvedPulumi
 		}
 	}
 
@@ -1285,6 +1288,7 @@ func ctyValueToInterface(v cty.Value) interface{} {
 
 // WriteModuleMap serializes a ModuleMap to JSON and writes it to the given path.
 func WriteModuleMap(mm *ModuleMap, path string) error {
+	mm.FormatVersion = CurrentDigestFormatVersion
 	data, err := json.MarshalIndent(mm, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling module map: %w", err)

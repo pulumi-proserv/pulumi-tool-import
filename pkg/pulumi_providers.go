@@ -70,11 +70,33 @@ type ProviderWithMetadata struct {
 	// This is set for all providers, but is primarily useful for dynamic providers
 	// to construct the proper package name.
 	TerraformAddress string
+	// ResolvedPulumi is the mapping this metadata came from: "name@version"
+	// for a statically bridged provider, "dynamic[@tfVersion]" otherwise. The
+	// digest records it so injection can load the same version.
+	ResolvedPulumi string
 }
 
 func PulumiProvidersForTerraformProviders(
 	terraformProviders []providermap.TerraformProviderName,
 	providerVersions map[string]string,
+) (map[providermap.TerraformProviderName]*ProviderWithMetadata, error) {
+	return pulumiProvidersForTerraformProviders(terraformProviders, providerVersions, nil)
+}
+
+// PulumiProvidersForTerraformProvidersPinned is PulumiProvidersForTerraformProviders
+// with each provider's version overridden by the pin a digest recorded, so
+// injection loads the provider the digest's property names came from.
+func PulumiProvidersForTerraformProvidersPinned(
+	terraformProviders []providermap.TerraformProviderName,
+	pins map[string]string,
+) (map[providermap.TerraformProviderName]*ProviderWithMetadata, error) {
+	return pulumiProvidersForTerraformProviders(terraformProviders, nil, pins)
+}
+
+func pulumiProvidersForTerraformProviders(
+	terraformProviders []providermap.TerraformProviderName,
+	providerVersions map[string]string,
+	pins map[string]string,
 ) (map[providermap.TerraformProviderName]*ProviderWithMetadata, error) {
 	pulumiProviders := make(map[providermap.TerraformProviderName]*ProviderWithMetadata)
 
@@ -89,6 +111,13 @@ func PulumiProvidersForTerraformProviders(
 			Identifier: providermap.TerraformProviderName(providerName),
 			Version:    version,
 		})
+		if pin := pins[string(providerName)]; pin != "" {
+			pinned, err := applyProviderPin(pulumiProvider, pin)
+			if err != nil {
+				return nil, fmt.Errorf("provider %s: %w", providerName, err)
+			}
+			pulumiProvider = pinned
+		}
 
 		var providerInfo *info.Provider
 		var isDynamic bool
@@ -114,10 +143,18 @@ func PulumiProvidersForTerraformProviders(
 			isDynamic = true
 		}
 
+		resolved := dynamicPin
+		if !isDynamic {
+			resolved = pulumiProvider.StaticallyBridgedProvider.Identifier + "@" +
+				pulumiProvider.StaticallyBridgedProvider.Version
+		} else if version != "" {
+			resolved = dynamicPin + "@" + version
+		}
 		pulumiProviders[providerName] = &ProviderWithMetadata{
 			Provider:         providerInfo,
 			IsDynamic:        isDynamic,
 			TerraformAddress: string(providerName),
+			ResolvedPulumi:   resolved,
 		}
 	}
 	return pulumiProviders, nil

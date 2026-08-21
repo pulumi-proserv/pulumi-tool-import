@@ -1,5 +1,9 @@
 # pulumi-tool-import
 
+> **Pre-v1 software.** Interfaces, flags, and file formats may change between
+> releases without a deprecation cycle. Pin the version you install, and read
+> the [CHANGELOG](CHANGELOG.md) before upgrading.
+
 `pulumi-tool-import` helps migrate existing infrastructure into Pulumi using the
 native [`pulumi import`](https://www.pulumi.com/docs/iac/adopting-pulumi/import/)
 workflow — analyzing the source, computing the import IDs Pulumi needs, and
