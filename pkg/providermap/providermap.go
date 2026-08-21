@@ -84,6 +84,9 @@ type providerMappingDetail struct {
 // This is based on the provider list from https://github.com/pulumi/ci-mgmt/blob/master/provider-ci/providers.json
 var providerMapping = map[TerraformProviderName]providerMappingDetail{
 	// HashiCorp providers
+	// Every provider appears under both registry hosts: terraform and tofu
+	// write different hosts for the same provider (the shared equivalence rule
+	// is pkg/provideraddr; keep the row pairs in sync with it).
 	"registry.terraform.io/hashicorp/aws": {
 		pulumiProviderName:    "aws",
 		terraformProviderName: "aws",

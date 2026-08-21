@@ -38,10 +38,13 @@ func (f *fakeAccessor) Provider(_ context.Context, addr string) (tfprovider.Prov
 	return p, ok
 }
 
-// nilProvider is a typed non-nil stand-in; the pair resolver never calls it.
-type nilProvider struct{ tfprovider.Provider }
+// stubProvider is a stand-in the pair resolver holds but never invokes; its
+// embedded interface is nil, so an accidental call panics the test.
+type stubProvider struct{ tfprovider.Provider }
 
-func pairProviders(addr string) map[providermap.TerraformProviderName]*ProviderWithMetadata {
+// bridgedProvidersFor builds the BRIDGED half of the pair only — the
+// pulumiProviders map; the live half comes from the accessor.
+func bridgedProvidersFor(addr string) map[providermap.TerraformProviderName]*ProviderWithMetadata {
 	shimProv := &shimschema.Provider{
 		ResourcesMap: shimschema.ResourceMap{
 			"aws_x": (&shimschema.Resource{
@@ -70,10 +73,10 @@ func TestResolveInjectionProviders_BothHalvesResolve(t *testing.T) {
 	t.Parallel()
 
 	acc := &fakeAccessor{providers: map[string]tfprovider.Provider{
-		"registry.opentofu.org/hashicorp/aws": nilProvider{},
+		"registry.opentofu.org/hashicorp/aws": stubProvider{},
 	}}
 	pair := resolveInjectionProviders(t.Context(), acc,
-		pairProviders("registry.opentofu.org/hashicorp/aws"),
+		bridgedProvidersFor("registry.opentofu.org/hashicorp/aws"),
 		"registry.opentofu.org/hashicorp/aws", "aws_x")
 
 	assert.Empty(t, pair.MissingReason)
@@ -91,22 +94,34 @@ func TestResolveInjectionProviders_RegistryHostsAreEquivalent(t *testing.T) {
 
 	// Live provider keyed by the terraform.io form, lookup by the opentofu form.
 	acc := &fakeAccessor{providers: map[string]tfprovider.Provider{
-		"registry.terraform.io/hashicorp/aws": nilProvider{},
+		"registry.terraform.io/hashicorp/aws": stubProvider{},
 	}}
 	pair := resolveInjectionProviders(t.Context(), acc,
-		pairProviders("registry.opentofu.org/hashicorp/aws"),
+		bridgedProvidersFor("registry.opentofu.org/hashicorp/aws"),
 		"registry.opentofu.org/hashicorp/aws", "aws_x")
 	assert.Empty(t, pair.MissingReason)
 	assert.NotNil(t, pair.Live)
 
 	// And the bridged half keyed by the other form.
 	acc = &fakeAccessor{providers: map[string]tfprovider.Provider{
-		"registry.opentofu.org/hashicorp/aws": nilProvider{},
+		"registry.opentofu.org/hashicorp/aws": stubProvider{},
 	}}
 	pair = resolveInjectionProviders(t.Context(), acc,
-		pairProviders("registry.terraform.io/hashicorp/aws"),
+		bridgedProvidersFor("registry.terraform.io/hashicorp/aws"),
 		"registry.opentofu.org/hashicorp/aws", "aws_x")
 	assert.Empty(t, pair.MissingReason)
+	require.NotNil(t, pair.SchemaMap)
+
+	// The other direction: queried with the terraform.io form against
+	// opentofu-keyed maps.
+	acc = &fakeAccessor{providers: map[string]tfprovider.Provider{
+		"registry.opentofu.org/hashicorp/aws": stubProvider{},
+	}}
+	pair = resolveInjectionProviders(t.Context(), acc,
+		bridgedProvidersFor("registry.opentofu.org/hashicorp/aws"),
+		"registry.terraform.io/hashicorp/aws", "aws_x")
+	assert.Empty(t, pair.MissingReason)
+	assert.NotNil(t, pair.Live)
 	require.NotNil(t, pair.SchemaMap)
 }
 
@@ -115,36 +130,34 @@ func TestResolveInjectionProviders_NamesTheMissingHalf(t *testing.T) {
 
 	// Live present, bridged absent.
 	acc := &fakeAccessor{providers: map[string]tfprovider.Provider{
-		"registry.opentofu.org/hashicorp/aws": nilProvider{},
+		"registry.opentofu.org/hashicorp/aws": stubProvider{},
 	}}
 	pair := resolveInjectionProviders(t.Context(), acc, nil,
 		"registry.opentofu.org/hashicorp/aws", "aws_x")
-	assert.Contains(t, pair.MissingReason, "no bridged Pulumi schema")
+	assert.Contains(t, pair.MissingReason, "no bridged Pulumi provider",
+		"whole-provider absence names the provider, not a resource type")
 
 	// Bridged present, live absent.
 	pair = resolveInjectionProviders(t.Context(), &fakeAccessor{},
-		pairProviders("registry.opentofu.org/hashicorp/aws"),
+		bridgedProvidersFor("registry.opentofu.org/hashicorp/aws"),
 		"registry.opentofu.org/hashicorp/aws", "aws_x")
 	assert.Contains(t, pair.MissingReason, "no open provider")
 
 	// A bridged provider that does not know this resource type is the
 	// loader-disagreement case, and says so.
 	pair = resolveInjectionProviders(t.Context(), acc,
-		pairProviders("registry.opentofu.org/hashicorp/aws"),
+		bridgedProvidersFor("registry.opentofu.org/hashicorp/aws"),
 		"registry.opentofu.org/hashicorp/aws", "aws_unknown_type")
-	assert.Contains(t, pair.MissingReason, "aws_unknown_type")
+	assert.Contains(t, pair.MissingReason, "has no schema for resource type aws_unknown_type",
+		"resource-type absence is distinguishable from provider absence")
 }
 
-func TestEquivalentProviderAddrs(t *testing.T) {
+// The equivalence rules themselves are pinned in pkg/provideraddr; this pins
+// only that the local alias delegates there.
+func TestEquivalentProviderAddrs_Delegates(t *testing.T) {
 	t.Parallel()
 
 	assert.Equal(t,
-		[]string{"registry.terraform.io/hashicorp/aws", "registry.opentofu.org/hashicorp/aws"},
+		[]string{"registry.terraform.io/hashicorp/aws", "registry.opentofu.org/hashicorp/aws", "hashicorp/aws"},
 		equivalentProviderAddrs("registry.terraform.io/hashicorp/aws"))
-	assert.Equal(t,
-		[]string{"registry.opentofu.org/hashicorp/aws", "registry.terraform.io/hashicorp/aws"},
-		equivalentProviderAddrs("registry.opentofu.org/hashicorp/aws"))
-	// An address on neither registry has no equivalent form.
-	assert.Equal(t, []string{"example.com/acme/thing"},
-		equivalentProviderAddrs("example.com/acme/thing"))
 }

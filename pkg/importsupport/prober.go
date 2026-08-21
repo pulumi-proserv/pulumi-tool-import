@@ -22,6 +22,7 @@ import (
 	"os"
 	"sync"
 
+	"github.com/pulumi-proserv/pulumi-tool-import/pkg/provideraddr"
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/tfprovider"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/vendored/opentofu/providers"
 )
@@ -153,15 +154,34 @@ func (p *Prober) Provider(ctx context.Context, providerAddr string) (tfprovider.
 
 // provider returns a running provider, loading it on first use. The caller
 // holds p.mu.
+//
+// Every map here is keyed by whatever address its source used — p.versions by
+// the lock file, the caller's providerAddr by state — and terraform writes
+// registry.terraform.io where tofu writes registry.opentofu.org for the same
+// provider, so a mixed terraform/tofu history names one provider both ways in
+// one run. Lookups therefore try the equivalent forms; without that, the
+// version lookup misses, the probe falls back to the curated list, and a type
+// outside it is never flagged non-importable at all (issue #26's address-form
+// half).
 func (p *Prober) provider(ctx context.Context, providerAddr string) (tfprovider.Provider, bool) {
-	if provider, ok := p.providers[providerAddr]; ok {
-		return provider, true
+	for _, addr := range provideraddr.Equivalents(providerAddr) {
+		if provider, ok := p.providers[addr]; ok {
+			return provider, true
+		}
 	}
 	if p.failed[providerAddr] {
 		return nil, false
 	}
 
 	version := p.versions[providerAddr]
+	if version == "" {
+		for _, addr := range provideraddr.Equivalents(providerAddr) {
+			if v := p.versions[addr]; v != "" {
+				version = v
+				break
+			}
+		}
+	}
 	if version == "" {
 		p.failed[providerAddr] = true
 		p.Warn(fmt.Sprintf("no locked version for provider %s, cannot check which of its resource types "+

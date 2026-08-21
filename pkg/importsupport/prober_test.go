@@ -17,12 +17,14 @@ package importsupport
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/tfprovider"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/vendored/opentofu/providers"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/vendored/opentofu/tfdiags"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -154,4 +156,30 @@ func TestProberDiscardsTheDeadProvider(t *testing.T) {
 
 	assert.True(t, dead.closed, "the dead provider should be shut down")
 	assert.Empty(t, p.providers, "the dead provider should not stay cached")
+}
+
+// The prober's maps are keyed from the lock file while callers pass
+// state-derived addresses, and terraform writes registry.terraform.io where
+// tofu writes registry.opentofu.org for the same provider. The version lookup
+// must treat the hosts as equivalent, or a mixed terraform/tofu history sends
+// every probe to the curated fallback (issue #26's address-form half — the
+// exact scenario the pair resolver alone cannot fix, because Check runs first).
+func TestProberResolvesEquivalentRegistryHosts(t *testing.T) {
+	t.Parallel()
+
+	p := NewProber(map[string]string{
+		"registry.terraform.io/hashicorp/aws": "5.100.0",
+	})
+	var loadedAddr, loadedVersion string
+	p.loadProvider = func(_ context.Context, providerAddr, version string) (tfprovider.Provider, error) {
+		loadedAddr, loadedVersion = providerAddr, version
+		return nil, fmt.Errorf("stop before launching a real provider")
+	}
+
+	// Queried with the opentofu form: the lock-file version must be found.
+	_, _ = p.Provider(context.Background(), "registry.opentofu.org/hashicorp/aws")
+	require.Equal(t, "registry.opentofu.org/hashicorp/aws", loadedAddr,
+		"the provider loads under the requested form")
+	require.Equal(t, "5.100.0", loadedVersion,
+		"the version comes from the lock file's terraform.io key")
 }

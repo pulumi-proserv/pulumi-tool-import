@@ -446,8 +446,8 @@ func bridgedSchemaMap(
 	pulumiProviders map[providermap.TerraformProviderName]*ProviderWithMetadata,
 	providerName, resourceType string,
 ) shim.SchemaMap {
-	pwm, ok := pulumiProviders[providermap.TerraformProviderName(providerName)]
-	if !ok || pwm == nil || pwm.P == nil {
+	pwm := lookupBridgedProvider(pulumiProviders, providerName)
+	if pwm == nil {
 		return nil
 	}
 	shimResource := pwm.P.ResourcesMap().Get(resourceType)
@@ -567,8 +567,8 @@ func buildResourceURN(
 		return address
 	}
 
-	prov, ok := pulumiProviders[providermap.TerraformProviderName(providerName)]
-	if !ok {
+	prov := lookupBridgedProvider(pulumiProviders, providerName)
+	if prov == nil {
 		return address
 	}
 

@@ -17,8 +17,8 @@ package pkg
 import (
 	"context"
 	"fmt"
-	"strings"
 
+	"github.com/pulumi-proserv/pulumi-tool-import/pkg/provideraddr"
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/providermap"
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/tfprovider"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
@@ -42,23 +42,18 @@ type InjectionProviderPair struct {
 	MissingReason string
 }
 
-// equivalentProviderAddrs returns addr plus its other-registry form: terraform
-// writes registry.terraform.io where tofu writes registry.opentofu.org for the
-// same provider, and the two loaders key their maps from different sources
-// (the lock file vs state addresses), so a mixed terraform/tofu history can
-// name one provider both ways in one run.
+// equivalentProviderAddrs is provideraddr.Equivalents — the one home for the
+// two-registries-one-provider fact. Kept as a local alias so this package's
+// correlation sites read uniformly.
 func equivalentProviderAddrs(addr string) []string {
-	const tfHost, tofuHost = "registry.terraform.io/", "registry.opentofu.org/"
-	switch {
-	case strings.HasPrefix(addr, tfHost):
-		return []string{addr, tofuHost + strings.TrimPrefix(addr, tfHost)}
-	case strings.HasPrefix(addr, tofuHost):
-		return []string{addr, tfHost + strings.TrimPrefix(addr, tofuHost)}
-	default:
-		return []string{addr}
-	}
+	return provideraddr.Equivalents(addr)
 }
 
+// resolveInjectionProviders resolves both halves of the pair for one provider
+// address — the live Terraform provider and the bridged schema for
+// resourceType — or names the missing half in MissingReason. It is the one
+// place the pair is correlated; every lookup tries the equivalent registry
+// forms of the address.
 func resolveInjectionProviders(
 	ctx context.Context,
 	accessor ProviderAccessor,
@@ -68,8 +63,9 @@ func resolveInjectionProviders(
 ) InjectionProviderPair {
 	var pair InjectionProviderPair
 
-	for _, addr := range equivalentProviderAddrs(providerName) {
-		if prov, ok := accessor.Provider(ctx, addr); ok {
+	addrs := equivalentProviderAddrs(providerName)
+	for _, addr := range addrs {
+		if prov, ok := accessor.Provider(ctx, addr); ok && prov != nil {
 			pair.Live = prov
 			break
 		}
@@ -80,16 +76,10 @@ func resolveInjectionProviders(
 		return pair
 	}
 
-	var pwm *ProviderWithMetadata
-	for _, addr := range equivalentProviderAddrs(providerName) {
-		if p, ok := pulumiProviders[providermap.TerraformProviderName(addr)]; ok && p != nil {
-			pwm = p
-			break
-		}
-	}
+	pwm := lookupBridgedProvider(pulumiProviders, providerName)
 	if pwm == nil {
 		pair.MissingReason = fmt.Sprintf(
-			"no bridged Pulumi schema for provider %s, though the import-support probe loaded it: "+
+			"no bridged Pulumi provider for %s, though the import-support probe loaded it: "+
 				"the provider loaders disagree (see issue #26)", providerName)
 		return pair
 	}
@@ -101,8 +91,25 @@ func resolveInjectionProviders(
 	}
 	if pair.SchemaMap == nil {
 		pair.MissingReason = fmt.Sprintf(
-			"no bridged Pulumi schema for %s, though the import-support probe loaded %s: "+
-				"the provider loaders disagree (see issue #26)", resourceType, providerName)
+			"bridged provider %s has no schema for resource type %s: "+
+				"the provider loaders disagree (see issue #26)", providerName, resourceType)
 	}
 	return pair
+}
+
+// lookupBridgedProvider finds the bridged provider for an address, trying the
+// equivalent registry forms, and guarding every level a partially-populated
+// entry can leave nil. It is the only way this package keys pulumiProviders by
+// a state- or lock-derived address.
+func lookupBridgedProvider(
+	pulumiProviders map[providermap.TerraformProviderName]*ProviderWithMetadata,
+	providerName string,
+) *ProviderWithMetadata {
+	for _, addr := range equivalentProviderAddrs(providerName) {
+		if p, ok := pulumiProviders[providermap.TerraformProviderName(addr)]; ok &&
+			p != nil && p.Provider != nil && p.P != nil {
+			return p
+		}
+	}
+	return nil
 }
