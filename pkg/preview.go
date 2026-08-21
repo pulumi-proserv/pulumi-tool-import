@@ -27,9 +27,12 @@ type PreviewKey struct {
 }
 
 type PreviewStep struct {
-	Op          string                 `json:"op"`
-	URN         string                 `json:"urn"`
-	NewState    map[string]interface{} `json:"newState"`
+	Op       string                 `json:"op"`
+	URN      string                 `json:"urn"`
+	NewState map[string]interface{} `json:"newState"`
+	// OldState is populated by "pulumi refresh --preview-only --json" steps;
+	// plain preview steps carry only NewState.
+	OldState    map[string]interface{} `json:"oldState,omitempty"`
 	DiffReasons []string               `json:"diffReasons,omitempty"`
 }
 

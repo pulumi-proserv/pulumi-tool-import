@@ -44,6 +44,7 @@ func newPatchStateTfCmd() *cobra.Command {
 	var nonImportablePath string
 	var previewJSONPath string
 	var backupDir string
+	var skipRefreshReport bool
 
 	cmd := &cobra.Command{
 		Use:   "tf",
@@ -331,30 +332,8 @@ values out of stack config.
 						"(%d outstanding change(s) remain in the preview).\n", outstanding)
 				}
 
-				// The refresh report is the only check that consults the
-				// deployed resource; the preview above compares the program
-				// against the injected state, which is only as current as the
-				// Terraform state it came from. Report, never gate: a diff has
-				// three possible causes (stale TF state, a wrong program, Read
-				// normalisation) and only the operator can tell them apart. A
-				// failure to produce the report is a warning for the same
-				// reason — the mutation is already verified and kept.
-				if len(injectedURNs) > 0 {
-					refresh, err := session.RefreshPreviewJSON(ctx)
-					if err != nil {
-						fmt.Fprintf(os.Stderr, "\nWARNING: could not run the refresh report "+
-							"(pulumi refresh --preview-only): %v\n", err)
-					} else {
-						report := pkg.BuildRefreshReport(refresh, injectedURNs)
-						fmt.Fprintf(os.Stderr, "\nRefresh report — what the provider's Read says "+
-							"about each injected resource (informational, nothing is gated on it):\n")
-						for _, line := range report {
-							fmt.Fprintf(os.Stderr, "  %s\n", line)
-						}
-						fmt.Fprintf(os.Stderr, "A \"no change\" line is not confirmation: for many "+
-							"non-importable types, Read returns exactly what it was given. See "+
-							"docs/non-importable-resources.md.\n")
-					}
+				if len(injectedURNs) > 0 && !skipRefreshReport {
+					reportRefresh(ctx, session, injectedURNs)
 				}
 			} else {
 				if err := os.WriteFile(outPath, patched, 0o600); err != nil {
@@ -438,6 +417,9 @@ values out of stack config.
 		"Sidecar from \"resolve tf\" whose resources should be written into state")
 	cmd.Flags().StringVar(&previewJSONPath, "preview-json", "",
 		"Output of \"pulumi preview --json\", the source of injected resource metadata")
+	cmd.Flags().BoolVar(&skipRefreshReport, "skip-refresh-report", false,
+		"Skip the post-verification refresh report (it calls the provider's Read for every "+
+			"resource in the stack, which can be slow on large stacks)")
 	cmd.Flags().StringVar(&backupDir, "backup-dir", "",
 		"Directory to write the pre-mutation stack backup to (stack mode only; default: current directory). "+
 			"The backup contains decrypted secrets — place it somewhere appropriate.")
@@ -466,4 +448,24 @@ func loadProvidersForDigest(
 		return nil, fmt.Errorf("loading provider schemas for property name mapping: %w", err)
 	}
 	return providers, nil
+}
+
+// reportRefresh runs the refresh report after a verified stack-mode mutation:
+// see pkg.BuildRefreshReport for what it says and why it is a report, never a
+// gate. A failure to produce it is a warning for the same reason — the
+// mutation is already verified and kept.
+func reportRefresh(ctx context.Context, session *pkg.StackSession, injectedURNs []string) {
+	refresh, err := session.RefreshPreviewJSON(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "\nWARNING: could not run the refresh report "+
+			"(pulumi refresh --preview-only): %v\n", err)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "\nRefresh report — what the provider's Read says about each "+
+		"injected resource (informational, nothing is gated on it):\n")
+	for _, line := range pkg.BuildRefreshReport(refresh, injectedURNs) {
+		fmt.Fprintf(os.Stderr, "  %s\n", line)
+	}
+	fmt.Fprintf(os.Stderr, "A \"no diff\" line is not confirmation: for many non-importable "+
+		"types, Read returns exactly what it was given. See docs/non-importable-resources.md.\n")
 }

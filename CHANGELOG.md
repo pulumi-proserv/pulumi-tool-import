@@ -9,20 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **A refresh report after injection** (#41). Stack mode now runs
+- **A refresh report after injection** (#41). Stack mode runs
   `pulumi refresh --preview-only --json` after verification and reports, per
-  injected resource, what the provider's `Read` says about it: a resource the
-  provider reports **gone** (the injected ID resolves to nothing — the
-  sharpest finding, since the next `up` would create or replace something), a
-  property live disagrees on (named with both values), or "no change" — which
-  the report explicitly does not present as confirmation, since for many
-  non-importable types `Read` returns exactly what it was given. This is the
-  only check in the pipeline that consults the deployed resource; the
-  verifying preview compares the program against injected state, which is only
-  as current as the Terraform state it came from. It is a report, never a
-  gate, and it never writes: `--preview-only` is load-bearing, because a real
-  refresh can delete an injected resource from state when `Read` reports it
-  gone.
+  injected resource: **GONE** (the injected ID resolves to nothing), a
+  property live disagrees on (named with both values), or "no diff" — never
+  presented as confirmation. A report, not a gate, and it never writes;
+  `--skip-refresh-report` opts out. See docs/non-importable-resources.md for
+  why `Read` silence proves little for these types.
 
 - `version` command, printing the version stamped into the binary at release
   time. Previously `pkg/version.Version` was set via ldflags but no command

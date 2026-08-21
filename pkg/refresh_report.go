@@ -15,83 +15,39 @@
 package pkg
 
 import (
-	"bytes"
-	"context"
-	"encoding/json"
 	"fmt"
 	"reflect"
 	"sort"
 )
 
-// The refresh report is the one check that consults the deployed resource
-// (#41). Injection's values come from the Terraform state file, and the
-// verifying preview compares the program against the injected state — neither
-// ever reads live. "pulumi refresh --preview-only --json" calls the provider's
-// Read and reports both oldState and newState per resource, without writing
-// anything.
+// maxRenderedValueRunes bounds one rendered property value in a report line;
+// the CLI has already masked state-marked secrets as [secret].
+const maxRenderedValueRunes = 80
+
+// maxDiffLinesPerResource bounds per-resource property diffs, matching
+// formatDiffReasons' cap: a widely-normalising Read must not bury the GONE
+// lines.
+const maxDiffLinesPerResource = 8
+
+// BuildRefreshReport renders, per injected URN, what the provider's Read said
+// about it — the one check in the pipeline that consults the deployed
+// resource. It is a report, never a gate: a diff has three causes the tool
+// cannot distinguish (stale Terraform state, a wrong program, Read
+// normalisation), so the operator adjudicates; and "no diff" is not
+// confirmation, since for many non-importable types Read returns exactly what
+// it was given. Every injected URN gets at least one line — silence is never
+// allowed to read as success — so the result is empty only when injectedURNs
+// is empty.
 //
-// It is a report, never a gate. A diff has three possible causes — stale
-// Terraform state, a wrong program, or the provider's Read normalising values
-// — and the tool cannot tell them apart, so an automatic verdict would be a
-// guess. And "no diff" is not confirmation: for the types this feature exists
-// for, Read may return exactly what it was given (see
-// docs/non-importable-resources.md, "Verify with preview, not refresh"), so
-// silence means "learned nothing", and the report says so rather than letting
-// it read as success.
-
-// RefreshStep is one resource in a "pulumi refresh --preview-only --json" run.
-type RefreshStep struct {
-	Op       string                 `json:"op"`
-	URN      string                 `json:"urn"`
-	OldState map[string]interface{} `json:"oldState"`
-	NewState map[string]interface{} `json:"newState"`
-}
-
-// RefreshDigest is the parsed output of "pulumi refresh --preview-only --json".
-type RefreshDigest struct {
-	Steps []RefreshStep `json:"steps"`
-}
-
-// ParseRefreshJSON parses "pulumi refresh --preview-only --json" output.
-func ParseRefreshJSON(data []byte) (*RefreshDigest, error) {
-	var digest RefreshDigest
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.UseNumber()
-	if err := dec.Decode(&digest); err != nil {
-		return nil, fmt.Errorf("parsing refresh preview JSON: %w", err)
-	}
-	return &digest, nil
-}
-
-// refreshPreviewJSONArgs builds the CLI args for the refresh report run.
-// --preview-only is load-bearing: a real refresh can DELETE an injected
-// resource from state when Read reports it gone, resurrecting the destructive
-// create this feature exists to prevent. This path must never write.
-func refreshPreviewJSONArgs(stackName string) []string {
-	return []string{"refresh", "--preview-only", "--json", "--stack", stackName}
-}
-
-// RefreshPreviewJSON runs "pulumi refresh --preview-only --json" and parses
-// the result. Like PreviewJSON, it shells out: the Automation API's
-// PreviewRefresh tails an event stream that does not carry per-resource
-// old/new state.
-func (s *StackSession) RefreshPreviewJSON(ctx context.Context) (*RefreshDigest, error) {
-	stdout, stderr, code, err := s.stack.Workspace().PulumiCommand().Run(
-		ctx, s.projectDir, nil, nil, nil, nil, refreshPreviewJSONArgs(s.stackName)...)
-	if err != nil || code != 0 {
-		return nil, fmt.Errorf("pulumi refresh --preview-only failed (exit %d): %w\n%s", code, err, stderr)
-	}
-	return ParseRefreshJSON([]byte(stdout))
-}
-
-const refreshValueMax = 80
-
-// BuildRefreshReport renders, per injected URN, what the provider's Read
-// returned versus what was injected. Empty result means every injected
-// resource reported "no change" — which the caller must still present as
-// "learned nothing new", never as confirmation.
-func BuildRefreshReport(digest *RefreshDigest, injectedURNs []string) []string {
-	byURN := make(map[string]RefreshStep, len(digest.Steps))
+// The digest's op vocabulary, verified against the pinned pulumi/pkg source:
+// a refresh-preview step is recorded from the pre-event with op "refresh" and
+// newState a pre-Read COPY of oldState; the CLI rewrites the step only when
+// the result is an update with a detailed diff, or a delete. So a property
+// diff is computable only on "update" steps — an op "refresh" step carries no
+// live values, and the report says "no diff reported" rather than pretending
+// it compared anything.
+func BuildRefreshReport(digest *PreviewDigest, injectedURNs []string) []string {
+	byURN := make(map[string]PreviewStep, len(digest.Steps))
 	for _, step := range digest.Steps {
 		byURN[step.URN] = step
 	}
@@ -110,38 +66,68 @@ func BuildRefreshReport(digest *RefreshDigest, injectedURNs []string) []string {
 				"%s: GONE — the provider's Read says the injected ID resolves to nothing that exists. "+
 					"The next \"pulumi up\" would create it; if the ID names the wrong live object, "+
 					"fix the ID before running anything", urn))
-			continue
-		case "same":
-			// Fall through to the property diff: an op of "same" with byte-equal
-			// states is the no-change case; anything else is still worth naming.
-		}
-		diffs := diffOutputs(outputsOf(step.OldState), outputsOf(step.NewState))
-		if len(diffs) == 0 {
+		case "update":
+			outputs, hasOutputs := outputsOf(step.NewState)
+			old, _ := outputsOf(step.OldState)
+			if !hasOutputs {
+				lines = append(lines, fmt.Sprintf(
+					"%s: the provider reported a diff, but the step carried no outputs to compare — "+
+						"inspect with \"pulumi refresh --preview-only --diff\"", urn))
+				continue
+			}
+			diffs := diffOutputs(old, outputs, idOf(step.OldState), idOf(step.NewState))
+			if len(diffs) == 0 {
+				lines = append(lines, fmt.Sprintf(
+					"%s: the provider reported a diff the outputs comparison cannot see (inputs or "+
+						"metadata) — inspect with \"pulumi refresh --preview-only --diff\"", urn))
+				continue
+			}
+			lines = append(lines, fmt.Sprintf("%s: live disagrees with the injected state:", urn))
+			lines = append(lines, diffs...)
+		default:
+			// "refresh" (and any op this vocabulary gains): the provider's
+			// Read reported no diff, and the step's newState is a pre-Read
+			// copy of oldState, so there are no live values to compare here.
 			lines = append(lines, fmt.Sprintf(
-				"%s: no change reported. This is agreement only if this type's Read consults the "+
-					"API; a Read that returns its input reports the same, so nothing was learned", urn))
-			continue
+				"%s: no diff reported. This confirms only that the ID resolves; for a type whose "+
+					"Read returns its input, nothing else was learned", urn))
 		}
-		lines = append(lines, fmt.Sprintf("%s: live disagrees with the injected state:", urn))
-		lines = append(lines, diffs...)
 	}
 	return lines
 }
 
-func outputsOf(state map[string]interface{}) map[string]interface{} {
+func outputsOf(state map[string]interface{}) (map[string]interface{}, bool) {
 	if state == nil {
-		return nil
+		return nil, false
 	}
-	outs, _ := state["outputs"].(map[string]interface{})
-	return outs
+	outs, ok := state["outputs"].(map[string]interface{})
+	return outs, ok
 }
 
-// diffOutputs names each top-level property whose value differs, with both
-// values (truncated — the CLI already masks secrets as [secret], and a report
-// line must stay a line).
-func diffOutputs(old, live map[string]interface{}) []string {
+func idOf(state map[string]interface{}) string {
+	if state == nil {
+		return ""
+	}
+	id, _ := state["id"].(string)
+	return id
+}
+
+// diffOutputs names each top-level property whose value differs between the
+// injected outputs and the provider's Read, plus the ID — the one value the
+// docs identify as genuinely checked against the cloud for every type. Lines
+// come back fully formed (indentation included), capped at
+// maxDiffLinesPerResource. An array differing only in element order is
+// annotated as such rather than dumped: Read commonly reorders multi-valued
+// properties, and that noise must not train the operator to skim.
+func diffOutputs(injected, live map[string]interface{}, injectedID, liveID string) []string {
+	var diffs []string
+	if injectedID != liveID && liveID != "" {
+		diffs = append(diffs, fmt.Sprintf("    id: injected=%s live=%s",
+			renderRefreshValue(injectedID, true), renderRefreshValue(liveID, true)))
+	}
+
 	keys := map[string]bool{}
-	for k := range old {
+	for k := range injected {
 		keys[k] = true
 	}
 	for k := range live {
@@ -149,24 +135,60 @@ func diffOutputs(old, live map[string]interface{}) []string {
 	}
 	sorted := make([]string, 0, len(keys))
 	for k := range keys {
-		if k == rawStateDeltaKey || k == metaKey {
+		if isReservedOutputKey(k) {
 			continue
 		}
 		sorted = append(sorted, k)
 	}
 	sort.Strings(sorted)
 
-	var diffs []string
+	total := 0
 	for _, k := range sorted {
-		ov, oOK := old[k]
+		iv, iOK := injected[k]
 		lv, lOK := live[k]
-		if oOK && lOK && reflect.DeepEqual(ov, lv) {
+		if iOK && lOK && reflect.DeepEqual(iv, lv) {
 			continue
 		}
-		diffs = append(diffs, fmt.Sprintf("  %s: state=%s live=%s",
-			k, renderRefreshValue(ov, oOK), renderRefreshValue(lv, lOK)))
+		total++
+		if len(diffs) >= maxDiffLinesPerResource {
+			continue
+		}
+		if iOK && lOK && equalIgnoringOrder(iv, lv) {
+			diffs = append(diffs, fmt.Sprintf("    %s: differs only in element order", k))
+			continue
+		}
+		diffs = append(diffs, fmt.Sprintf("    %s: injected=%s live=%s",
+			k, renderRefreshValue(iv, iOK), renderRefreshValue(lv, lOK)))
+	}
+	if extra := total - maxDiffLinesPerResource; extra > 0 {
+		diffs = append(diffs, fmt.Sprintf("    … and %d more propert%s", extra,
+			map[bool]string{true: "y", false: "ies"}[extra == 1]))
 	}
 	return diffs
+}
+
+// equalIgnoringOrder reports whether two values are lists of scalars with the
+// same elements in a different order.
+func equalIgnoringOrder(a, b interface{}) bool {
+	as, aOK := a.([]interface{})
+	bs, bOK := b.([]interface{})
+	if !aOK || !bOK || len(as) != len(bs) {
+		return false
+	}
+	render := func(vs []interface{}) []string {
+		out := make([]string, 0, len(vs))
+		for _, v := range vs {
+			switch v.(type) {
+			case map[string]interface{}, []interface{}:
+				return nil // only scalar lists are order-compared
+			}
+			out = append(out, fmt.Sprintf("%v", v))
+		}
+		sort.Strings(out)
+		return out
+	}
+	ra, rb := render(as), render(bs)
+	return ra != nil && rb != nil && reflect.DeepEqual(ra, rb)
 }
 
 func renderRefreshValue(v interface{}, present bool) string {
@@ -174,8 +196,8 @@ func renderRefreshValue(v interface{}, present bool) string {
 		return "(absent)"
 	}
 	s := fmt.Sprintf("%v", v)
-	if len(s) > refreshValueMax {
-		s = s[:refreshValueMax] + "…"
+	if r := []rune(s); len(r) > maxRenderedValueRunes {
+		s = string(r[:maxRenderedValueRunes]) + "…"
 	}
 	return s
 }
