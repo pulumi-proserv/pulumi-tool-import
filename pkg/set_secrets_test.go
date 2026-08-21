@@ -58,3 +58,33 @@ func TestParseSecretMapping(t *testing.T) {
 		assert.Error(t, err)
 	})
 }
+
+// A large-integer sensitive attribute must reach stack config with its exact
+// digits: this value is set as the secret consumers later resolve, so a
+// float64 round-trip here writes a wrong secret, not a cosmetic difference.
+func TestExtractSecretValues_PreservesLargeIntegers(t *testing.T) {
+	t.Parallel()
+
+	state := []byte(`{"resources":[{"type":"aws_x","name":"n","mode":"managed","instances":[
+		{"attributes":{"secret_number":1234567890123456789}}]}]}`)
+	cm, err := extractSecretValues(state, []SecretMapping{{
+		TerraformAddress: "aws_x.n", Attribute: "secret_number", ConfigKey: "k",
+	}})
+	require.NoError(t, err)
+	assert.Equal(t, "1234567890123456789", cm["k"].Value)
+	assert.True(t, cm["k"].Secret)
+}
+
+// Integer index keys arrive as json.Number once the decode preserves
+// precision, and the address must still render as [0], not fail to match.
+func TestExtractSecretValues_IntegerIndexKeyStillAddresses(t *testing.T) {
+	t.Parallel()
+
+	state := []byte(`{"resources":[{"type":"aws_x","name":"n","mode":"managed","instances":[
+		{"index_key":0,"attributes":{"password":"hunter2"}}]}]}`)
+	cm, err := extractSecretValues(state, []SecretMapping{{
+		TerraformAddress: "aws_x.n[0]", Attribute: "password", ConfigKey: "k",
+	}})
+	require.NoError(t, err)
+	assert.Equal(t, "hunter2", cm["k"].Value)
+}

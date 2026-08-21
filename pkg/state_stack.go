@@ -44,7 +44,10 @@ func NewStackSession(ctx context.Context, projectDir, stackName string) (*StackS
 }
 
 // Export returns the full {"version":…,"deployment":{…}} envelope that
-// "pulumi stack export" writes. auto.Stack.Export returns an
+// "pulumi stack export" writes. Precision-safe by construction:
+// UntypedDeployment.Deployment is json.RawMessage — the SDK keeps it opaque
+// precisely so round-tripping cannot lose information — so marshalling the
+// struct re-emits the deployment bytes verbatim (issue #27's audit). auto.Stack.Export returns an
 // apitype.UntypedDeployment whose Deployment field is only the inner object,
 // so it must be re-marshalled whole; returning dep.Deployment alone fails
 // every consumer here with a misleading "state missing deployment".

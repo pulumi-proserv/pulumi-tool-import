@@ -38,6 +38,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`set-secrets` corrupted large-integer secrets.** The state file was
+  decoded with a plain `json.Unmarshal` and the value stringified with `%v`,
+  so an integer secret above 2^53 was written into stack config in scientific
+  notation — a wrong secret, the same defect fixed in
+  `DiscoverSensitiveSecrets`. The decode now preserves precision, integer
+  `index_key` addressing included. This closes #27's audit: the remaining
+  plain decodes (`state_verify`, the stack Export/Import envelope) were traced
+  and are precision-safe by construction, and now say so.
+
 - **Secrets could reach state in plaintext, two ways.** State in
   `tofu show -json` format got no redaction at all — the format is selected
   automatically on the presence of a `format_version` key, with no flag to
