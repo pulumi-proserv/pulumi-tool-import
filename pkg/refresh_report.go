@@ -24,28 +24,20 @@ import (
 // the CLI has already masked state-marked secrets as [secret].
 const maxRenderedValueRunes = 80
 
-// maxDiffLinesPerResource bounds per-resource property diffs, matching
-// formatDiffReasons' cap: a widely-normalising Read must not bury the GONE
-// lines.
+// maxDiffLinesPerResource bounds per-resource property diffs: a
+// widely-normalising Read must not bury the GONE lines.
 const maxDiffLinesPerResource = 8
 
 // BuildRefreshReport renders, per injected URN, what the provider's Read said
-// about it — the one check in the pipeline that consults the deployed
-// resource. It is a report, never a gate: a diff has three causes the tool
-// cannot distinguish (stale Terraform state, a wrong program, Read
-// normalisation), so the operator adjudicates; and "no diff" is not
-// confirmation, since for many non-importable types Read returns exactly what
-// it was given. Every injected URN gets at least one line — silence is never
-// allowed to read as success — so the result is empty only when injectedURNs
-// is empty.
+// about it. It is a report, never a gate: a diff has causes the tool cannot
+// distinguish (stale Terraform state, a wrong program, Read normalisation),
+// so the operator adjudicates. Every injected URN gets at least one line —
+// silence is never allowed to read as success.
 //
-// The digest's op vocabulary, verified against the pinned pulumi/pkg source:
-// a refresh-preview step is recorded from the pre-event with op "refresh" and
-// newState a pre-Read COPY of oldState; the CLI rewrites the step only when
-// the result is an update with a detailed diff, or a delete. So a property
-// diff is computable only on "update" steps — an op "refresh" step carries no
-// live values, and the report says "no diff reported" rather than pretending
-// it compared anything.
+// The op vocabulary, verified against the pinned pulumi/pkg source: an
+// unchanged resource carries op "refresh" with newState a pre-Read COPY of
+// oldState; the CLI rewrites a step only to "update" (detailed diff) or
+// "delete". So a property diff is computable only on "update" steps.
 func BuildRefreshReport(digest *PreviewDigest, injectedURNs []string) []string {
 	byURN := make(map[string]PreviewStep, len(digest.Steps))
 	for _, step := range digest.Steps {
@@ -85,9 +77,8 @@ func BuildRefreshReport(digest *PreviewDigest, injectedURNs []string) []string {
 			lines = append(lines, fmt.Sprintf("%s: live disagrees with the injected state:", urn))
 			lines = append(lines, diffs...)
 		default:
-			// "refresh" (and any op this vocabulary gains): the provider's
-			// Read reported no diff, and the step's newState is a pre-Read
-			// copy of oldState, so there are no live values to compare here.
+			// "refresh": no diff reported, and newState is a pre-Read copy of
+			// oldState, so there are no live values to compare here.
 			lines = append(lines, fmt.Sprintf(
 				"%s: no diff reported. This confirms only that the ID resolves; for a type whose "+
 					"Read returns its input, nothing else was learned", urn))
@@ -113,11 +104,9 @@ func idOf(state map[string]interface{}) string {
 }
 
 // diffOutputs names each top-level property whose value differs between the
-// injected outputs and the provider's Read, plus the ID — the one value the
-// docs identify as genuinely checked against the cloud for every type. Lines
-// come back fully formed (indentation included), capped at
+// injected outputs and the provider's Read, plus the ID, capped at
 // maxDiffLinesPerResource. An array differing only in element order is
-// annotated as such rather than dumped: Read commonly reorders multi-valued
+// annotated rather than dumped: Read commonly reorders multi-valued
 // properties, and that noise must not train the operator to skim.
 func diffOutputs(injected, live map[string]interface{}, injectedID, liveID string) []string {
 	var diffs []string

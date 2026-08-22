@@ -16,11 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--state` is an error rather than a silent switch into stack mode.
 - **A refresh report after injection** (#41). Stack mode runs
   `pulumi refresh --preview-only --json` after verification and reports, per
-  injected resource: **GONE** (the injected ID resolves to nothing), a
-  property live disagrees on (named with both values), or "no diff" — never
-  presented as confirmation. A report, not a gate, and it never writes;
-  `--skip-refresh-report` opts out. See docs/non-importable-resources.md for
-  why `Read` silence proves little for these types.
+  injected resource: **GONE**, a property live disagrees on (with both
+  values), or "no diff" — never presented as confirmation. A report, not a
+  gate, and it never writes; `--skip-refresh-report` opts out.
 
 - `version` command, printing the version stamped into the binary at release
   time. Previously `pkg/version.Version` was set via ldflags but no command
