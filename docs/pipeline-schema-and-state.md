@@ -92,16 +92,14 @@ re-marshalling `r.AttributeValues` ([:299](https://github.com/pulumi-proserv/pul
 That second path loses three things at once:
 
 1. **Numbers.** `json.Unmarshal` without `UseNumber` turns every JSON number
-   into `float64`; re-marshalling a 19-digit integer yields a rounded value
-   (`1234567890123456789` → `1234567890123456800`). The loss is silent — it
-   takes an integer above 2^53 to trigger it, and scientific notation only
-   appears at ≥1e21 — so nothing downstream can detect that it happened. The
-   raw `.tfstate` path was fixed first (`decodeAttrs`,
-   [pkg/module_map.go:459](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L459)); this path is fixed too, via
+   into `float64`, silently rounding integers above 2^53. Both entry paths
+   decode with precision kept: the raw `.tfstate` path via `decodeAttrs`
+   ([pkg/module_map.go:459](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L459)), this path via
    `State.UseJSONNumber(true)` — the only hook that reaches `tfjson`'s own
-   decoder. See
-   [#27](https://github.com/pulumi-proserv/pulumi-tool-import/issues/27) and
-   [Weaknesses §1](#weaknesses-and-open-questions).
+   decoder, whose custom `UnmarshalJSON` ignores `UseNumber` at the call
+   site. The consuming-side ceiling — `resource.PropertyValue` holds numbers
+   as `float64` — is
+   [#29](https://github.com/pulumi-proserv/pulumi-tool-import/issues/29).
 2. **Sensitivity.** `sensitivePathsFromTfjson` derives sensitive paths from
    `tfjson.StateResource.SensitiveValues` (`terraform-json@v0.27.1/state.go:164`)
    and `rawStateFromTfjson` sets them on the instance
@@ -136,8 +134,8 @@ corrupt an attribute, and no guard exists.
 | Field | Source | Notes |
 |---|---|---|
 | `TerraformAddress` | `res.Addr` + instance key + module addr ([:384-389](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L384-L389)) | The join key for everything downstream. |
-| `ImportID` | `attrs["id"]` via `formatImportID` ([:399](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L399), definition [:473](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L473)) | Stringified with `%v`. Now safe: `json.Number` is a string type, so `%v` prints the original digits. |
-| `Attributes` | `decodeAttrs(AttrsJSON)` ([:396](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L396), definition [:459](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L459)), then redacted | Decodes with `UseNumber`, so integers above 2^53 survive as `json.Number`. Fixed on this branch. |
+| `ImportID` | `attrs["id"]` via `formatImportID` ([:399](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L399), definition [:473](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L473)) | Stringified with `%v`, which is safe: `json.Number` is a string type, so `%v` prints the original digits. |
+| `Attributes` | `decodeAttrs(AttrsJSON)` ([:396](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L396), definition [:459](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L459)), then redacted | Decodes with `UseNumber`, so integers above 2^53 survive as `json.Number`. |
 | `TranslatedURN` | `buildResourceURN` ([:592](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L592)) | Needs the Pulumi provider mapping; falls back to the raw TF address when absent ([:601](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L601), [:606](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L606), [:611](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L611)). |
 | `Mode` | `managed` / `data` ([:405-407](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L405-L407)) | Data sources get no URN and are never imported. |
 | `NonImportable` | `importChecker.Check` ([:435](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L435)) | See S2b. |
@@ -314,9 +312,7 @@ The digest is read at [cmd/import_id_match.go:86](https://github.com/pulumi-pros
 sidecar is written with `json.MarshalIndent` ([cmd/non_importable.go:55](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/cmd/non_importable.go#L55)), so
 numbers now cross as `json.Number` and reach `LoadNonImportableFile`
 ([pkg/non_importable_file.go:36](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/non_importable_file.go#L36)) — which reads them back with `UseNumber` —
-exactly as they were in Terraform state. Before the fix on this branch the care
-was applied only at the reading end and every number had already been through
-`float64`.
+exactly as they were in Terraform state.
 
 The sidecar is consumed by `patch-state tf --non-importable`
 ([cmd/patch_state_tf.go:260](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/cmd/patch_state_tf.go#L260)) — see S7.
@@ -738,49 +734,7 @@ state).
 
 Ordered roughly by how much damage each can do.
 
-### 1. `UseNumber` at the producing end — audited and closed (#27)
-
-**Resolved.** The original finding was that `UseNumber` appeared only where the
-tool *read* a document it did not write, while every site that *produced* one
-decoded plainly — so the precision was already gone before the careful reader
-saw it. The audit #27 asked for is complete: every producing site on the path
-into Pulumi state is fixed, and the remaining plain decodes were each traced
-and are precision-safe by usage or by construction (`VerifyDeploymentIntegrity`
-only reads and its caller keeps the original bytes; the stack Export/Import
-envelope is `json.RawMessage`, kept opaque by the SDK). The fixed sites:
-
-| Site | Fix |
-|---|---|
-| [pkg/module_map.go:396](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L396) | `decodeAttrs` ([:459](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L459)) decodes `AttrsJSON` with `UseNumber`, so digest `attributes` carry `json.Number`. |
-| [pkg/module_map.go:399](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L399) | `formatImportID` ([:473](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L473)) is still `%v`, but `json.Number` is a string type, so it now prints the original digits. |
-| [cmd/import_id_match.go:86](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/cmd/import_id_match.go#L86), [cmd/patch_state_tf.go:179](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/cmd/patch_state_tf.go#L179) | Both digest decodes use `UseNumber`, so the sidecar and the patched deployment keep exact integers. |
-| [pkg/module_map.go:805](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L805), [:826](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L826) | `DiscoverSensitiveSecrets` decodes with `decodeAttrs`. It still stringifies with `fmt.Sprintf("%v", …)`, which is safe because `json.Number` is a string type and prints its original digits. That value goes into stack config, and injection writes it back into state, so a plain decode here corrupts a real secret. |
-| [cmd/resolve_cfn.go:44](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/cmd/resolve_cfn.go#L44), [cmd/patch_state_cfn.go:89](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/cmd/patch_state_cfn.go#L89) | The CFN digest decodes use `UseNumber` too, matching the two TF ones. |
-| [pkg/generate_module_map.go:136](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/generate_module_map.go#L136) | `tfjson.State.UseJSONNumber(true)` on the `tofu show -json` entry path. `tfjson.State` has a custom `UnmarshalJSON` running its own decoder, so `UseNumber` at the call site is ignored — this setter is the only hook that reaches it. |
-| `pkg/set_secrets.go` (`extractSecretValues`) | The `set-secrets` state decode uses `UseNumber` (and rejects trailing data and composite values), so an integer secret above 2^53 reaches stack config exact rather than in scientific notation. |
-
-What the fix does **not** cover, and why each still matters:
-
-| Site | Consequence |
-|---|---|
-| [pkg/raw_state_delta.go:224](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/raw_state_delta.go#L224) | Outputs pass through `float64`; unavoidable, since `resource.PropertyValue` numbers are `float64`. The delta itself is computed from the cty value and stays exact. |
-
-**The failure mode is silence, not a parse error.** Measured: `json.Unmarshal` +
-`json.Marshal` maps `1234567890123456789` to `1234567890123456800` — a wrong
-value that is still valid JSON and still an integer. Scientific notation, which
-Pulumi's state parser would reject loudly, only appears at ≥1e21. AWS account
-IDs are not affected: they appear in state as strings. So the realistic damage
-is a silently wrong large integer (snowflake IDs, epoch-nanosecond timestamps,
-some resource IDs), not a crash.
-
-What remains is consolidation, not correctness: the decode-with-`UseNumber`
-idiom is open-coded at each site rather than shared through one helper (the
-sites decode into different shapes, so the helper is not a drop-in). The
-consuming-side ceiling — `resource.PropertyValue` holding numbers as `float64`
-— is [#29](https://github.com/pulumi-proserv/pulumi-tool-import/issues/29),
-blocked on a bridge-side change.
-
-### 3. Sensitivity is walked twice, independently
+### 1. Sensitivity is walked twice, independently
 
 - `redactSensitivePaths` ([pkg/module_map.go:1135](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L1135)) delegates to `redactAtPath`
   ([:1162](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L1162)), which walks a sensitive path to any depth.
@@ -815,7 +769,7 @@ in `resolve tf` from a string match against `"(sensitive)"`,
 [pkg/import_filler.go:110](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/import_filler.go#L110)) would make the link explicit and dedup-safe. See
 [#28](https://github.com/pulumi-proserv/pulumi-tool-import/issues/28).
 
-### 4. `patch-state` can only repair what the digest kept, and only by name ([#37](https://github.com/pulumi-proserv/pulumi-tool-import/issues/37))
+### 2. `patch-state` can only repair what the digest kept, and only by name ([#37](https://github.com/pulumi-proserv/pulumi-tool-import/issues/37))
 
 `PatchState` matches state resources to digest resources by Pulumi resource
 *name* ([pkg/state_patcher.go:819](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_patcher.go#L819), built by `BuildDigestNameMap` at [:307](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_patcher.go#L307)),
@@ -836,23 +790,17 @@ or a miss ([pkg/state_injector.go:178-195](https://github.com/pulumi-proserv/pul
 "single candidate" guess. It is the same matching problem with the opposite
 policy, and the stricter policy is the one that produces an actionable error.
 
-### 5. Dead and half-wired code obscures which path is real
+### 3. Dead and half-wired code obscures which path is real
 
 - `conformToDelta` ([:1421](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_patcher.go#L1421)): tests only.
 - `PatchStateFromSchema` ([:1785](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_patcher.go#L1785)): tests only, and its default path is
   unreachable in production (the bridge mapping mock carries no `Default` —
   see "The bridge mapping mock" under Schema forms).
 
-**Resolved for the #22 group.** `ParsePreviewJSON`, `VerifyDeploymentIntegrity`,
-`LoadNonImportableFile`, `MapTFAttributesToPulumi` and `PulumiToTFNames` were
-listed here as built-but-unwired; all five are now on the live injection path
-([pkg/state_injector.go:164](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_injector.go#L164), [:232](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_injector.go#L232), [:317](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_injector.go#L317), [:722](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_injector.go#L722), [cmd/patch_state_tf.go:260](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/cmd/patch_state_tf.go#L260)).
+`PatchStateFromSchema` in particular still reads like a supported alternative
+to the curated fields file when it cannot currently work.
 
-What remains is the first four, and `PatchStateFromSchema` in particular still
-reads like a supported alternative to the curated fields file when it cannot
-currently work.
-
-### 7. Verification is structural — nothing checks a value against the cloud
+### 4. Verification is structural — nothing checks a value against the cloud
 
 `validateRecover`
 ([pkg/state_patcher.go:1625](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_patcher.go#L1625)) checks delta↔outputs consistency;
@@ -885,7 +833,7 @@ another nets to zero on the count, but the per-URN `newlyDirty` check
 ([:222-231](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_stack.go#L222-L231)) catches it — so the count is a backstop for churn the per-URN pass
 cannot see (resources absent from one preview entirely), not the primary gate.
 
-### 8. Related, already tracked
+### 5. Related, already tracked
 
 - [#22](https://github.com/pulumi-proserv/pulumi-tool-import/issues/22) —
   non-importable state injection; S2b, S3b and S7 above. Implemented on this
@@ -898,12 +846,9 @@ cannot see (resources absent from one preview entirely), not the primary gate.
   raw state delta gap. Closed for the common case by S2b; the residue is the
   `DeltaAbsentFromSidecar` / `DeltaDroppedSensitive` /
   `DeltaDroppedUnrecoverable` counts.
-- [#27](https://github.com/pulumi-proserv/pulumi-tool-import/issues/27) — JSON
-  number precision; §1. Closed: the producing-side audit is complete; the
-  consuming-side `float64` ceiling is #29.
 - [#28](https://github.com/pulumi-proserv/pulumi-tool-import/issues/28) —
   sensitive values: the three implementations, the two uncovered paths, and the
-  recomputed config-key link; §3.
+  recomputed config-key link; §1.
 
 ### Not traced
 
