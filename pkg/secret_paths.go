@@ -22,14 +22,12 @@ import (
 	"github.com/zclconf/go-cty/cty"
 )
 
-// Nested sensitive attributes are redacted to a placeholder that carries the
-// Terraform path itself — "(sensitive:user[0].password)" — so the sidecar's
-// key map, stack-config discovery, and injection-time resolution all correlate
-// by that path with no Pulumi→Terraform name inversion anywhere (#28). The
-// inversion would otherwise have to replay the bridge's per-level renames and
-// MaxItems=1 flattening backwards, which is exactly the fragile machinery this
-// avoids. Top-level redaction keeps the bare "(sensitive)" placeholder, so
-// existing digests and their consumers are unchanged.
+// Nested sensitive attributes redact to a placeholder carrying the Terraform
+// path itself — "(sensitive:user[0].password)" — and the sidecar's key map,
+// stack-config discovery, and injection-time resolution all correlate by that
+// path. Correlating by path avoids inverting the bridge's per-level renames
+// and MaxItems=1 flattening. Top-level redaction keeps the bare "(sensitive)",
+// so existing digests are unchanged.
 
 const taggedPlaceholderPrefix = "(sensitive:"
 
@@ -58,14 +56,12 @@ func isRedactedPlaceholder(s string) bool {
 	return tagged
 }
 
-// renderAttrPath renders a cty attribute path in the syntax the tagged
-// placeholder carries: attribute steps join with ".", index steps render as
-// [0] or ["key"]. The rendered string is an opaque correlation key — the
-// sidecar's RedactedAttributes entry and the placeholder carry the same
-// string, matched by equality, never re-parsed — so key escaping only has to
-// be deterministic, not invertible. ok is false when the path holds an index
-// key of a type this cannot render; a silently shortened path would correlate
-// wrongly, so the caller must skip the path instead.
+// renderAttrPath renders a cty attribute path in the tag's syntax: attribute
+// steps join with ".", index steps render as [0] or ["key"]. The rendered
+// string is an opaque correlation key, matched by equality and never
+// re-parsed, so escaping only has to be deterministic. ok is false for an
+// index key type this cannot render; the caller must skip the whole path — a
+// shortened one would correlate wrongly.
 func renderAttrPath(path cty.Path) (string, bool) {
 	var b strings.Builder
 	for _, step := range path {
@@ -119,15 +115,11 @@ type sensitiveLeaf struct {
 	value interface{}
 }
 
-// concreteSensitiveLeaves expands one marked path against the actual attribute
-// value into the concrete leaves redaction would tag — path AND value, so the
-// caller never re-parses a rendered path to find the value it was already
-// standing on. An unresolvable index fans out to every element, exactly
-// mirroring redactAtPath. A path segment that cannot be rendered is skipped
-// whole (never truncated): a shortened path would correlate wrongly.
-//
-// walked is copied at every branch (full slice expression) so sibling
-// recursions can never share a backing array.
+// concreteSensitiveLeaves expands one marked path against the actual value
+// into the (path, value) leaves redaction would tag, fanning out over an
+// unresolvable index exactly as redactAtPath does. walked is copied at every
+// branch (full slice expression) so sibling recursions never share a backing
+// array.
 func concreteSensitiveLeaves(container interface{}, path cty.Path, walked cty.Path) []sensitiveLeaf {
 	if len(path) == 0 {
 		rendered, ok := renderAttrPath(walked)
@@ -182,12 +174,9 @@ func concreteSensitiveLeaves(container interface{}, path cty.Path, walked cty.Pa
 	return nil
 }
 
-// isScalarSecretValue reports whether a sensitive value is a scalar JSON
-// value. Composite values cannot pass through a string stack-config entry —
-// stringifying a map and later injecting the string would write a wrong
-// value — so they are skipped with a warning rather than corrupted. (Numbers
-// arrive as json.Number from the UseNumber decodes; float64 is accepted
-// defensively but %v rendering of one is not exactness-preserving.)
+// isScalarSecretValue reports whether a sensitive value can pass through a
+// string stack-config entry. Composites are skipped with a warning rather
+// than stringified into a wrong value.
 func isScalarSecretValue(v interface{}) bool {
 	switch v.(type) {
 	case string, bool, float64, json.Number:

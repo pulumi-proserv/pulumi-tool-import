@@ -412,13 +412,10 @@ func matchResources(
 						// recovers it into stack config from the same schema.
 						schemaMap := bridgedSchemaMap(pulumiProviders, providerName, resourceType)
 						redactSchemaSensitive(attrs, schemaMap)
-						// A nested attribute the STATE marks is redacted with a
-						// path-tagged placeholder and recovered through stack
-						// config (#28). This backstop fires only for a nested
-						// attribute the schema marks and the state does not:
-						// schema-driven redaction is top-level, so failing —
-						// with the fix being a refresh that records the mark —
-						// is the honest answer for that remaining case.
+						// This backstop fires only for a nested attribute the
+						// schema marks and the state does not: with no state
+						// mark there is no concrete path to tag, so failing
+						// is the honest answer.
 						if leaks := schemaSensitiveLeaks(attrs, schemaMap); len(leaks) > 0 {
 							return nil, fmt.Errorf(
 								"%s: the provider schema marks the nested attribute(s) %s sensitive, but the "+
@@ -803,15 +800,11 @@ func DiscoverSensitiveSecrets(
 					continue
 				}
 
-				// Collect sensitive leaves, from either source. Nested paths
-				// are recovered too: redaction walks them, so discovery must
-				// record a config key for every value redaction removes, or
-				// injection later meets a placeholder nothing can resolve
-				// (#28). Each marked path resolves to (path, value) pairs by
-				// the same walk redaction performs — fanning out over an
-				// unresolvable index the same way — so the value is the one
-				// the walk stood on, never re-derived by parsing the rendered
-				// path back.
+				// Collect sensitive leaves, from either source. Each marked
+				// path expands to (path, value) pairs by the same walk
+				// redaction performs — fanning out over unresolvable indexes
+				// identically — so the value is the one the walk stood on,
+				// never re-derived by parsing the rendered path back.
 				leaves := map[string]interface{}{}
 				for _, pvm := range inst.Current.AttrSensitivePaths {
 					if len(pvm.Path) == 0 {
@@ -1153,11 +1146,9 @@ func redactSensitivePaths(attrs map[string]interface{}, paths []cty.PathValueMar
 	}
 }
 
-// redactAtPath walks one sensitive path, accumulating the concrete steps taken
-// in walked (unresolvable indexes fan out, each element with its own index),
-// and writes the placeholder at the leaf: bare "(sensitive)" for a top-level
-// attribute, the path-tagged form for a nested one, so the value stays
-// recoverable (#28 — recovery correlates by the tagged path).
+// redactAtPath walks one sensitive path, accumulating the concrete steps
+// taken in walked (unresolvable indexes fan out, each element with its own
+// index), and writes the placeholder leafPlaceholder picks at the leaf.
 func redactAtPath(container interface{}, path cty.Path, walked cty.Path) {
 	if len(path) == 0 {
 		return
@@ -1232,10 +1223,8 @@ func redactSliceElement(s []interface{}, i int, path cty.Path, last bool, walked
 }
 
 // leafPlaceholder picks the placeholder form for a redacted leaf: bare for a
-// top-level attribute (unchanged behaviour, and the key map stays keyed by
-// name), path-tagged for anything nested. A path that cannot be rendered
-// falls back to the bare form — still redacted, just not recoverable, which
-// is the pre-tagging behaviour for that leaf.
+// top-level attribute, path-tagged for anything nested. A path that cannot
+// be rendered falls back to bare — still redacted, just not recoverable.
 func leafPlaceholder(walked cty.Path) string {
 	if len(walked) == 1 {
 		return redactedPlaceholder

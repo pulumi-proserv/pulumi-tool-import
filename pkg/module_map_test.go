@@ -785,8 +785,6 @@ func TestRedactSensitivePaths_NestedPathIsRedacted(t *testing.T) {
 	}})
 
 	user := attrs["user"].([]interface{})[0].(map[string]interface{})
-	// A nested leaf carries the path-tagged placeholder, so the value stays
-	// recoverable (#28); only a top-level leaf uses the bare form.
 	assert.Equal(t, taggedPlaceholder("user[0].password"), user["password"])
 	assert.Equal(t, "admin", user["username"], "only the marked path may be redacted")
 	assert.Equal(t, "b", attrs["broker_name"])

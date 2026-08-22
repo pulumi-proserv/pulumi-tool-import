@@ -182,10 +182,6 @@ func TestRedactSchemaSensitive_NoSchemaChangesNothing(t *testing.T) {
 	assert.Equal(t, "hunter2", attrs["password"])
 }
 
-// Schema-driven redaction has no state mark — and so no concrete cty path —
-// to tag a nested leaf with, so the backstop must report a nested
-// schema-only leak rather than redact it into an unrecoverable placeholder.
-// (State-marked nested paths ARE recovered, via the tagged form.)
 func TestRedactSchemaSensitive_DoesNotTouchNestedAttributes(t *testing.T) {
 	t.Parallel()
 

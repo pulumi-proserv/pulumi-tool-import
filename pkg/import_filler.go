@@ -65,16 +65,13 @@ type NonImportableResource struct {
 	// Attributes are the Terraform state attributes, carried through for
 	// state injection.
 	Attributes map[string]interface{} `json:"attributes,omitempty"`
-	// RedactedAttributes maps each redacted Terraform attribute PATH to the
-	// Pulumi stack config key holding the real value. Keys come in two forms:
-	// a bare top-level attribute name ("password"), resolved by the top-level
-	// name-mapping loop, and a rendered nested path in renderAttrPath syntax
-	// ("user[0].password", `tags["key"]`), which is exactly the string the
-	// tagged placeholder carries and is resolved by string equality — never
-	// parsed. "digest tf" writes the real values into stack config as secrets
-	// (unless --skip-secrets), so nothing is lost; the copies in Attributes
-	// are placeholders that must be resolved from config before the resource
-	// is written to state.
+	// RedactedAttributes maps each redacted Terraform attribute path to the
+	// Pulumi stack config key holding the real value. Keys are either a bare
+	// top-level attribute name ("password") or a rendered nested path
+	// ("user[0].password") — exactly the string the tagged placeholder
+	// carries, matched by equality and never parsed. The placeholders in
+	// Attributes must be resolved from config before the resource is written
+	// to state.
 	RedactedAttributes   map[string]string      `json:"redactedAttributes,omitempty"`
 	PulumiOutputs        map[string]interface{} `json:"pulumiOutputs,omitempty"`
 	RawStateDelta        map[string]interface{} `json:"rawStateDelta,omitempty"`
@@ -90,9 +87,7 @@ const redactedPlaceholder = "(sensitive)"
 // redactedAttributeKeys maps every redacted attribute path — bare top-level
 // names and the rendered paths nested tags carry — to the stack config key
 // where "digest tf" stored the real value. Returns nil when nothing was
-// redacted. A tagged placeholder never appears at the top level
-// (leafPlaceholder tags only depth > 1), but the walk covers every value
-// uniformly rather than relying on that.
+// redacted.
 func redactedAttributeKeys(tfAddress string, attrs map[string]interface{}) map[string]string {
 	var keys map[string]string
 	record := func(path string) {
@@ -106,8 +101,6 @@ func redactedAttributeKeys(tfAddress string, attrs map[string]interface{}) map[s
 			record(name)
 			continue
 		}
-		// Nested placeholders carry their own path in the tag, so the key
-		// map covers them without any name mapping (#28).
 		collectTaggedPlaceholders(value, record)
 	}
 	return keys

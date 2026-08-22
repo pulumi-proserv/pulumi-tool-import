@@ -23,9 +23,7 @@ import (
 
 // CurrentSidecarFormatVersion is stamped into every sidecar this build
 // writes. Bump it on a change an older consumer would half-read rather than
-// reject — the tagged nested placeholder is version 1's reason to exist: a
-// pre-tagging build's placeholder screen knows only the bare "(sensitive)"
-// literal and would write a tagged one into state as an ordinary string.
+// reject (version 1: the tagged nested placeholder).
 const CurrentSidecarFormatVersion = 1
 
 type NonImportableFile struct {
