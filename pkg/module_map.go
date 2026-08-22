@@ -150,11 +150,6 @@ func BuildModuleMap(
 	}
 
 	// Store provider registry addresses for downstream consumers (e.g., patch-state).
-	// The value is the Pulumi provider the digest's property names came from
-	// ("name@version", or "dynamic[@tfVersion]"): injection re-resolves schemas
-	// from this map, and without the version a digest computed against one
-	// provider major and consumed against another is indistinguishable from a
-	// matched pair.
 	if pulumiProviders != nil {
 		mm.Providers = make(map[string]string, len(pulumiProviders))
 		for tfAddr, pwm := range pulumiProviders {

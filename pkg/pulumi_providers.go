@@ -71,10 +71,9 @@ type ProviderWithMetadata struct {
 	// This is set for all providers, but is primarily useful for dynamic providers
 	// to construct the proper package name.
 	TerraformAddress string
-	// ResolvedPulumi records which Pulumi provider mapping this metadata came
-	// from: "name@version" for a statically bridged provider, "dynamic" (or
-	// "dynamic@tfVersion") for dynamic bridging. The digest carries it so
-	// injection can load the same version rather than re-recommending.
+	// ResolvedPulumi is the mapping this metadata came from: "name@version"
+	// for a statically bridged provider, "dynamic[@tfVersion]" otherwise. The
+	// digest records it so injection can load the same version.
 	ResolvedPulumi string
 }
 
@@ -86,10 +85,8 @@ func PulumiProvidersForTerraformProviders(
 }
 
 // PulumiProvidersForTerraformProvidersPinned is PulumiProvidersForTerraformProviders
-// with the versions a digest recorded: each pin ("name@version", or "dynamic")
-// overrides this build's recommendation so injection loads the provider the
-// digest's property names came from. A pin that disagrees about WHICH provider
-// is an error — the mapping changed between digest and injection.
+// with each provider's version overridden by the pin a digest recorded, so
+// injection loads the provider the digest's property names came from.
 func PulumiProvidersForTerraformProvidersPinned(
 	terraformProviders []providermap.TerraformProviderName,
 	pins map[string]string,

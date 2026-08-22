@@ -25,12 +25,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The digest is the only contract between "digest tf" and "patch-state tf",
-// and injection re-resolves provider schemas from it. Without the resolved
-// version recorded, a digest computed against one provider major and consumed
-// against another is indistinguishable from a matched pair — and the Pulumi
-// property names written into state silently come from the wrong schema.
-
 func TestBuildModuleMap_RecordsResolvedProviderVersions(t *testing.T) {
 	t.Parallel()
 
@@ -64,10 +58,6 @@ func TestApplyPin_OverridesTheStaticVersion(t *testing.T) {
 		"the input must not be mutated")
 }
 
-// A pin naming a different Pulumi provider than the current build recommends
-// means the tool's own mapping changed between digest and injection. Loading
-// either one silently would use property names the other half of the pipeline
-// did not; the only safe answer is to say so.
 func TestApplyPin_RejectsAnIdentifierMismatch(t *testing.T) {
 	t.Parallel()
 
@@ -82,10 +72,6 @@ func TestApplyPin_RejectsAnIdentifierMismatch(t *testing.T) {
 	assert.Contains(t, err.Error(), "aws")
 }
 
-// Digests written before versions were recorded carry "" — that is
-// "unrecorded", not "no pin", and must not be an error. A recorded "dynamic"
-// is different: against a build that now recommends a static provider it is
-// mapping drift, the same as an identifier mismatch.
 func TestApplyPin_EmptyIsUnrecordedButDynamicIsDrift(t *testing.T) {
 	t.Parallel()
 
@@ -118,8 +104,6 @@ func TestApplyPin_RejectsStaticPinAgainstDynamicRecommendation(t *testing.T) {
 			"as an identifier mismatch")
 }
 
-// The digest file itself carries a format version, so a consumer built before
-// a format change refuses the file instead of half-reading it.
 func TestDigestFormatVersion_RoundTripsAndRejectsNewer(t *testing.T) {
 	t.Parallel()
 
@@ -148,8 +132,6 @@ func TestDigestFormatVersion_RoundTripsAndRejectsNewer(t *testing.T) {
 	assert.Equal(t, 0, mm.FormatVersion)
 }
 
-// LoadDigest must preserve large integers: the digest's values are what
-// patch-state writes into Pulumi state.
 func TestLoadDigest_PreservesLargeIntegers(t *testing.T) {
 	t.Parallel()
 

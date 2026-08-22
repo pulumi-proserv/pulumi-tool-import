@@ -522,8 +522,6 @@ func loadProvidersForDigest(
 			"recommendation, which may differ from the digest's. Re-run \"digest tf\" to record "+
 			"them.\n", strings.Join(unrecorded, ", "))
 	}
-	// Pinned to the versions the digest recorded, so the property names used
-	// at injection come from the same schema the digest's did (issue #38).
 	providers, err := pkg.PulumiProvidersForTerraformProvidersPinned(names, digest.Providers)
 	if err != nil {
 		return nil, fmt.Errorf("loading provider schemas for property name mapping: %w", err)

@@ -852,33 +852,6 @@ What remains is the first four, and `PatchStateFromSchema` in particular still
 reads like a supported alternative to the curated fields file when it cannot
 currently work.
 
-### 6. The digest is the only inter-command contract, and it is untyped at the boundaries ([#38](https://github.com/pulumi-proserv/pulumi-tool-import/issues/38))
-
-`ModuleMap` is decoded into a struct whose `Attributes` is
-`map[string]interface{}`. There is no schema version on the file, no checksum,
-and no record of which provider versions produced it — only `mm.Providers`, a
-map whose values are always the empty string ([pkg/module_map.go:182](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L182)). A digest
-built against AWS provider 5.x and consumed by a `patch-state` run against 7.x
-is indistinguishable from a matched pair.
-
-That map has since grown a second job: `loadProvidersForDigest`
-([cmd/patch_state_tf.go:479](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/cmd/patch_state_tf.go#L479)) uses its *keys* to re-resolve provider schemas at
-injection time without a Terraform state file, passing `nil` versions
-([:491](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/cmd/patch_state_tf.go#L491)). So the tool now depends on the digest recording which providers were
-involved, while still recording nothing about which versions — and the injected
-property names come from whatever version `RecommendPulumiProvider` picks today.
-
-`ImportSupportChecked` ([:50](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L50)) is the one piece of provenance that *is*
-recorded, and `resolve tf` uses it well ([cmd/import_id_match.go:174](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/cmd/import_id_match.go#L174)). The
-same treatment for provider versions and for "injection state was computed /
-was attempted and failed" would let consumers tell absence from failure —
-`PulumiOutputs == nil` now carries an `InjectionStateReason` where one is
-known, so absence and failure are distinguishable; provider versions still are
-not. The delta side distinguishes them too:
-`InjectResult` carries `DeltaAttached` alongside three separate absence causes
-([pkg/state_injector.go:78-92](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_injector.go#L78-L92)), and `patch-state` names the resource behind
-each. `PulumiOutputs` has no equivalent.
-
 ### 7. Verification is structural — nothing checks a value against the cloud
 
 `validateRecover`
@@ -920,7 +893,7 @@ cannot see (resources absent from one preview entirely), not the primary gate.
 - [#24](https://github.com/pulumi-proserv/pulumi-tool-import/issues/24) —
   splitting large workspaces into shard stacks. Relevant here because it needs
   the same export/verify/import helpers `pkg/state_stack.go` now provides, and
-  because sharding multiplies the digest-provenance problem in §6.
+  because sharding multiplies the digest-provenance concern (#38).
 - [#25](https://github.com/pulumi-proserv/pulumi-tool-import/issues/25) — the
   raw state delta gap. Closed for the common case by S2b; the residue is the
   `DeltaAbsentFromSidecar` / `DeltaDroppedSensitive` /
