@@ -9,15 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Stack mode's `--out`: `patch-state tf --project-dir/--stack` can now also
-  write the state to a file — after verification passes, so the file is always
-  the verified artifact, never a state the run went on to revert. Choosing
-  verification no longer means giving up the file (#39). The file carries
-  decrypted secrets, like the backup, and says so; its path is checked for
-  writability before the stack is touched, so a bad `--out` can never leave a
-  mutated stack behind a non-zero exit. An explicitly empty `--state` (an
-  unset shell variable) is an error rather than a silent switch into stack
-  mode.
+- Stack mode's `--out`: `patch-state tf --project-dir/--stack` can also write
+  the state to a file, after verification passes — the file is always the
+  verified artifact (#39). It carries decrypted secrets like the backup;
+  writability is checked before the stack is touched. An explicitly empty
+  `--state` is an error rather than a silent switch into stack mode.
 - **A refresh report after injection** (#41). Stack mode runs
   `pulumi refresh --preview-only --json` after verification and reports, per
   injected resource: **GONE** (the injected ID resolves to nothing), a
@@ -169,11 +165,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no digest entry, instead of counting them into an aggregate nothing printed
   (#37). The deliberate asymmetry between patching's name-guessing and
   injection's exact-or-fail matching is documented at the matchers.
-- File mode's output now states plainly that it is **not verified** — file
-  mode cannot run the before/after preview comparison stack mode gates on —
-  and names both the manual verification command and the stack-mode
-  alternative. The `--help` text describes the safety difference between the
-  modes instead of leaving it to the docs (#39).
+- File mode's output now states plainly that it is **not verified**, naming
+  the manual check and the stack-mode alternative; `--help` describes the
+  safety split between the modes (#39).
 
 - `patch-state` now reports `Deltas validated (imported)` and
   `Deltas attached (injected): X of Y` rather than an unqualified

@@ -913,22 +913,16 @@ not. The delta side distinguishes them too:
 ([pkg/state_injector.go:78-92](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_injector.go#L78-L92)), and `patch-state` names the resource behind
 each. `PulumiOutputs` has no equivalent.
 
-### 7. Verification is structural, except in stack mode ([#39](https://github.com/pulumi-proserv/pulumi-tool-import/issues/39) — closed)
+### 7. Verification is structural — nothing checks a value against the cloud
 
-**Resolved as far as it can be.** #39's remaining scope landed: stack mode may
-now also write `--out` (after verification passes, so the file is always the
-verified artifact), which makes the verified path available whenever a stack
-is reachable, and file mode's output states plainly that it is NOT verified,
-naming the manual check. File mode remaining unverified is structural — its
-users are exactly those without stack access — and is now loud rather than
-documented-only. The original analysis: `validateRecover`
+`validateRecover`
 ([pkg/state_patcher.go:1625](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_patcher.go#L1625)) checks delta↔outputs consistency;
 `VerifyDeploymentIntegrity` ([pkg/state_verify.go:37](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_verify.go#L37)) checks snapshot
 structure. Neither checks a value against the cloud, and `refresh` cannot
 either for the types that matter — it reports these resources unchanged even
 when their values are wrong.
 
-Stack mode now closes that: it runs `pulumi preview --json` before and after
+Stack mode's gate runs `pulumi preview --json` before and after
 the mutation and reverts on regression ([pkg/state_stack.go:195](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_stack.go#L195),
 [cmd/patch_state_tf.go:341-367](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/cmd/patch_state_tf.go#L341-L367)). Three things about that gate are worth being
 precise about, because each is easy to misread:
