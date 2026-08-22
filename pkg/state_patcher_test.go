@@ -2044,15 +2044,11 @@ func TestDeepCopyJSONValue_SharesNothingMutable(t *testing.T) {
 	assert.Equal(t, "v", orig["a"].([]interface{})[0].(map[string]interface{})["k"])
 }
 
-// A covered resource with no digest match must be named per resource, not
-// aggregated (issue #37). Two unmatched resources prove per-resource notes;
-// a matched-and-patched neighbour proves only the unmatched ones are listed.
 func TestPatchState_NoMatchIsNamedPerResource(t *testing.T) {
 	t.Parallel()
 
-	// The two unmatched resources use a type with NO digest entry at all, so
-	// even the single-unused-candidate guess cannot match them; the matched
-	// resource uses a different type with a direct resource mapping.
+	// The unmatched resources use a type with no digest entry at all, so even
+	// the single-unused-candidate guess cannot match them.
 	state := []byte(`{"version":3,"deployment":{"resources":[
 		{"urn":"urn:pulumi:dev::proj::aws:ecs/service:Service::unmatched-one","type":"aws:ecs/service:Service","custom":true,"id":"a","inputs":{},"outputs":{}},
 		{"urn":"urn:pulumi:dev::proj::aws:ecs/service:Service::unmatched-two","type":"aws:ecs/service:Service","custom":true,"id":"b","inputs":{},"outputs":{}},
@@ -2060,8 +2056,7 @@ func TestPatchState_NoMatchIsNamedPerResource(t *testing.T) {
 	]}}`)
 	fields := &FieldsFile{
 		Fields: map[string]FieldCategory{
-			// No defaults: with no digest match there is nothing to patch
-			// from, which is exactly the case that must be named.
+			// No defaults, so an unmatched resource has nothing to patch from.
 			"service:Service":           {NotRead: map[string]FieldInfo{"waitForSteadyState": {}}},
 			"bucketObject:BucketObject": {NotRead: map[string]FieldInfo{"content": {}}},
 		},
@@ -2087,9 +2082,6 @@ func TestPatchState_NoMatchIsNamedPerResource(t *testing.T) {
 	assert.NotContains(t, joined, `"matched"`, "a matched resource must not be listed")
 }
 
-// The CFN patch loop is a third producer of NoMatch and must fill the notes
-// too — it shipped without the append once, behind a test that covered only
-// one of the three sites.
 func TestPatchStateFromCFN_NoMatchIsNamed(t *testing.T) {
 	t.Parallel()
 
