@@ -158,12 +158,6 @@ func TestProberDiscardsTheDeadProvider(t *testing.T) {
 	assert.Empty(t, p.providers, "the dead provider should not stay cached")
 }
 
-// The prober's maps are keyed from the lock file while callers pass
-// state-derived addresses, and terraform writes registry.terraform.io where
-// tofu writes registry.opentofu.org for the same provider. The version lookup
-// must treat the hosts as equivalent, or a mixed terraform/tofu history sends
-// every probe to the curated fallback (issue #26's address-form half — the
-// exact scenario the pair resolver alone cannot fix, because Check runs first).
 func TestProberResolvesEquivalentRegistryHosts(t *testing.T) {
 	t.Parallel()
 
@@ -176,7 +170,6 @@ func TestProberResolvesEquivalentRegistryHosts(t *testing.T) {
 		return nil, fmt.Errorf("stop before launching a real provider")
 	}
 
-	// Queried with the opentofu form: the lock-file version must be found.
 	_, _ = p.Provider(context.Background(), "registry.opentofu.org/hashicorp/aws")
 	require.Equal(t, "registry.opentofu.org/hashicorp/aws", loadedAddr,
 		"the provider loads under the requested form")

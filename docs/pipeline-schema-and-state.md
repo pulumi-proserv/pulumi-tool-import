@@ -56,15 +56,14 @@ resources (`--non-importable`) works in both, but file mode additionally needs
 `--preview-json` because the program metadata cannot come from anywhere else
 ([cmd/patch_state_tf.go:100](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/cmd/patch_state_tf.go#L100)).
 
-Two provider loaders run, for different reasons, and they never see each other's
-results except through `pulumiProviders` being passed into `populateInjectionState`:
+Two provider loaders run, for different reasons; `resolveInjectionProviders`
+(`pkg/provider_pair.go`) is where the pair is correlated, naming the missing
+half when one is absent:
 
 | Loader | Started by | Protocol | Purpose |
 |---|---|---|---|
 | `tfprovider.LoadProvider` ([pkg/tfprovider/loader.go:65](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/tfprovider/loader.go#L65)) | `importsupport.Prober` ([pkg/importsupport/prober.go:184](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/importsupport/prober.go#L184)), `BuildSensitivityMap` ([pkg/provider_schema.go:77](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/provider_schema.go#L77)) | go-plugin, real Terraform provider binary | `ImportResourceState` probe; `GetProviderSchema` for cty types |
 | `PulumiProvidersForTerraformProviders` ([pkg/pulumi_providers.go:75](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/pulumi_providers.go#L75)) | `GenerateModuleMap` ([pkg/generate_module_map.go:119](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/generate_module_map.go#L119), [:134](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/generate_module_map.go#L134)); `loadProvidersForDigest` ([cmd/patch_state_tf.go:479](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/cmd/patch_state_tf.go#L479)) | Pulumi plugin gRPC, `GetMapping("terraform")` | Pulumi type tokens and property names |
-
-See [#26](https://github.com/pulumi-proserv/pulumi-tool-import/issues/26).
 
 ---
 
@@ -781,40 +780,6 @@ consuming-side ceiling — `resource.PropertyValue` holding numbers as `float64`
 — is [#29](https://github.com/pulumi-proserv/pulumi-tool-import/issues/29),
 blocked on a bridge-side change.
 
-### 2. Two provider loaders, neither able to do the other's job (#26)
-
-`populateInjectionState` ([pkg/module_map.go:494](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L494)) is the clearest symptom: it
-needs the live provider for the cty type *and* the bridge mock for Pulumi
-naming, and bails out entirely if either is missing ([:505](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L505), [:509](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L509), [:526](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L526)).
-The comment at [:526-537](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L526-L537) documents that these are "two different loaders with
-different failure modes" and that a mismatch produces a silently
-under-populated digest.
-
-Injection has made the consequence concrete rather than theoretical: a digest
-built while the two disagreed carries no `pulumiOutputs`, so the injector falls
-back to `MapTFAttributesToPulumi` ([pkg/state_injector.go:317](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_injector.go#L317)), and no
-`rawStateDelta`, so the resource is injected without one and counted in
-`DeltaAbsentFromSidecar`. Both degradations are correct, and neither is distinguishable from
-"this resource genuinely needed nothing".
-
-The mock's specific gaps, all verified above: no `Default` (so
-`PatchStateFromSchema` is unusable), `SchemaVersion` always 0, `Importer`
-always nil (hence the probe), `SchemaType` nil, `InstanceState` a hard error
-(hence `RawStateComputeDelta` over `RawStateInjectDelta`).
-
-Two directions worth evaluating, neither traced here:
-
-- Extend `MarshallableSchemaShim` upstream to carry `Default` and
-  `SchemaVersion`. That is a bridge change and would help every consumer of
-  `GetMapping`, not just this tool.
-- Derive Pulumi names from the live Terraform schema plus the mapping's
-  `info.Schema` overlay, and drop the mock's schema map entirely. Whether
-  `MakeTerraformOutputs` and `RawStateComputeDelta` can be driven from a
-  schema map built that way is **not established** — they take
-  `shim.SchemaMap`, so it would mean constructing `schema.Schema` values from
-  the protocol schema, and it is not obvious that `MaxItems`/`Elem` survive
-  that translation faithfully.
-
 ### 3. Sensitivity is walked twice, independently
 
 - `redactSensitivePaths` ([pkg/module_map.go:1135](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L1135)) delegates to `redactAtPath`
@@ -875,7 +840,8 @@ policy, and the stricter policy is the one that produces an actionable error.
 
 - `conformToDelta` ([:1421](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_patcher.go#L1421)): tests only.
 - `PatchStateFromSchema` ([:1785](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_patcher.go#L1785)): tests only, and its default path is
-  unreachable in production (see §2).
+  unreachable in production (the bridge mapping mock carries no `Default` —
+  see "The bridge mapping mock" under Schema forms).
 
 **Resolved for the #22 group.** `ParsePreviewJSON`, `VerifyDeploymentIntegrity`,
 `LoadNonImportableFile`, `MapTFAttributesToPulumi` and `PulumiToTFNames` were
@@ -959,8 +925,6 @@ cannot see (resources absent from one preview entirely), not the primary gate.
   raw state delta gap. Closed for the common case by S2b; the residue is the
   `DeltaAbsentFromSidecar` / `DeltaDroppedSensitive` /
   `DeltaDroppedUnrecoverable` counts.
-- [#26](https://github.com/pulumi-proserv/pulumi-tool-import/issues/26) — the
-  two loaders; §2.
 - [#27](https://github.com/pulumi-proserv/pulumi-tool-import/issues/27) — JSON
   number precision; §1. Closed: the producing-side audit is complete; the
   consuming-side `float64` ceiling is #29.
@@ -990,4 +954,4 @@ cannot see (resources absent from one preview entirely), not the primary gate.
   ([pkg/tofu/loader.go:285](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/tofu/loader.go#L285)) can corrupt an attribute value in practice.
 - Whether a `shim.SchemaMap` reconstructed from the live Terraform protocol
   schema would drive `MakeTerraformOutputs` and `RawStateComputeDelta`
-  correctly — the key question for collapsing the two loaders (§2).
+  correctly — the key question for collapsing the two loaders.
