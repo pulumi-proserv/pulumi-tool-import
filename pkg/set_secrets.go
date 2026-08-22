@@ -61,7 +61,6 @@ func ParseSecretMapping(s string) (SecretMapping, error) {
 //
 // It initializes the stack if it doesn't exist.
 func SetSecrets(stateFilePath, projectDir, projectName, stack, runtime string, mappings []SecretMapping) error {
-	// Read the state file.
 	data, err := os.ReadFile(stateFilePath)
 	if err != nil {
 		return fmt.Errorf("reading state file: %w", err)
@@ -86,11 +85,8 @@ func SetSecrets(stateFilePath, projectDir, projectName, stack, runtime string, m
 }
 
 // extractSecretValues pulls each mapping's attribute value out of a Terraform
-// state file and returns it as a secret config entry, reporting each mapping
-// to stderr. Decoded with UseNumber: these values become the stack's secrets,
-// and a plain decode turns a large integer into a float64 that %v renders in
-// scientific notation — a wrong secret, not a cosmetic difference. Same rule
-// as decodeAttrs (pkg/module_map.go) for every decode that feeds state.
+// state file and returns it as a secret config entry. It decodes with
+// UseNumber: a plain decode rounds integers above 2^53, writing a wrong secret.
 func extractSecretValues(data []byte, mappings []SecretMapping) (auto.ConfigMap, error) {
 	var stateFile struct {
 		Resources []struct {
@@ -109,8 +105,6 @@ func extractSecretValues(data []byte, mappings []SecretMapping) (auto.ConfigMap,
 	if err := dec.Decode(&stateFile); err != nil {
 		return nil, fmt.Errorf("parsing state file: %w", err)
 	}
-	// Decode reads one JSON value and ignores what follows; a concatenated or
-	// doubly-written state file must be a parse error, not a wrong secret.
 	if dec.More() {
 		return nil, fmt.Errorf("parsing state file: unexpected trailing data")
 	}
@@ -157,8 +151,6 @@ func extractSecretValues(data []byte, mappings []SecretMapping) (auto.ConfigMap,
 		switch value.(type) {
 		case string, bool, json.Number:
 		default:
-			// %v on a map or list writes Go syntax into config — a wrong
-			// secret nothing can parse back. Refuse rather than corrupt.
 			return nil, fmt.Errorf("attribute %q on %q is not a scalar; only string, bool and "+
 				"number secrets can be set as stack config", m.Attribute, m.TerraformAddress)
 		}

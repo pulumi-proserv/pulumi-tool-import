@@ -48,12 +48,6 @@ func NewStackSession(ctx context.Context, projectDir, stackName string) (*StackS
 // apitype.UntypedDeployment whose Deployment field is only the inner object,
 // so it must be re-marshalled whole; returning dep.Deployment alone fails
 // every consumer here with a misleading "state missing deployment".
-//
-// Precision-safe by construction: UntypedDeployment.Deployment is
-// json.RawMessage — kept opaque by the SDK precisely so round-tripping cannot
-// lose information — so re-marshalling emits the deployment unchanged apart
-// from JSON HTML-escaping; no value, and in particular no number, is
-// reinterpreted (issue #27's audit).
 func (s *StackSession) Export(ctx context.Context) ([]byte, error) {
 	dep, err := s.stack.Export(ctx)
 	if err != nil {
