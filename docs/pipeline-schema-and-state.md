@@ -790,7 +790,7 @@ or a miss ([pkg/state_injector.go:178-195](https://github.com/pulumi-proserv/pul
 "single candidate" guess. It is the same matching problem with the opposite
 policy, and the stricter policy is the one that produces an actionable error.
 
-### 3. Dead and half-wired code obscures which path is real
+### 3. Dead and half-wired code obscures which path is real ([#52](https://github.com/pulumi-proserv/pulumi-tool-import/issues/52))
 
 - `conformToDelta` ([:1421](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_patcher.go#L1421)): tests only.
 - `PatchStateFromSchema` ([:1785](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_patcher.go#L1785)): tests only, and its default path is
