@@ -730,84 +730,17 @@ state).
 
 ---
 
-## Weaknesses and open questions
+## Verification
 
-Ordered roughly by how much damage each can do.
-
-### 1. Sensitivity is walked twice, independently
-
-- `redactSensitivePaths` ([pkg/module_map.go:1135](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L1135)) delegates to `redactAtPath`
-  ([:1162](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L1162)), which walks a sensitive path to any depth.
-- The `tofu show -json` path gets its paths from the format's own
-  `sensitive_values` document ([pkg/generate_module_map.go:316](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/generate_module_map.go#L316)).
-- Both of the above walk `AttrSensitivePaths` independently — one to redact,
-  one to discover config keys — and must agree about which attributes are
-  sensitive and what key each maps to. That duplication is
-  [#28](https://github.com/pulumi-proserv/pulumi-tool-import/issues/28). A third, schema-driven implementation
-  (`BuildSensitivityMap`) existed with no callers at all and has been deleted:
-  it read as a working alternative and was not one.
-- The digest↔config link is the pure function `flattenAddress`
-  ([pkg/module_map.go:932](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L932)), recomputed at four sites
-  ([:855](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L855), [pkg/import_filler.go:114](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/import_filler.go#L114), [pkg/state_patcher.go:554](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_patcher.go#L554), and
-  indirectly via `RedactedAttributes` in [pkg/state_injector.go:665](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_injector.go#L665)), and only
-  the first could apply a dedup suffix ([:865](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L865)) — which is exactly why a
-  collision is a hard error instead: a suffixed key would be unresolvable at the
-  other three sites. `DiscoverSensitiveSecrets` returns an error
-  ([:897-906](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L897-L906)) and `GenerateModuleMap` propagates it
-  ([pkg/generate_module_map.go:205-207](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/generate_module_map.go#L205-L207)), so `digest tf` fails. See S2.
-- The **second placeholder is now live**, not just designed: `[secret]`, from
-  `MassageSecrets` on the preview path, arrives in injected *inputs* while
-  `(sensitive)` — or its path-tagged nested form `(sensitive:<path>)` —
-  arrives in injected *outputs*, and each is resolved by a
-  different function using a different name mapping
-  ([pkg/state_injector.go:647](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_injector.go#L647), [:716](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_injector.go#L716)). `checkNoPlaceholders` ([:412](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_injector.go#L412)) is the
-  name-independent backstop that makes the pair safe, and its existence is a
-  fair measure of how hard the naming is to get right.
-
-Recording `RedactedAttributes` in the digest itself (rather than recomputing it
-in `resolve tf` from a string match against `"(sensitive)"`,
-[pkg/import_filler.go:110](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/import_filler.go#L110)) would make the link explicit and dedup-safe. See
-[#28](https://github.com/pulumi-proserv/pulumi-tool-import/issues/28).
-
-### 2. `patch-state` can only repair what the digest kept, and only by name ([#37](https://github.com/pulumi-proserv/pulumi-tool-import/issues/37))
-
-`PatchState` matches state resources to digest resources by Pulumi resource
-*name* ([pkg/state_patcher.go:819](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_patcher.go#L819), built by `BuildDigestNameMap` at [:307](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_patcher.go#L307)),
-with a chain of fallbacks ending in "exactly one unused candidate of this type"
-([:412](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_patcher.go#L412), [:461](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_patcher.go#L461)). A mismatch is reported only as an aggregate `NoMatch` count
-([:882](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_patcher.go#L882)) — there is no per-resource report of what went unmatched, and no way to
-assert that a resource the operator cares about was matched.
-
-The same fallback exists in `FillImportFile` ([pkg/import_filler.go:377](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/import_filler.go#L377)) with
-a warning, and in `matchChildren`'s normalized-name pass
-([pkg/state_patcher.go:389-400](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_patcher.go#L389-L400)). Three near-identical matchers with slightly
-different rules is a simplification opportunity: `FillImportFile` and
-`BuildDigestNameMap` are the same algorithm over different input shapes.
-
-Injection deliberately went the other way. `InjectNonImportable` matches on
-Pulumi type plus name against preview create steps and **fails** on a duplicate
-or a miss ([pkg/state_injector.go:178-195](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_injector.go#L178-L195)) rather than falling back to a
-"single candidate" guess. It is the same matching problem with the opposite
-policy, and the stricter policy is the one that produces an actionable error.
-
-### 3. Dead and half-wired code obscures which path is real ([#52](https://github.com/pulumi-proserv/pulumi-tool-import/issues/52))
-
-- `conformToDelta` ([:1421](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_patcher.go#L1421)): tests only.
-- `PatchStateFromSchema` ([:1785](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_patcher.go#L1785)): tests only, and its default path is
-  unreachable in production (the bridge mapping mock carries no `Default` —
-  see "The bridge mapping mock" under Schema forms).
-
-`PatchStateFromSchema` in particular still reads like a supported alternative
-to the curated fields file when it cannot currently work.
-
-### 4. Verification is structural — nothing checks a value against the cloud
-
-`validateRecover`
+Verification is structural: `validateRecover`
 ([pkg/state_patcher.go:1625](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_patcher.go#L1625)) checks delta↔outputs consistency;
 `VerifyDeploymentIntegrity` ([pkg/state_verify.go:37](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_verify.go#L37)) checks snapshot
 structure. Neither checks a value against the cloud, and `refresh` cannot
 either for the types that matter — it reports these resources unchanged even
-when their values are wrong.
+when their values are wrong. The refresh report is the one live check, and it
+gates nothing; the remaining live-check work is
+[#41](https://github.com/pulumi-proserv/pulumi-tool-import/issues/41) and
+[#42](https://github.com/pulumi-proserv/pulumi-tool-import/issues/42).
 
 Stack mode's gate runs `pulumi preview --json` before and after
 the mutation and reverts on regression ([pkg/state_stack.go:195](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_stack.go#L195),
@@ -833,24 +766,7 @@ another nets to zero on the count, but the per-URN `newlyDirty` check
 ([:222-231](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/state_stack.go#L222-L231)) catches it — so the count is a backstop for churn the per-URN pass
 cannot see (resources absent from one preview entirely), not the primary gate.
 
-### 5. Related, already tracked
-
-- [#22](https://github.com/pulumi-proserv/pulumi-tool-import/issues/22) —
-  non-importable state injection; S2b, S3b and S7 above. Implemented on this
-  branch.
-- [#24](https://github.com/pulumi-proserv/pulumi-tool-import/issues/24) —
-  splitting large workspaces into shard stacks. Relevant here because it needs
-  the same export/verify/import helpers `pkg/state_stack.go` now provides, and
-  because sharding multiplies the digest-provenance concern (#38).
-- [#25](https://github.com/pulumi-proserv/pulumi-tool-import/issues/25) — the
-  raw state delta gap. Closed for the common case by S2b; the residue is the
-  `DeltaAbsentFromSidecar` / `DeltaDroppedSensitive` /
-  `DeltaDroppedUnrecoverable` counts.
-- [#28](https://github.com/pulumi-proserv/pulumi-tool-import/issues/28) —
-  sensitive values: the three implementations, the two uncovered paths, and the
-  recomputed config-key link; §1.
-
-### Not traced
+## Not traced
 
 - What the engine and bridge write into `__meta` and `__defaults` during
   `pulumi import`, in detail. The tool now writes both on the injection path,
