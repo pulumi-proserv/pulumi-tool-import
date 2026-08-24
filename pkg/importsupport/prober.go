@@ -22,6 +22,7 @@ import (
 	"os"
 	"sync"
 
+	"github.com/pulumi-proserv/pulumi-tool-import/pkg/provideraddr"
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/tfprovider"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/vendored/opentofu/providers"
 )
@@ -152,16 +153,28 @@ func (p *Prober) Provider(ctx context.Context, providerAddr string) (tfprovider.
 }
 
 // provider returns a running provider, loading it on first use. The caller
-// holds p.mu.
+// holds p.mu. The maps are keyed by whatever address their source used —
+// p.versions by the lock file, providerAddr by state — and the registry host
+// differs between terraform and tofu, so lookups try the equivalent forms.
 func (p *Prober) provider(ctx context.Context, providerAddr string) (tfprovider.Provider, bool) {
-	if provider, ok := p.providers[providerAddr]; ok {
-		return provider, true
+	for _, addr := range provideraddr.Equivalents(providerAddr) {
+		if provider, ok := p.providers[addr]; ok {
+			return provider, true
+		}
 	}
 	if p.failed[providerAddr] {
 		return nil, false
 	}
 
 	version := p.versions[providerAddr]
+	if version == "" {
+		for _, addr := range provideraddr.Equivalents(providerAddr) {
+			if v := p.versions[addr]; v != "" {
+				version = v
+				break
+			}
+		}
+	}
 	if version == "" {
 		p.failed[providerAddr] = true
 		p.Warn(fmt.Sprintf("no locked version for provider %s, cannot check which of its resource types "+

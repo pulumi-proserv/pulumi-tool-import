@@ -26,8 +26,10 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/config"
 )
 
+// VerifyDeploymentIntegrity checks the snapshot's structural invariants.
 func VerifyDeploymentIntegrity(stateData []byte) error {
 	var untyped apitype.UntypedDeployment
+	// Plain decode is fine here: read-only, and nothing decoded is written back.
 	if err := json.Unmarshal(stateData, &untyped); err != nil {
 		return fmt.Errorf("parsing state for verification: %w", err)
 	}
@@ -58,7 +60,7 @@ func VerifyDeploymentIntegrity(stateData []byte) error {
 
 type verificationSecretsProvider struct{}
 
-func (verificationSecretsProvider) OfType(ty string, state json.RawMessage) (secrets.Manager, error) {
+func (verificationSecretsProvider) OfType(_ context.Context, ty string, state json.RawMessage) (secrets.Manager, error) {
 	return &passthroughSecretsManager{ty: ty, state: state}, nil
 }
 

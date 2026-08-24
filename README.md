@@ -1,5 +1,9 @@
 # pulumi-tool-import
 
+> **Pre-v1 software.** Interfaces, flags, and file formats may change between
+> releases without a deprecation cycle. Pin the version you install, and read
+> the [CHANGELOG](CHANGELOG.md) before upgrading.
+
 `pulumi-tool-import` helps migrate existing infrastructure into Pulumi using the
 native [`pulumi import`](https://www.pulumi.com/docs/iac/adopting-pulumi/import/)
 workflow — analyzing the source, computing the import IDs Pulumi needs, and
@@ -326,7 +330,7 @@ avoid re-patching secret fields.
 `*.non-importable.json` `resolve tf` writes, and injects those resources
 directly into state. Injection needs a preview to source each resource's URN,
 parent, provider and dependencies from: pass one with `--preview-json` (file
-mode), or omit `--state`/`--out` and pass `--project-dir`/`--stack` instead, in
+mode), or omit `--state` and pass `--project-dir`/`--stack` instead, in
 which case the command operates on the stack directly — exporting, backing up,
 patching, injecting, importing and verifying with its own previews
 (`--preview-json` is rejected in this mode). The stack-mode backup contains

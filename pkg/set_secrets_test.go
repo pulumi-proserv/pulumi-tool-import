@@ -58,3 +58,76 @@ func TestParseSecretMapping(t *testing.T) {
 		assert.Error(t, err)
 	})
 }
+
+func TestExtractSecretValues_PreservesLargeIntegers(t *testing.T) {
+	t.Parallel()
+
+	state := []byte(`{"resources":[{"type":"aws_x","name":"n","mode":"managed","instances":[
+		{"attributes":{"secret_number":1234567890123456789}}]}]}`)
+	cm, err := extractSecretValues(state, []SecretMapping{{
+		TerraformAddress: "aws_x.n", Attribute: "secret_number", ConfigKey: "k",
+	}})
+	require.NoError(t, err)
+	assert.Equal(t, "1234567890123456789", cm["k"].Value)
+	assert.True(t, cm["k"].Secret)
+}
+
+func TestExtractSecretValues_IntegerIndexKeyRendersAsBracketZero(t *testing.T) {
+	t.Parallel()
+
+	state := []byte(`{"resources":[{"type":"aws_x","name":"n","mode":"managed","instances":[
+		{"index_key":0,"attributes":{"password":"hunter2"}}]}]}`)
+	cm, err := extractSecretValues(state, []SecretMapping{{
+		TerraformAddress: "aws_x.n[0]", Attribute: "password", ConfigKey: "k",
+	}})
+	require.NoError(t, err)
+	assert.Equal(t, "hunter2", cm["k"].Value)
+}
+
+func TestExtractSecretValues_AddressForms(t *testing.T) {
+	t.Parallel()
+
+	state := []byte(`{"resources":[
+		{"type":"aws_x","name":"n","module":"module.foo","mode":"managed","instances":[
+			{"attributes":{"password":"in-module"}}]},
+		{"type":"aws_x","name":"d","mode":"data","instances":[
+			{"attributes":{"password":"in-data"}}]},
+		{"type":"aws_x","name":"k","mode":"managed","instances":[
+			{"index_key":"key","attributes":{"password":"by-key"}}]}
+	]}`)
+
+	cases := []struct{ addr, want string }{
+		{"module.foo.aws_x.n", "in-module"},
+		{"data.aws_x.d", "in-data"},
+		{`aws_x.k["key"]`, "by-key"},
+	}
+	for _, tc := range cases {
+		cm, err := extractSecretValues(state, []SecretMapping{{
+			TerraformAddress: tc.addr, Attribute: "password", ConfigKey: "k",
+		}})
+		require.NoError(t, err, tc.addr)
+		assert.Equal(t, tc.want, cm["k"].Value, tc.addr)
+	}
+}
+
+func TestExtractSecretValues_RejectsCompositeValues(t *testing.T) {
+	t.Parallel()
+
+	state := []byte(`{"resources":[{"type":"aws_x","name":"n","mode":"managed","instances":[
+		{"attributes":{"master_user_secret":[{"secret_arn":"arn:x"}]}}]}]}`)
+	_, err := extractSecretValues(state, []SecretMapping{{
+		TerraformAddress: "aws_x.n", Attribute: "master_user_secret", ConfigKey: "k",
+	}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "master_user_secret")
+	assert.NotContains(t, err.Error(), "arn:x", "the error must not echo the value")
+}
+
+func TestExtractSecretValues_RejectsTrailingData(t *testing.T) {
+	t.Parallel()
+
+	state := []byte(`{"resources":[]}{"resources":[]}`)
+	_, err := extractSecretValues(state, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "trailing")
+}

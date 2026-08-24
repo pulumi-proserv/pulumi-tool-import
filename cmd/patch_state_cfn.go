@@ -195,6 +195,9 @@ Example:
 			}
 
 			fmt.Fprintf(os.Stderr, "Patched state written to %s\n", outPath)
+			fmt.Fprintf(os.Stderr, "NOT VERIFIED: patch-state cfn has no stack mode, so nothing checks "+
+				"this result until you import it and preview:\n"+
+				"  pulumi stack import --file %s && pulumi preview\n", outPath)
 			fmt.Fprintf(os.Stderr, "  Patched:            %d resources\n", result.Patched)
 			fmt.Fprintf(os.Stderr, "  Fields from digest: %d\n", result.FieldsFromDigest)
 			fmt.Fprintf(os.Stderr, "  Fields from defaults: %d\n", result.FieldsFromDefaults)
@@ -204,6 +207,12 @@ Example:
 			}
 			fmt.Fprintf(os.Stderr, "  No fields to patch: %d\n", result.NoFields)
 			fmt.Fprintf(os.Stderr, "  Digest mapped:      %d\n", result.DigestMapped)
+			if result.NoMatch > 0 {
+				fmt.Fprintf(os.Stderr, "  No digest match:    %d resource(s) with fields to patch matched no digest entry and were left unpatched:\n", result.NoMatch)
+				for _, note := range result.NoMatchNotes {
+					fmt.Fprintf(os.Stderr, "    %s\n", note)
+				}
+			}
 			fmt.Fprintf(os.Stderr, "  Deltas validated (imported): %d\n", result.DeltaValidated)
 			if result.DeltaFailed > 0 {
 				fmt.Fprintf(os.Stderr, "  Deltas failed (imported):    %d (outputs reverted)\n", result.DeltaFailed)

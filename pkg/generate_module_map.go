@@ -116,7 +116,7 @@ func GenerateModuleMap(ctx context.Context, tfDir, stateFilePath, outputPath, st
 
 		fmt.Fprintf(os.Stderr, "[4b/7] Resolving Pulumi providers...\n")
 		tfProviders := getTerraformProvidersForRawState(rawState)
-		pulumiProviders, err = PulumiProvidersForTerraformProviders(tfProviders, nil)
+		pulumiProviders, err = PulumiProvidersForTerraformProviders(tfProviders, lockFileVersions(tfDir))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: could not resolve Pulumi providers: %v\n", err)
 			fmt.Fprintf(os.Stderr, "Continuing without Pulumi URNs (will use raw Terraform addresses).\n")
@@ -132,7 +132,7 @@ func GenerateModuleMap(ctx context.Context, tfDir, stateFilePath, outputPath, st
 
 		rawState = rawStateFromTfjson(&tfjsonState)
 
-		pulumiProviders, err = GetPulumiProvidersForTerraformState(&tfjsonState, nil)
+		pulumiProviders, err = GetPulumiProvidersForTerraformState(&tfjsonState, lockFileVersions(tfDir))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: could not resolve Pulumi providers: %v\n", err)
 			fmt.Fprintf(os.Stderr, "Continuing without Pulumi URNs (will use raw Terraform addresses).\n")
@@ -358,4 +358,20 @@ func walkSensitiveValues(node interface{}, prefix cty.Path, out *[]cty.PathValue
 			}), out)
 		}
 	}
+}
+
+// lockFileVersions reads .terraform.lock.hcl's provider versions, so a
+// dynamically bridged provider's digest pin can carry the Terraform version
+// the mapping was computed against (dynamic@<version>) rather than "latest".
+// Best-effort: no lock file means no versions — the pin then records bare
+// "dynamic", which injection treats as unpinned.
+func lockFileVersions(tfDir string) map[string]string {
+	if tfDir == "" {
+		return nil
+	}
+	versions, err := tofuutil.LockedProviderVersions(tfDir)
+	if err != nil || len(versions) == 0 {
+		return nil
+	}
+	return versions
 }

@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Stack mode's `--out`: `patch-state tf --project-dir/--stack` can also write
+  the state to a file, after verification passes — the file is always the
+  verified artifact (#39). It carries decrypted secrets like the backup;
+  writability is checked before the stack is touched. An explicitly empty
+  `--state` is an error rather than a silent switch into stack mode.
+- **A refresh report after injection** (#41). Stack mode runs
+  `pulumi refresh --preview-only --json` after verification and reports, per
+  injected resource: **GONE**, a property live disagrees on (with both
+  values), or "no diff" — never presented as confirmation. A report, not a
+  gate, and it never writes; `--skip-refresh-report` opts out.
+
 - `version` command, printing the version stamped into the binary at release
   time. Previously `pkg/version.Version` was set via ldflags but no command
   surfaced it, so an installed plugin could not identify itself.
@@ -38,6 +49,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`set-secrets` corrupted large-integer secrets.** A plain decode wrote
+  integer secrets above 2^53 into stack config in scientific notation. The
+  decode now preserves precision, rejects trailing data, and refuses
+  composite values. Closes the #27 audit; the remaining plain decodes were
+  traced and are read-only or opaque by construction.
+- **A provider named `registry.terraform.io/...` in one place and
+  `registry.opentofu.org/...` in another was treated as two providers**,
+  silently splitting the digest's provider-loader pair on mixed terraform/tofu
+  histories. The host equivalence now lives in `pkg/provideraddr` and is
+  applied at every correlation point, and the pair resolver names which half
+  is missing — a provider with no bridge reads differently from a bridged
+  provider lacking one resource type (#26).
+
+- **Injection re-resolved provider schemas with no version.** The digest
+  recorded only provider names, so `patch-state` loaded whatever version this
+  build recommends — property names could silently come from a different
+  schema than the digest's (#38). The digest now records the resolved
+  provider (`name@version`, or `dynamic[@tfVersion]` with the Terraform
+  version from the lock file), `patch-state` pins to it (erroring on mapping
+  drift, warning on older digests), and the file carries a
+  `digestFormatVersion` so older consumers refuse newer files.
+- **A nested sensitive attribute was redacted but never recoverable.**
+  Recovery was top-level-only in discovery, the sidecar's key map, and
+  injection's resolvers, so a nested secret Terraform marked correctly was
+  redacted to a placeholder nothing could resolve, and injection hard-errored
+  on it (#28). A nested redaction now writes a placeholder carrying the
+  Terraform path itself — `(sensitive:user[0].password)` — and all three
+  correlate by that path. Top-level redaction keeps the bare `(sensitive)`,
+  so existing digests are unchanged; a non-scalar sensitive value is skipped
+  with a warning rather than stringified into config.
+
 - **Secrets could reach state in plaintext, two ways.** State in
   `tofu show -json` format got no redaction at all — the format is selected
   automatically on the presence of a `format_version` key, with no flag to
@@ -56,10 +98,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   attribute name, never from the marks, which is what makes recovery possible
   at all.
 
-  A **nested** attribute in the same position fails the digest instead, naming
-  the paths but never the values. Recovering a nested secret from stack config
-  is not implemented anywhere in the pipeline (#28), so redacting one would
-  replace a leak with a placeholder nothing can resolve.
+  A **nested** attribute in the same position — schema-marked but not
+  state-marked — fails the digest instead, naming the paths but never the
+  values: with no state mark there is no concrete path to tag, so redacting it
+  would strand an unrecoverable placeholder. (A nested attribute the state
+  DOES mark is redacted and recovered — see the entry above.)
 
   Both paths are backed by a check that runs for every resource, so a
   redaction that runs and does nothing can no longer report success.
@@ -97,6 +140,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Pulumi state the same way (#27).
 
 ### Changed
+
+- `patch-state` now names every resource the fields file covers that matched
+  no digest entry, instead of counting them into an aggregate nothing printed
+  (#37). The deliberate asymmetry between patching's name-guessing and
+  injection's exact-or-fail matching is documented at the matchers.
+- File mode's output now states plainly that it is **not verified**, naming
+  the manual check and the stack-mode alternative; `--help` describes the
+  safety split between the modes (#39).
 
 - `patch-state` now reports `Deltas validated (imported)` and
   `Deltas attached (injected): X of Y` rather than an unqualified

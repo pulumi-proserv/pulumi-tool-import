@@ -182,10 +182,6 @@ func TestRedactSchemaSensitive_NoSchemaChangesNothing(t *testing.T) {
 	assert.Equal(t, "hunter2", attrs["password"])
 }
 
-// Nested recovery is not wired: redactedAttributeKeys, DiscoverSensitiveSecrets
-// and the resolvers in state_injector.go are all top-level only. So the
-// backstop must still report a nested leak rather than redact one it cannot
-// recover.
 func TestRedactSchemaSensitive_DoesNotTouchNestedAttributes(t *testing.T) {
 	t.Parallel()
 
