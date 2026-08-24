@@ -15,9 +15,7 @@
 package cmd
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -77,16 +75,11 @@ Example:
 				return fmt.Errorf("reading state file: %w", err)
 			}
 
-			digestData, err := os.ReadFile(digestPath)
+			digestPtr, err := cfn.LoadStackDigest(digestPath)
 			if err != nil {
-				return fmt.Errorf("reading digest: %w", err)
+				return err
 			}
-			var digest cfn.StackDigest
-			digestDec := json.NewDecoder(bytes.NewReader(digestData))
-			digestDec.UseNumber()
-			if err := digestDec.Decode(&digest); err != nil {
-				return fmt.Errorf("parsing digest: %w", err)
-			}
+			digest := *digestPtr
 			// CFN digests carry no per-Lambda arn, so region can't be derived from
 			// it during code download — default to the digest's region.
 			if region == "" {

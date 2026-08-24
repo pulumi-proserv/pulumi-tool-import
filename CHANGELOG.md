@@ -49,6 +49,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A dynamic-bridge failure silently dropped the provider — including one the
+  digest pinned.** A pinned provider that fails to bridge is now a hard error
+  instead of a warning plus skipped resources; unpinned providers still skip
+  with the warning (#54).
+- **Injected outputs rounded integers above 2^53.** The bridge conversion
+  passes numbers through float64; the exact digits are now restored from the
+  source attributes by value correlation, so the sidecar and injected state
+  carry them exactly. Distinct integers that round to the same float64 (an
+  ambiguous repair) fall back to raw attribute renaming, which preserves them
+  (#29).
+- **The CFN digest now carries a `digestFormatVersion`**, stamped on write and
+  refused when newer than the build, matching the TF digest (#53).
 - **`set-secrets` corrupted large-integer secrets.** A plain decode wrote
   integer secrets above 2^53 into stack config in scientific notation. The
   decode now preserves precision, rejects trailing data, and refuses
@@ -160,6 +172,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- The tests-only patching machinery `PatchStateFromSchema` and
+  `conformToDelta` (#52). The former read as a supported schema-driven
+  alternative to the curated fields file, but its default path cannot work
+  against a real provider — the bridge mapping mock carries no `Default`.
 - The unused schema-driven sensitivity subsystem (`BuildSensitivityMap` and
   everything behind it). It had no callers at all, tests included, and was
   repeatedly cited as the mechanism that would fix the nested-path and

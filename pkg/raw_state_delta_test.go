@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"testing"
 
@@ -522,7 +523,7 @@ func TestCorruptDeltaPayloadIsGenuinelyRejected(t *testing.T) {
 	assert.NoError(t, err, "a well-formed asset delta must still parse")
 }
 
-func TestComputeInjectionState_LargeIntegerIsExactInTheSidecarButNotAfterRecovery(t *testing.T) {
+func TestComputeInjectionState_LargeIntegerIsExactEndToEnd(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
@@ -539,7 +540,6 @@ func TestComputeInjectionState_LargeIntegerIsExactInTheSidecarButNotAfterRecover
 	}
 
 	const exact = "9007199254740993"
-	const rounded = "9007199254740992"
 	attrs := []byte(`{"id":"q","name":"q","delay_seconds":` + exact + `,"fifo_queue":false}`)
 
 	outputs, delta, reason, _, err := ComputeInjectionState(
@@ -548,18 +548,18 @@ func TestComputeInjectionState_LargeIntegerIsExactInTheSidecarButNotAfterRecover
 	require.Empty(t, reason)
 	require.NotEmpty(t, delta)
 
-	lossy, err := json.Marshal(outputs["delaySeconds"])
+	// restoreLargeIntegers repairs the float64 rounding the bridge conversion
+	// imposes (#29), so the sidecar carries the exact digits.
+	got, err := json.Marshal(outputs["delaySeconds"])
 	require.NoError(t, err)
-	assert.Equal(t, rounded, string(lossy),
-		"if the Pulumi output is now exact, #29 is fixed and this test is stale")
+	assert.Equal(t, exact, string(got))
 
 	deltaJSON, err := json.Marshal(delta)
 	require.NoError(t, err)
-	assert.Contains(t, string(deltaJSON), `"replace"`,
-		"a value the bridge cannot reproduce naturally should produce a Replace node")
 	assert.Contains(t, string(deltaJSON), exact,
-		"the sidecar delta must carry the exact digits the Pulumi output could not hold")
+		"the sidecar delta carries the exact digits too (computed from the cty value)")
 
+	// And recovery through the bridge reproduces the exact number.
 	outputsFromSidecar := decodeExact(t, mustJSON(t, outputs))
 	deltaFromSidecar := decodeExact(t, deltaJSON)
 	rsd, err := tfbridge.UnmarshalRawStateDelta(resource.NewPropertyValue(deltaFromSidecar))
@@ -568,11 +568,9 @@ func TestComputeInjectionState_LargeIntegerIsExactInTheSidecarButNotAfterRecover
 		resource.NewObjectProperty(resource.NewPropertyMapFromMap(outputsFromSidecar)))
 	require.NoError(t, err)
 
-	got := decodeExact(t, recovered)
-	assert.NotEqual(t, json.Number(exact), got["delay_seconds"],
-		"recovery now reproduces the exact number — #29 may be fixable end to end; "+
-			"update this test and the issue")
-	t.Logf("recovered delay_seconds = %#v (original was the number %s)", got["delay_seconds"], exact)
+	// The digits are exact; the Go type varies with the harness path
+	// (NewPropertyMapFromMap turns json.Number into a string property).
+	assert.Equal(t, exact, fmt.Sprintf("%v", decodeExact(t, recovered)["delay_seconds"]))
 }
 
 func mustJSON(t *testing.T, v interface{}) []byte {

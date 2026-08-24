@@ -68,6 +68,10 @@ func ComputeInjectionState(
 	}
 	delete(props, "timeouts")
 	outputs = props.Mappable()
+	outputs, err = restoreLargeIntegers(outputs, attrsJSON)
+	if err != nil {
+		return nil, nil, "", 0, fmt.Errorf("converting %s attributes to Pulumi outputs: %w", tfType, err)
+	}
 
 	// Mirrors the bridge's own first act in RawStateInjectDelta. Unreachable
 	// today only because pulumiOutputsFromCty starts with ctyjson.Marshal,
