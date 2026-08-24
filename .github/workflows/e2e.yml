@@ -54,6 +54,12 @@ jobs:
           echo "TF_PLUGIN_CACHE_DIR=$HOME/.terraform.d/plugin-cache" >> "$GITHUB_ENV"
           mkdir -p "$HOME/.terraform.d/plugin-cache"
 
+      - name: Debug OIDC claims (temporary)
+        run: |
+          tok=$(curl -s -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=urn:pulumi:org:team-ce" | jq -r .value)
+          echo "$tok" | cut -d. -f2 | base64 -d 2>/dev/null | jq '{iss, aud, sub, repository, ref, event_name}'
+
       - name: Authenticate with Pulumi Cloud via OIDC
         uses: pulumi/auth-actions@141415910c3beb54e03b48e9057c204c97b956f2 # v2
         with:
