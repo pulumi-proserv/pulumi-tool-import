@@ -1,0 +1,76 @@
+name: E2E
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # The Pulumi access token is minted by exchanging GitHub's OIDC token with
+  # Pulumi Cloud (no long-lived secret in the repo); AWS credentials then come
+  # from the ESC environment the same way they do locally.
+  id-token: write
+
+# One run at a time: the tests create real AWS resources (VPN gateways, IoT
+# certificates, VPC Lattice) whose per-region quotas concurrent runs would
+# contend on. Never cancel a run mid-apply — that is how resources get
+# orphaned; a superseded run finishes and tears itself down.
+concurrency:
+  group: aws-e2e
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    name: AWS e2e
+    runs-on: ubuntu-latest
+    # Makefile's E2E_TIMEOUT is 40m; leave headroom for setup and teardown.
+    timeout-minutes: 55
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Pulumi
+        uses: pulumi/actions@8582a9e8cc630786854029b4e09281acd6794b58 # v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Set up OpenTofu
+        uses: opentofu/setup-opentofu@9d84900f3238fab8cd84ce47d658d25dd008be2f # v1
+
+      # Same rationale and key as test.yml: provider downloads are the
+      # slowest, least reliable part of the job.
+      - name: Cache provider downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.pulumi/plugins
+            ~/.pulumi/dynamic_tf_plugins
+            ~/.pulumi/mapping-cache
+            ~/.terraform.d/plugin-cache
+          key: providers-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/providermap/**', '**/.terraform.lock.hcl') }}
+          restore-keys: |
+            providers-${{ runner.os }}-
+
+      - name: Enable the Terraform plugin cache
+        run: |
+          echo "TF_PLUGIN_CACHE_DIR=$HOME/.terraform.d/plugin-cache" >> "$GITHUB_ENV"
+          mkdir -p "$HOME/.terraform.d/plugin-cache"
+
+      - name: Authenticate with Pulumi Cloud via OIDC
+        uses: pulumi/auth-actions@141415910c3beb54e03b48e9057c204c97b956f2 # v2
+        with:
+          organization: team-ce
+          requested-token-type: urn:pulumi:token-type:access_token:organization
+
+      - name: Run e2e tests
+        # The ESC environment supplies the AWS credentials, exactly as local
+        # runs do.
+        run: pulumi env run team-ce/aws/pulumi-ce --non-interactive -- make test-e2e
