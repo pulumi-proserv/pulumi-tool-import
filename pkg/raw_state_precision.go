@@ -28,32 +28,37 @@ import (
 // 2^53 in attrsJSON reaches outputs rounded. The repair correlates by VALUE,
 // not by name — a rounded leaf is replaced with the one source digit-string
 // that rounds to it — so the bridge's renames and reshaping never have to be
-// inverted. The input is not modified; a new tree is returned. An error means
-// the correlation is ambiguous (distinct sources land on the same float64)
-// and the caller must not use outputs at all: a wrong guess writes a wrong
-// value into state.
-func restoreLargeIntegers(outputs map[string]interface{}, attrsJSON []byte) (map[string]interface{}, error) {
+// inverted. The input is not modified; a new tree is returned.
+//
+// A leaf whose value is ambiguous (distinct sources land on the same
+// float64) is left rounded rather than guessed, and its value is returned in
+// ambiguities so the caller can warn; the raw state delta, computed from the
+// exact cty value, still carries the right digits downstream. An error is
+// only a failure to decode attrsJSON.
+func restoreLargeIntegers(
+	outputs map[string]interface{}, attrsJSON []byte,
+) (repaired map[string]interface{}, ambiguities []string, err error) {
 	dec := json.NewDecoder(bytes.NewReader(attrsJSON))
 	dec.UseNumber()
 	var attrs interface{}
 	if err := dec.Decode(&attrs); err != nil {
-		return nil, fmt.Errorf("decoding attributes for precision repair: %w", err)
+		return nil, nil, fmt.Errorf("decoding attributes for precision repair: %w", err)
 	}
 
 	repairs, ambiguous := indexSourceIntegers(attrs)
 	if len(repairs) == 0 && len(ambiguous) == 0 {
-		return outputs, nil
+		return outputs, nil, nil
 	}
 
-	repaired := make(map[string]interface{}, len(outputs))
+	hit := map[float64]bool{}
+	repaired = make(map[string]interface{}, len(outputs))
 	for k, v := range outputs {
-		rv, err := repairLeaf(v, repairs, ambiguous)
-		if err != nil {
-			return nil, err
-		}
-		repaired[k] = rv
+		repaired[k] = repairLeaf(v, repairs, ambiguous, hit)
 	}
-	return repaired, nil
+	for f := range hit {
+		ambiguities = append(ambiguities, strconv.FormatFloat(f, 'f', -1, 64))
+	}
+	return repaired, ambiguities, nil
 }
 
 // indexSourceIntegers walks the decoded attributes and returns, per rounded
@@ -110,41 +115,34 @@ func indexSourceIntegers(attrs interface{}) (repairs map[float64]string, ambiguo
 
 // repairLeaf rebuilds v with every float64 leaf that matches a repairable
 // rounded value replaced by its exact digits. A leaf matching an ambiguous
-// value is an error: rewriting it would be a guess between sources.
-func repairLeaf(v interface{}, repairs map[float64]string, ambiguous map[float64]bool) (interface{}, error) {
+// value is left rounded — rewriting it would be a guess between sources —
+// and the value is recorded in hit for the caller's warning.
+func repairLeaf(
+	v interface{}, repairs map[float64]string, ambiguous map[float64]bool, hit map[float64]bool,
+) interface{} {
 	switch val := v.(type) {
 	case float64:
 		if ambiguous[val] {
-			return nil, fmt.Errorf(
-				"attributes contain distinct values that all round to the float64 %s; "+
-					"their exact forms cannot be restored unambiguously",
-				strconv.FormatFloat(val, 'f', -1, 64))
+			hit[val] = true
+			return v
 		}
 		if digits, ok := repairs[val]; ok {
-			return json.Number(digits), nil
+			return json.Number(digits)
 		}
-		return v, nil
+		return v
 	case map[string]interface{}:
 		out := make(map[string]interface{}, len(val))
 		for k, elem := range val {
-			repaired, err := repairLeaf(elem, repairs, ambiguous)
-			if err != nil {
-				return nil, err
-			}
-			out[k] = repaired
+			out[k] = repairLeaf(elem, repairs, ambiguous, hit)
 		}
-		return out, nil
+		return out
 	case []interface{}:
 		out := make([]interface{}, len(val))
 		for i, elem := range val {
-			repaired, err := repairLeaf(elem, repairs, ambiguous)
-			if err != nil {
-				return nil, err
-			}
-			out[i] = repaired
+			out[i] = repairLeaf(elem, repairs, ambiguous, hit)
 		}
-		return out, nil
+		return out
 	default:
-		return v, nil
+		return v
 	}
 }

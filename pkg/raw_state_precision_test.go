@@ -60,31 +60,47 @@ func TestComputeInjectionState_PreservesLargeIntegers(t *testing.T) {
 	assert.NotContains(t, string(out), "1152921504606846976")
 }
 
-func TestComputeInjectionState_FloatFormSourceMakesRepairAmbiguous(t *testing.T) {
+func TestComputeInjectionState_FloatFormSourceMakesLeafAmbiguous(t *testing.T) {
 	t.Parallel()
 	prov, schemaMap := bigIntResource()
 
 	// A float/exponent-form source that lands on the same float64 as a lossy
-	// integer's rounding makes the repair ambiguous: an output leaf holding
-	// that value may legitimately be the float-form source, so rewriting it
-	// with the integer's digits would corrupt it.
+	// integer's rounding makes that VALUE ambiguous: an output leaf holding
+	// it may legitimately be the float-form source, so rewriting it with the
+	// integer's digits would corrupt it. The leaf stays rounded — never a
+	// guess — while the rest of the conversion (and the delta, which carries
+	// the exact value downstream) is kept.
 	attrs := []byte(`{"id":"x","big_id":9007199254740993,"ids":[9.007199254740992e15]}`)
-	_, _, _, _, err := ComputeInjectionState(
+	outputs, delta, _, _, err := ComputeInjectionState(
 		context.Background(), prov, "synthetic_big", attrs, schemaMap, nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "float64")
+	require.NoError(t, err)
+	require.NotEmpty(t, delta, "an ambiguous leaf must not cost the resource its delta")
+
+	assert.Equal(t, float64(9007199254740992), outputs["bigId"],
+		"an ambiguous leaf stays rounded rather than being guessed")
 }
 
-func TestComputeInjectionState_AmbiguousLargeIntegersError(t *testing.T) {
+func TestComputeInjectionState_AmbiguousLeavesStayRoundedOthersRepair(t *testing.T) {
 	t.Parallel()
 	prov, schemaMap := bigIntResource()
 
-	// Two distinct integers that round to the same float64 (both to 2^60):
-	// neither can be restored unambiguously, and a wrong guess writes a wrong
-	// value into state, so the caller must fall back to raw renaming.
-	attrs := []byte(`{"id":"x","big_id":1152921504606846977,"ids":[1152921504606846978]}`)
-	_, _, _, _, err := ComputeInjectionState(
+	// Two distinct integers rounding to the same float64 (both to 2^60) are
+	// unrepairable and stay rounded; an unrelated repairable integer in the
+	// same resource is still restored, and the delta survives.
+	attrs := []byte(`{"id":"x","big_id":1152921504606846977,` +
+		`"ids":[1152921504606846978,9007199254740993]}`)
+	outputs, delta, _, _, err := ComputeInjectionState(
 		context.Background(), prov, "synthetic_big", attrs, schemaMap, nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "float64")
+	require.NoError(t, err)
+	require.NotEmpty(t, delta)
+
+	assert.Equal(t, float64(1152921504606846976), outputs["bigId"],
+		"a colliding value stays rounded")
+	ids, ok := outputs["ids"].([]interface{})
+	require.True(t, ok, "ids: %T", outputs["ids"])
+	require.Len(t, ids, 2)
+	assert.Equal(t, float64(1152921504606846976), ids[0],
+		"the other colliding leaf stays rounded too")
+	assert.Equal(t, json.Number("9007199254740993"), ids[1],
+		"an unambiguous leaf in the same resource is still repaired")
 }

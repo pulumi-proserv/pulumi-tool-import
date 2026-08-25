@@ -76,13 +76,29 @@ jobs:
           organization: team-ce
           requested-token-type: urn:pulumi:token-type:access_token:organization
 
-      # Fails the job when the ESC environment stops handing out credentials:
-      # the suite itself t.Skips in that case and go test exits 0, which would
-      # otherwise leave this gate green while testing nothing. Also masks the
-      # account identity before any test output prints it.
+      # The environment is opened ONCE and its values exported to the job:
+      # each `pulumi env run` invocation would mint fresh credentials that no
+      # registered mask covers, so masking only works if the same credential
+      # set is used throughout. Credential-shaped values are masked before
+      # anything can print them.
+      - name: Load AWS credentials from ESC (masked)
+        run: |
+          pulumi env open team-ce/aws/pulumi-ce --format json > /tmp/esc-env.json
+          while IFS=$'\t' read -r k v; do
+            case "$k" in
+              *KEY*|*SECRET*|*TOKEN*|*PASSWORD*) echo "::add-mask::$v" ;;
+            esac
+            echo "$k=$v" >> "$GITHUB_ENV"
+          done < <(jq -r '(.environmentVariables // {}) | to_entries[] | "\(.key)\t\(.value)"' /tmp/esc-env.json)
+          rm -f /tmp/esc-env.json
+
+      # Fails the job when the credentials do not work: the suite itself
+      # t.Skips in that case and go test exits 0, which would otherwise leave
+      # this gate green while testing nothing. Also masks the account
+      # identity before any test output prints it.
       - name: Verify AWS credentials
         run: |
-          id=$(pulumi env run team-ce/aws/pulumi-ce --non-interactive -- aws sts get-caller-identity --query '[Account,Arn]' --output text)
+          id=$(aws sts get-caller-identity --query '[Account,Arn]' --output text)
           acct=$(echo "$id" | awk '{print $1}')
           arn=$(echo "$id" | awk '{print $2}')
           echo "::add-mask::$acct"
@@ -95,7 +111,7 @@ jobs:
         # which would skip t.Cleanup's tofu destroy.
         env:
           E2E_TIMEOUT: 30m
-        run: pulumi env run team-ce/aws/pulumi-ce --non-interactive -- make test-e2e
+        run: make test-e2e
 
       # A failed or cancelled run can leave real AWS resources behind with
       # their Terraform state in the runner's tempdir. Preserve the state,
@@ -114,5 +130,5 @@ jobs:
           shopt -s nullglob
           for d in /tmp/pulumi-tool-import-e2e-tf-*/tf; do
             echo "destroying fixtures in $d"
-            pulumi env run team-ce/aws/pulumi-ce --non-interactive -- tofu -chdir="$d" destroy -auto-approve || true
+            tofu -chdir="$d" destroy -auto-approve || true
           done

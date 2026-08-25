@@ -257,8 +257,9 @@ Three notes on this hop:
   `restoreLargeIntegers` (`pkg/raw_state_precision.go`) repairs the converted
   outputs afterwards by value correlation — each rounded leaf is replaced
   with the one source digit-string that rounds to it, never inverting the
-  bridge's renames — and refuses (falling back to raw attribute renaming,
-  which is exact) when distinct sources land on the same float64.
+  bridge's renames. When distinct sources land on the same float64 the leaf
+  stays rounded with a warning — never guessed — and the delta still
+  carries the exact value.
   `RawStateDelta` is computed from the cty value and is exact on its own; it
   is the authoritative carrier of large integers into the provider, because
   anything re-read through `resource.PropertyValue` rounds again (the

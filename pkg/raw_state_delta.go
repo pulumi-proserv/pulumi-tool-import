@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/tfprovider"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
@@ -71,9 +72,14 @@ func ComputeInjectionState(
 	// delta below is computed from the cty value, which is already exact, and
 	// is the authoritative carrier of large integers into the provider.
 	outputs = props.Mappable()
-	outputs, err = restoreLargeIntegers(outputs, attrsJSON)
+	outputs, ambiguities, err := restoreLargeIntegers(outputs, attrsJSON)
 	if err != nil {
 		return nil, nil, "", 0, fmt.Errorf("restoring exact integers in %s outputs: %w", tfType, err)
+	}
+	for _, a := range ambiguities {
+		fmt.Fprintf(os.Stderr, "Warning: %s: distinct attribute values all round to the float64 %s; "+
+			"the outputs leaf stays rounded (the raw state delta still carries the exact value)\n",
+			tfType, a)
 	}
 
 	// Mirrors the bridge's own first act in RawStateInjectDelta. Unreachable

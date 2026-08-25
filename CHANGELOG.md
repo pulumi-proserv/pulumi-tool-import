@@ -55,9 +55,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   state file carry them exactly, and the raw state delta (computed from the
   exact cty value) remains the authoritative carrier into the provider —
   values re-read through `resource.PropertyValue` still round, which is the
-  bridge-side ceiling #29 documents. Sources that cannot be restored
-  unambiguously (distinct values rounding to the same float64) fall back to
-  raw attribute renaming, which preserves the digits (#29).
+  bridge-side ceiling #29 documents. A value that cannot be restored
+  unambiguously (distinct sources rounding to the same float64) stays
+  rounded in the outputs with a warning — never guessed — while the delta
+  still carries it exactly (#29).
 - **The CFN digest now carries a `digestFormatVersion`**, stamped on write and
   refused when newer than the build, matching the TF digest — the gate takes
   effect for builds from this release onward, so a future version 2 must wait
