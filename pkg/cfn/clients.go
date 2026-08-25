@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -115,8 +116,12 @@ func (r *ccReader) GetResource(ctx context.Context, typeName, id string) (map[st
 	if out.ResourceDescription == nil || out.ResourceDescription.Properties == nil {
 		return nil, nil
 	}
+	// UseNumber: live properties become digest attributes, which end up in
+	// Pulumi state — a plain decode rounds integers above 2^53.
 	var props map[string]interface{}
-	if err := json.Unmarshal([]byte(aws.ToString(out.ResourceDescription.Properties)), &props); err != nil {
+	dec := json.NewDecoder(strings.NewReader(aws.ToString(out.ResourceDescription.Properties)))
+	dec.UseNumber()
+	if err := dec.Decode(&props); err != nil {
 		return nil, fmt.Errorf("unmarshal cloudcontrol properties: %w", err)
 	}
 	return props, nil

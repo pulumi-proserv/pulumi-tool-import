@@ -53,7 +53,11 @@ func BuildDigest(ctx context.Context, stackName, region string, sr StackReader, 
 			NoEcho interface{} `json:"NoEcho"`
 		} `json:"Parameters"`
 	}
-	if err := json.Unmarshal([]byte(tmplStr), &tmpl); err != nil {
+	// UseNumber: template property values become digest attributes, which end
+	// up in Pulumi state — a plain decode rounds integers above 2^53.
+	tmplDec := json.NewDecoder(strings.NewReader(tmplStr))
+	tmplDec.UseNumber()
+	if err := tmplDec.Decode(&tmpl); err != nil {
 		return nil, fmt.Errorf("parse template: %w", err)
 	}
 	stackResources, err := sr.ListStackResources(ctx, stackName)

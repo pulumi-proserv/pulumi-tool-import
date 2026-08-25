@@ -18,6 +18,22 @@ jobs:
         uses: actions/checkout@v4
       - name: Unshallow clone for tags
         run: git fetch --prune --unshallow --tags || true
+      - name: Require a green AWS e2e on the tagged commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          n=$(gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/check-runs" \
+            --jq '[.check_runs[] | select(.name == "AWS e2e" and .conclusion == "success")] | length')
+          if [ "$n" = "0" ]; then
+            echo "::error::no successful 'AWS e2e' check on ${{ github.sha }} — run the E2E workflow on this commit before tagging"
+            exit 1
+          fi
+      - name: Extract release notes from the CHANGELOG
+        # The top section of CHANGELOG.md (from the first '## [' heading to
+        # the next) is what this release ships; GoReleaser otherwise builds
+        # notes from commit subjects, and behavior changes documented only in
+        # the repo file never reach the release page.
+        run: awk '/^## \[/{n++} n==1' CHANGELOG.md > /tmp/release-notes.md
       - name: Install Go
         uses: actions/setup-go@v5
         with:
@@ -30,6 +46,6 @@ jobs:
           # -p 2: build 2 targets at a time. This binary pulls a huge dep tree
           # (OpenTofu, terraform-bridge, AWS SDK v1+v2, Pulumi SDK); building all
           # 6 targets concurrently (-p 10) OOM-killed the 16GB runner.
-          args: release --clean -p 2 -f .goreleaser.yml --skip=validate --timeout 60m0s
+          args: release --clean -p 2 -f .goreleaser.yml --skip=validate --timeout 60m0s --release-notes /tmp/release-notes.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

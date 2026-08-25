@@ -15,7 +15,6 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -76,12 +75,8 @@ which case the digest contains plaintext and must be .gitignore'd).`,
 				}
 			}
 
-			data, err := json.MarshalIndent(digest, "", "    ")
-			if err != nil {
-				return fmt.Errorf("marshal: %w", err)
-			}
-			if err := os.WriteFile(out, data, 0o644); err != nil {
-				return fmt.Errorf("write: %w", err)
+			if err := cfn.WriteStackDigest(digest, out); err != nil {
+				return err
 			}
 
 			fmt.Fprintf(os.Stderr, "Resources: %d\n", len(digest.Resources))

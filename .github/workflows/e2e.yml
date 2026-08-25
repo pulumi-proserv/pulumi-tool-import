@@ -1,0 +1,134 @@
+name: E2E
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths-ignore:
+      - '**.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+# Per-ref groups: pushes to one branch queue behind each other without
+# evicting other branches' (or main's) runs from the shared queue. Never
+# cancel a run mid-apply — that orphans AWS resources; a superseded run
+# finishes and tears itself down.
+concurrency:
+  group: aws-e2e-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    name: AWS e2e
+    # Credentials are minted for this job; never run PR-authored code from a
+    # fork with them (fork PRs also cannot get id-token: write).
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Pulumi
+        uses: pulumi/actions@8582a9e8cc630786854029b4e09281acd6794b58 # v6
+        with:
+          pulumi-version: 3.259.0
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Set up OpenTofu
+        uses: opentofu/setup-opentofu@9d84900f3238fab8cd84ce47d658d25dd008be2f # v1
+        with:
+          tofu_version: 1.11.5
+
+      # Namespaced away from test.yml's cache: this job executes the cached
+      # provider binaries with live credentials, so it must not restore
+      # entries written by the uncredentialed workflow.
+      - name: Cache provider downloads
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.pulumi/plugins
+            ~/.pulumi/dynamic_tf_plugins
+            ~/.pulumi/mapping-cache
+            ~/.terraform.d/plugin-cache
+          key: e2e-providers-${{ runner.os }}-${{ hashFiles('go.sum', 'pkg/providermap/**', '**/.terraform.lock.hcl') }}
+          restore-keys: |
+            e2e-providers-${{ runner.os }}-
+
+      - name: Enable the Terraform plugin cache
+        run: |
+          echo "TF_PLUGIN_CACHE_DIR=$HOME/.terraform.d/plugin-cache" >> "$GITHUB_ENV"
+          mkdir -p "$HOME/.terraform.d/plugin-cache"
+
+      - name: Authenticate with Pulumi Cloud via OIDC
+        uses: pulumi/auth-actions@141415910c3beb54e03b48e9057c204c97b956f2 # v2
+        with:
+          organization: team-ce
+          requested-token-type: urn:pulumi:token-type:access_token:organization
+
+      # The environment is opened ONCE and its values exported to the job:
+      # each `pulumi env run` invocation would mint fresh credentials that no
+      # registered mask covers, so masking only works if the same credential
+      # set is used throughout. Credential-shaped values are masked before
+      # anything can print them.
+      - name: Load AWS credentials from ESC (masked)
+        run: |
+          pulumi env open team-ce/aws/pulumi-ce --format json > /tmp/esc-env.json
+          while IFS=$'\t' read -r k v; do
+            case "$k" in
+              *KEY*|*SECRET*|*TOKEN*|*PASSWORD*) echo "::add-mask::$v" ;;
+            esac
+            echo "$k=$v" >> "$GITHUB_ENV"
+          done < <(jq -r '(.environmentVariables // {}) | to_entries[] | "\(.key)\t\(.value)"' /tmp/esc-env.json)
+          rm -f /tmp/esc-env.json
+
+      # Fails the job when the credentials do not work: the suite itself
+      # t.Skips in that case and go test exits 0, which would otherwise leave
+      # this gate green while testing nothing. Also masks the account
+      # identity before any test output prints it.
+      - name: Verify AWS credentials
+        run: |
+          id=$(aws sts get-caller-identity --query '[Account,Arn]' --output text)
+          acct=$(echo "$id" | awk '{print $1}')
+          arn=$(echo "$id" | awk '{print $2}')
+          echo "::add-mask::$acct"
+          echo "::add-mask::$arn"
+
+      - name: Run e2e tests
+        id: e2e
+        # E2E_TIMEOUT well under timeout-minutes: the Go-level timeout prints
+        # the recovery path and must always fire before the job-level kill,
+        # which would skip t.Cleanup's tofu destroy.
+        env:
+          E2E_TIMEOUT: 30m
+        run: make test-e2e
+
+      # A failed or cancelled run can leave real AWS resources behind with
+      # their Terraform state in the runner's tempdir. Preserve the state,
+      # then destroy best-effort before the runner (and the state) vanish.
+      - name: Upload leaked fixture state
+        if: always() && steps.e2e.outcome != 'success' && steps.e2e.outcome != 'skipped'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: e2e-tf-fixtures
+          path: /tmp/pulumi-tool-import-e2e-tf-*
+          if-no-files-found: ignore
+
+      - name: Emergency teardown of leaked fixtures
+        if: always() && steps.e2e.outcome != 'success' && steps.e2e.outcome != 'skipped'
+        run: |
+          shopt -s nullglob
+          for d in /tmp/pulumi-tool-import-e2e-tf-*/tf; do
+            echo "destroying fixtures in $d"
+            tofu -chdir="$d" destroy -auto-approve || true
+          done

@@ -15,7 +15,6 @@
 package cmd
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -32,16 +31,11 @@ func newResolveCfnCmd() *cobra.Command {
 		Use:   "cfn",
 		Short: "Fill a Pulumi import file from a cfn-digest (digest cfn output)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			digestData, err := os.ReadFile(digestPath)
+			digestPtr, err := cfn.LoadStackDigest(digestPath)
 			if err != nil {
-				return fmt.Errorf("reading digest: %w", err)
+				return err
 			}
-			var digest cfn.StackDigest
-			digestDec := json.NewDecoder(bytes.NewReader(digestData))
-			digestDec.UseNumber()
-			if err := digestDec.Decode(&digest); err != nil {
-				return fmt.Errorf("parsing digest: %w", err)
-			}
+			digest := *digestPtr
 			importData, err := os.ReadFile(importPath)
 			if err != nil {
 				return fmt.Errorf("reading import file: %w", err)

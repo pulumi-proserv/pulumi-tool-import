@@ -94,6 +94,10 @@ func PulumiProvidersForTerraformProvidersPinned(
 	return pulumiProvidersForTerraformProviders(terraformProviders, nil, pins)
 }
 
+// dynamicBridge is bridgedproviders.GetMappingForTerraformProvider, replaced
+// in tests.
+var dynamicBridge = bridgedproviders.GetMappingForTerraformProvider
+
 func pulumiProvidersForTerraformProviders(
 	terraformProviders []providermap.TerraformProviderName,
 	providerVersions map[string]string,
@@ -119,7 +123,8 @@ func pulumiProvidersForTerraformProviders(
 			Identifier: providermap.TerraformProviderName(providerName),
 			Version:    version,
 		})
-		if pin := pins[string(providerName)]; pin != "" {
+		pin := pins[string(providerName)]
+		if pin != "" {
 			pinned, pinnedTFVersion, err := applyProviderPin(pulumiProvider, pin)
 			if err != nil {
 				return nil, fmt.Errorf("provider %s: %w", providerName, err)
@@ -144,12 +149,17 @@ func pulumiProvidersForTerraformProviders(
 			}
 			isDynamic = false
 		} else {
-			providerInfo, err = bridgedproviders.GetMappingForTerraformProvider(
-				context.Background(),
-				string(providerName),
-				version,
-			)
+			providerInfo, err = dynamicBridge(context.Background(), string(providerName), version)
 			if err != nil {
+				// A provider the digest pinned must not be dropped silently:
+				// injection would fall back for every one of its resources
+				// while the pin promised otherwise. This fires before any
+				// state is patched, written, or imported.
+				if pin != "" {
+					return nil, fmt.Errorf(
+						"provider %s: the digest pinned this provider, but dynamic bridging "+
+							"failed: %w", providerName, err)
+				}
 				fmt.Fprintf(os.Stderr, "Warning: failed to dynamically bridge provider %s: %v\n", providerName, err)
 				fmt.Fprintf(os.Stderr, "Warning: resources using provider %s will be skipped\n", providerName)
 				continue
