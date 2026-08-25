@@ -40,8 +40,9 @@ import (
 
 // ModuleMap is the top-level structure for the module-map.json sidecar file.
 type ModuleMap struct {
-	// FormatVersion is the digest file format this tool wrote. LoadDigest
-	// refuses a version newer than it knows; 0 (absent) predates the field.
+	// FormatVersion is the digest file format: stamped by WriteModuleMap on
+	// write, read back as the file declared on load. LoadDigest refuses a
+	// version newer than it knows; 0 (absent) predates the field.
 	FormatVersion int                        `json:"digestFormatVersion,omitempty"`
 	Modules       map[string]*ModuleMapEntry `json:"modules"`
 	RootResources []ModuleResource           `json:"rootResources,omitempty"`
@@ -520,12 +521,12 @@ func populateInjectionState(
 		return
 	}
 
-	outputs, delta, deltaReason, version, ok := safeComputeInjectionState(
+	outputs, delta, deltaReason, version, failure := safeComputeInjectionState(
 		ctx, prov, resourceType, attrsJSON, schemaMap, schemaInfos)
-	if !ok {
+	if failure != "" {
 		mr.InjectionStateReason = fmt.Sprintf(
-			"computing injection state for %s panicked or failed; the resource will be "+
-				"injected from raw attribute renaming instead", resourceType)
+			"computing injection state for %s failed (%s); the resource will be "+
+				"injected from raw attribute renaming instead", resourceType, failure)
 		warnInjectionState(mr)
 		return
 	}
@@ -546,20 +547,20 @@ func safeComputeInjectionState(
 	attrsJSON []byte,
 	schemaMap shim.SchemaMap,
 	schemaInfos map[string]*tfbridge.SchemaInfo,
-) (outputs map[string]interface{}, delta map[string]interface{}, deltaReason string, version int64, ok bool) {
+) (outputs map[string]interface{}, delta map[string]interface{}, deltaReason string, version int64, failure string) {
 	defer func() {
 		if r := recover(); r != nil {
 			fmt.Fprintf(os.Stderr, "Warning: computing injection state for %s panicked: %v\n", tfType, r)
-			outputs, delta, deltaReason, version, ok = nil, nil, "", 0, false
+			outputs, delta, deltaReason, version, failure = nil, nil, "", 0, fmt.Sprintf("panic: %v", r)
 		}
 	}()
 
 	o, d, reason, v, err := ComputeInjectionState(ctx, prov, tfType, attrsJSON, schemaMap, schemaInfos)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: computing injection state for %s failed: %v\n", tfType, err)
-		return nil, nil, "", 0, false
+		return nil, nil, "", 0, err.Error()
 	}
-	return o, d, reason, v, true
+	return o, d, reason, v, ""
 }
 
 // buildResourceURN constructs a Pulumi URN for a Terraform resource, or falls back

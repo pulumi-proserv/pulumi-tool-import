@@ -22,8 +22,11 @@ import (
 )
 
 // CurrentSidecarFormatVersion is stamped into every sidecar this build
-// writes. Bump it on a change an older consumer would half-read rather than
-// reject (version 1: the tagged nested placeholder).
+// writes (version 1: the tagged nested placeholder). Bump it ONLY when an
+// older reader would misread the file — a bump makes gated builds refuse it
+// outright. A change old readers can still read safely never bumps the
+// version; if readers need to detect such a change, add a dedicated field
+// they can ignore instead.
 const CurrentSidecarFormatVersion = 1
 
 type NonImportableFile struct {

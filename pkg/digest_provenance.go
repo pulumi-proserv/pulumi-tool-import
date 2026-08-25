@@ -25,8 +25,10 @@ import (
 )
 
 // CurrentDigestFormatVersion is stamped into every digest this build writes.
-// Bump it on a change a consumer built before the change would half-read
-// rather than reject.
+// Bump it ONLY when an older reader would misread the file — a bump makes
+// gated builds refuse it outright. A change old readers can still read
+// safely never bumps the version; if readers need to detect such a change,
+// add a dedicated field they can ignore instead.
 const CurrentDigestFormatVersion = 1
 
 // dynamicPin marks a provider the digest resolved through dynamic bridging

@@ -21,17 +21,22 @@ import (
 	"os"
 )
 
-// CurrentDigestFormatVersion is stamped into every CFN digest this build
-// writes. Bump it on a change a consumer built before the change would
-// half-read rather than reject.
-const CurrentDigestFormatVersion = 1
+// CurrentStackDigestFormatVersion is stamped into every CFN digest this
+// build writes. It is independent of the TF digest's version
+// (pkg.CurrentDigestFormatVersion) despite the mirrored shape. Bump it on a
+// change a consumer built before the change would half-read rather than
+// reject — and note the gate only exists in builds from the release that
+// introduced it, so a bump must wait until gated builds are the installed
+// floor.
+const CurrentStackDigestFormatVersion = 1
 
 // StackDigest is the agent-safe representation of a deployed CloudFormation
 // stack — the CFN analog of tf-digest's ModuleMap. The raw stack/template is
 // never read directly by the migration agent.
 type StackDigest struct {
-	// FormatVersion is the digest file format this tool wrote. LoadStackDigest
-	// refuses a version newer than it knows; 0 (absent) predates the field.
+	// FormatVersion is the digest file format: stamped by WriteStackDigest on
+	// write, read back as the file declared on load. LoadStackDigest refuses
+	// a version newer than it knows; 0 (absent) predates the field.
 	FormatVersion int           `json:"digestFormatVersion,omitempty"`
 	StackName     string        `json:"stackName"`
 	Region        string        `json:"region"`
@@ -70,7 +75,7 @@ type CfnResource struct {
 
 // WriteStackDigest stamps the current format version and writes the digest.
 func WriteStackDigest(d *StackDigest, path string) error {
-	d.FormatVersion = CurrentDigestFormatVersion
+	d.FormatVersion = CurrentStackDigestFormatVersion
 	data, err := json.MarshalIndent(d, "", "    ")
 	if err != nil {
 		return fmt.Errorf("marshaling digest: %w", err)
@@ -94,11 +99,11 @@ func LoadStackDigest(path string) (*StackDigest, error) {
 	if err := dec.Decode(&d); err != nil {
 		return nil, fmt.Errorf("parsing digest %s: %w", path, err)
 	}
-	if d.FormatVersion > CurrentDigestFormatVersion {
+	if d.FormatVersion > CurrentStackDigestFormatVersion {
 		return nil, fmt.Errorf(
 			"digest %s has format version %d, but this build reads at most version %d; "+
 				"re-run \"digest cfn\" with this build, or upgrade the tool",
-			path, d.FormatVersion, CurrentDigestFormatVersion)
+			path, d.FormatVersion, CurrentStackDigestFormatVersion)
 	}
 	return &d, nil
 }

@@ -123,7 +123,8 @@ func pulumiProvidersForTerraformProviders(
 			Identifier: providermap.TerraformProviderName(providerName),
 			Version:    version,
 		})
-		if pin := pins[string(providerName)]; pin != "" {
+		pin := pins[string(providerName)]
+		if pin != "" {
 			pinned, pinnedTFVersion, err := applyProviderPin(pulumiProvider, pin)
 			if err != nil {
 				return nil, fmt.Errorf("provider %s: %w", providerName, err)
@@ -152,8 +153,9 @@ func pulumiProvidersForTerraformProviders(
 			if err != nil {
 				// A provider the digest pinned must not be dropped silently:
 				// injection would fall back for every one of its resources
-				// while the pin promised otherwise.
-				if pins[string(providerName)] != "" {
+				// while the pin promised otherwise. This fires before any
+				// state is patched, written, or imported.
+				if pin != "" {
 					return nil, fmt.Errorf(
 						"provider %s: the digest pinned this provider, but dynamic bridging "+
 							"failed: %w", providerName, err)

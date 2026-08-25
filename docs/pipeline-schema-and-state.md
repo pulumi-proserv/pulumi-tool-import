@@ -97,9 +97,11 @@ That second path loses three things at once:
    ([pkg/module_map.go:459](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/module_map.go#L459)), this path via
    `State.UseJSONNumber(true)` — the only hook that reaches `tfjson`'s own
    decoder, whose custom `UnmarshalJSON` ignores `UseNumber` at the call
-   site. The consuming-side ceiling — `resource.PropertyValue` holds numbers
-   as `float64` — is
-   [#29](https://github.com/pulumi-proserv/pulumi-tool-import/issues/29).
+   site. On the injection path, `restoreLargeIntegers` repairs the float64
+   rounding the bridge conversion imposes on `pulumiOutputs` (see S2b); the
+   residual ceiling — values re-read through `resource.PropertyValue` are
+   `float64` — is bridge-side
+   ([#29](https://github.com/pulumi-proserv/pulumi-tool-import/issues/29)).
 2. **Sensitivity.** `sensitivePathsFromTfjson` derives sensitive paths from
    `tfjson.StateResource.SensitiveValues` (`terraform-json@v0.27.1/state.go:164`)
    and `rawStateFromTfjson` sets them on the instance
@@ -250,13 +252,17 @@ version := sch.Version                                     // returned from :143
 
 Three notes on this hop:
 
-- The value round-trips through `ctyjson.Marshal` → `json.Unmarshal`
-  ([pkg/raw_state_delta.go:218-224](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/raw_state_delta.go#L218-L224)) with no `UseNumber`, and
-  `MakeTerraformOutputs` produces `resource.PropertyValue` numbers, which are
-  `float64` by definition. **Integer fidelity beyond 2^53 cannot survive into
-  `PulumiOutputs` at all**, whatever the decoder does. `RawStateDelta` is
-  computed from the cty value, so the delta itself is exact; the outputs it
-  applies to are not.
+- `MakeTerraformOutputs` produces `resource.PropertyValue` numbers, which are
+  `float64` by definition, so the conversion rounds integers above 2^53.
+  `restoreLargeIntegers` (`pkg/raw_state_precision.go`) repairs the converted
+  outputs afterwards by value correlation — each rounded leaf is replaced
+  with the one source digit-string that rounds to it, never inverting the
+  bridge's renames — and refuses (falling back to raw attribute renaming,
+  which is exact) when distinct sources land on the same float64.
+  `RawStateDelta` is computed from the cty value and is exact on its own; it
+  is the authoritative carrier of large integers into the provider, because
+  anything re-read through `resource.PropertyValue` rounds again (the
+  bridge-side ceiling, #29).
 - `stripTimeouts` ([:244](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/raw_state_delta.go#L244)) replicates a bridge behaviour that has no zclconf
   equivalent. It is a copy, and will drift.
 - A delta that cannot be computed yields no error, but `ComputeInjectionState`
@@ -381,10 +387,6 @@ The result is re-serialized with `json.MarshalIndent` ([:893](https://github.com
 is written to `--out` ([cmd/patch_state_tf.go:379](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/cmd/patch_state_tf.go#L379)) and the operator runs
 `pulumi stack import`; in stack mode it is handed to injection and then to
 `StackSession.Import` ([cmd/patch_state_tf.go:320](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/cmd/patch_state_tf.go#L320)).
-
-The tests-only machinery this file used to carry (`conformToDelta`,
-`PatchStateFromSchema` — the schema-driven alternative whose default-fallback
-path could not work in production) has been deleted (#52).
 
 ### S6 — re-imported state
 
@@ -613,9 +615,8 @@ Consequently, on this mock:
 The last row is not documented anywhere else and matters: `GetSchemaFieldInfo`
 sets `HasDefault` from `schema.Default()` ([pkg/schema_fields.go:97](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/schema_fields.go#L97)), so
 **`HasDefault` is always false in production**. This is very likely why the
-curated `data/aws-import-diff-fields.json` exists, and it is what made
-`PatchStateFromSchema` — a schema-driven alternative that was never wired to a
-command and is now deleted (#52) — unworkable.
+curated `data/aws-import-diff-fields.json` exists: a schema-driven alternative
+cannot see defaults through the mock.
 
 Consumers of the mock:
 - `bridge.PulumiTypeToken` ([pkg/bridge/pulumi_type_token.go:28](https://github.com/pulumi-proserv/pulumi-tool-import/blob/0c081c8e253a0932da742e1ec7d94c82606cf0ca/pkg/bridge/pulumi_type_token.go#L28)) — Pulumi type

@@ -49,18 +49,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **A dynamic-bridge failure silently dropped the provider — including one the
-  digest pinned.** A pinned provider that fails to bridge is now a hard error
-  instead of a warning plus skipped resources; unpinned providers still skip
-  with the warning (#54).
 - **Injected outputs rounded integers above 2^53.** The bridge conversion
   passes numbers through float64; the exact digits are now restored from the
-  source attributes by value correlation, so the sidecar and injected state
-  carry them exactly. Distinct integers that round to the same float64 (an
-  ambiguous repair) fall back to raw attribute renaming, which preserves them
-  (#29).
+  source attributes by value correlation, so the digest, sidecar, and injected
+  state file carry them exactly, and the raw state delta (computed from the
+  exact cty value) remains the authoritative carrier into the provider —
+  values re-read through `resource.PropertyValue` still round, which is the
+  bridge-side ceiling #29 documents. Sources that cannot be restored
+  unambiguously (distinct values rounding to the same float64) fall back to
+  raw attribute renaming, which preserves the digits (#29).
 - **The CFN digest now carries a `digestFormatVersion`**, stamped on write and
-  refused when newer than the build, matching the TF digest (#53).
+  refused when newer than the build, matching the TF digest — the gate takes
+  effect for builds from this release onward, so a future version 2 must wait
+  until gated builds are the installed floor. CFN digest *production* (the
+  template decode and CloudControl live properties) also decodes with
+  `UseNumber` now, so large integers reach the digest exact (#53).
 - **`set-secrets` corrupted large-integer secrets.** A plain decode wrote
   integer secrets above 2^53 into stack config in scientific notation. The
   decode now preserves precision, rejects trailing data, and refuses
@@ -153,6 +156,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A dynamic-bridge failure on a pinned provider now aborts `patch-state`**
+  instead of warning and silently skipping every one of that provider's
+  resources (#54). The digest pins every provider it bridged, so a transient
+  registry failure that previously produced a degraded run now stops it — the
+  abort fires while loading provider schemas, before any state is patched,
+  written, or imported, so a non-zero exit still means the stack and files
+  are untouched. Unpinned providers (pre-pin digests) keep the warn-and-skip
+  behavior.
 - `patch-state` now names every resource the fields file covers that matched
   no digest entry, instead of counting them into an aggregate nothing printed
   (#37). The deliberate asymmetry between patching's name-guessing and

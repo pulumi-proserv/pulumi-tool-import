@@ -67,10 +67,13 @@ func ComputeInjectionState(
 		return nil, nil, "", 0, fmt.Errorf("converting %s attributes to Pulumi outputs: %w", tfType, err)
 	}
 	delete(props, "timeouts")
+	// Only the Mappable copy is repaired; props stays rounded on purpose. The
+	// delta below is computed from the cty value, which is already exact, and
+	// is the authoritative carrier of large integers into the provider.
 	outputs = props.Mappable()
 	outputs, err = restoreLargeIntegers(outputs, attrsJSON)
 	if err != nil {
-		return nil, nil, "", 0, fmt.Errorf("converting %s attributes to Pulumi outputs: %w", tfType, err)
+		return nil, nil, "", 0, fmt.Errorf("restoring exact integers in %s outputs: %w", tfType, err)
 	}
 
 	// Mirrors the bridge's own first act in RawStateInjectDelta. Unreachable

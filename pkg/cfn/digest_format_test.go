@@ -15,6 +15,7 @@
 package cfn
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -23,27 +24,33 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestStackDigestFormatVersion_RoundTripsAndRejectsNewer(t *testing.T) {
+func TestStackDigestFormatVersion(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 
-	path := filepath.Join(dir, "cfn-digest.json")
-	require.NoError(t, WriteStackDigest(&StackDigest{StackName: "s"}, path))
-	d, err := LoadStackDigest(path)
-	require.NoError(t, err)
-	assert.Equal(t, CurrentDigestFormatVersion, d.FormatVersion)
+	t.Run("write stamps the current version and load round-trips it", func(t *testing.T) {
+		path := filepath.Join(dir, "cfn-digest.json")
+		require.NoError(t, WriteStackDigest(&StackDigest{StackName: "s"}, path))
+		d, err := LoadStackDigest(path)
+		require.NoError(t, err)
+		assert.Equal(t, CurrentStackDigestFormatVersion, d.FormatVersion)
+	})
 
-	future := filepath.Join(dir, "future.json")
-	require.NoError(t, os.WriteFile(future, []byte(`{"digestFormatVersion":99,"stackName":"s"}`), 0o644))
-	_, err = LoadStackDigest(future)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "99")
+	t.Run("refuses a version newer than this build knows", func(t *testing.T) {
+		future := filepath.Join(dir, "future.json")
+		require.NoError(t, os.WriteFile(future, []byte(`{"digestFormatVersion":99,"stackName":"s"}`), 0o644))
+		_, err := LoadStackDigest(future)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "99")
+	})
 
-	legacy := filepath.Join(dir, "legacy.json")
-	require.NoError(t, os.WriteFile(legacy, []byte(`{"stackName":"s"}`), 0o644))
-	d, err = LoadStackDigest(legacy)
-	require.NoError(t, err)
-	assert.Equal(t, 0, d.FormatVersion)
+	t.Run("reads a pre-version digest as version 0", func(t *testing.T) {
+		legacy := filepath.Join(dir, "legacy.json")
+		require.NoError(t, os.WriteFile(legacy, []byte(`{"stackName":"s"}`), 0o644))
+		d, err := LoadStackDigest(legacy)
+		require.NoError(t, err)
+		assert.Equal(t, 0, d.FormatVersion)
+	})
 }
 
 func TestLoadStackDigest_PreservesLargeIntegers(t *testing.T) {
@@ -56,6 +63,8 @@ func TestLoadStackDigest_PreservesLargeIntegers(t *testing.T) {
 	d, err := LoadStackDigest(path)
 	require.NoError(t, err)
 	require.Len(t, d.Resources, 1)
-	assert.Equal(t, "1234567890123456789",
-		d.Resources[0].Attributes["n"].(interface{ String() string }).String())
+	n, ok := d.Resources[0].Attributes["n"].(json.Number)
+	require.True(t, ok, "attributes must decode with UseNumber and stay json.Number, got %T",
+		d.Resources[0].Attributes["n"])
+	assert.Equal(t, "1234567890123456789", n.String())
 }

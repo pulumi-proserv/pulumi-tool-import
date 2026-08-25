@@ -60,6 +60,21 @@ func TestComputeInjectionState_PreservesLargeIntegers(t *testing.T) {
 	assert.NotContains(t, string(out), "1152921504606846976")
 }
 
+func TestComputeInjectionState_FloatFormSourceMakesRepairAmbiguous(t *testing.T) {
+	t.Parallel()
+	prov, schemaMap := bigIntResource()
+
+	// A float/exponent-form source that lands on the same float64 as a lossy
+	// integer's rounding makes the repair ambiguous: an output leaf holding
+	// that value may legitimately be the float-form source, so rewriting it
+	// with the integer's digits would corrupt it.
+	attrs := []byte(`{"id":"x","big_id":9007199254740993,"ids":[9.007199254740992e15]}`)
+	_, _, _, _, err := ComputeInjectionState(
+		context.Background(), prov, "synthetic_big", attrs, schemaMap, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "float64")
+}
+
 func TestComputeInjectionState_AmbiguousLargeIntegersError(t *testing.T) {
 	t.Parallel()
 	prov, schemaMap := bigIntResource()

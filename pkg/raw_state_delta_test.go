@@ -18,7 +18,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"testing"
 
@@ -523,7 +522,7 @@ func TestCorruptDeltaPayloadIsGenuinelyRejected(t *testing.T) {
 	assert.NoError(t, err, "a well-formed asset delta must still parse")
 }
 
-func TestComputeInjectionState_LargeIntegerIsExactEndToEnd(t *testing.T) {
+func TestComputeInjectionState_LargeIntegerExactInFilesRoundsThroughPropertyValue(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
@@ -549,28 +548,35 @@ func TestComputeInjectionState_LargeIntegerIsExactEndToEnd(t *testing.T) {
 	require.NotEmpty(t, delta)
 
 	// restoreLargeIntegers repairs the float64 rounding the bridge conversion
-	// imposes (#29), so the sidecar carries the exact digits.
-	got, err := json.Marshal(outputs["delaySeconds"])
-	require.NoError(t, err)
-	assert.Equal(t, exact, string(got))
+	// imposes (#29), so the sidecar carries the exact digits as a number.
+	repaired, ok := outputs["delaySeconds"].(json.Number)
+	require.True(t, ok, "a repaired output leaf must be a json.Number, got %T", outputs["delaySeconds"])
+	assert.Equal(t, exact, repaired.String())
 
 	deltaJSON, err := json.Marshal(delta)
 	require.NoError(t, err)
+	assert.Contains(t, string(deltaJSON), `"replace"`,
+		"a value the bridge cannot reproduce naturally should produce a Replace node")
 	assert.Contains(t, string(deltaJSON), exact,
 		"the sidecar delta carries the exact digits too (computed from the cty value)")
 
-	// And recovery through the bridge reproduces the exact number.
+	// Recovery through the bridge, converted exactly the way production's
+	// validateRecover does (propertyValueFromState + deltaPropertyValue —
+	// injection stores the delta inside outputs under rawStateDeltaKey).
+	// This is where exactness ENDS: resource.PropertyValue holds numbers as
+	// float64, so the value rounds at this boundary regardless of what the
+	// files carry. That ceiling is bridge-side (#29); if this assertion ever
+	// reports the exact digits, the ceiling is gone — update #29 and the docs.
 	outputsFromSidecar := decodeExact(t, mustJSON(t, outputs))
-	deltaFromSidecar := decodeExact(t, deltaJSON)
-	rsd, err := tfbridge.UnmarshalRawStateDelta(resource.NewPropertyValue(deltaFromSidecar))
+	outputsFromSidecar[rawStateDeltaKey] = decodeExact(t, deltaJSON)
+	rsd, err := tfbridge.UnmarshalRawStateDelta(
+		deltaPropertyValue(outputsFromSidecar[rawStateDeltaKey].(map[string]interface{})))
 	require.NoError(t, err)
-	recovered, err := rsd.Recover(
-		resource.NewObjectProperty(resource.NewPropertyMapFromMap(outputsFromSidecar)))
+	recovered, err := rsd.Recover(propertyValueFromState(outputsFromSidecar))
 	require.NoError(t, err)
 
-	// The digits are exact; the Go type varies with the harness path
-	// (NewPropertyMapFromMap turns json.Number into a string property).
-	assert.Equal(t, exact, fmt.Sprintf("%v", decodeExact(t, recovered)["delay_seconds"]))
+	const rounded = "9007199254740992"
+	assert.Equal(t, json.Number(rounded), decodeExact(t, recovered)["delay_seconds"])
 }
 
 func mustJSON(t *testing.T, v interface{}) []byte {

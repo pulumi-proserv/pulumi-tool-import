@@ -28,6 +28,9 @@ import (
 // A provider with no static bridge mapping resolves through dynamic bridging.
 const dynamicOnlyProvider = "registry.terraform.io/example/nonexistent"
 
+// withFailingDynamicBridge replaces the package-level dynamicBridge var, so
+// tests using it must NOT call t.Parallel(): a parallel run would race every
+// other test that bridges providers against the stub.
 func withFailingDynamicBridge(t *testing.T) {
 	t.Helper()
 	prev := dynamicBridge
