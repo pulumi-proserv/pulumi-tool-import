@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`patch-state` silently ignored the digest for most fields.** The
+  Pulumi→Terraform field-name mapping came only from a small hand-curated
+  table; any fields-file entry outside it skipped the digest lookup and fell
+  back to the hardcoded default — on one real migration, exactly one field
+  ever resolved from the digest. Names now convert mechanically
+  (camelCase↔snake_case), with the table kept for true renames like
+  `code`→`filename` (#66).
+- **`patch-state` matched resource types by trailing segment**, so
+  `aws:autoscaling/group:Group` fields could be written onto an
+  `aws:iam/group:Group`. Full-token keys now match exactly; authoring the
+  short `name:Name` form in a fields file remains the explicit opt-in to
+  suffix matching (#67).
+
+## [0.3.0] - 2026-08-25
+
 ### Added
 
 - Stack mode's `--out`: `patch-state tf --project-dir/--stack` can also write
