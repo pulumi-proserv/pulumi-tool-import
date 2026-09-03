@@ -132,8 +132,7 @@ func PatchStateFromCFN(
 		resType, _ := rMap["type"].(string)
 		name := urnName(urn)
 
-		st := shortPulumiType(resType)
-		notReadFields, hasFields := notReadByType[st]
+		notReadFields, hasFields := notReadByType.lookup(resType)
 		if !hasFields {
 			result.NoFields++
 			continue

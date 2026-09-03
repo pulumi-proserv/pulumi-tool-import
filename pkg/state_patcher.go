@@ -160,6 +160,35 @@ var pulumiToTFField = func() map[string]string {
 	return m
 }()
 
+// tfNameForPulumiField maps a Pulumi field name to its Terraform attribute
+// name: the hand table wins for true renames (code→filename); everything
+// else converts mechanically, so a fields-file entry never silently loses
+// its digest lookup for want of a table row.
+func tfNameForPulumiField(pulumiField string) string {
+	if tf, ok := pulumiToTFField[pulumiField]; ok {
+		return tf
+	}
+	return camelToSnake(pulumiField)
+}
+
+// camelToSnake is the inverse of snakeToCamel for ASCII field names:
+// allowMajorVersionUpgrade → allow_major_version_upgrade.
+func camelToSnake(s string) string {
+	var b strings.Builder
+	b.Grow(len(s) + 4)
+	for i, r := range s {
+		if r >= 'A' && r <= 'Z' {
+			if i > 0 {
+				b.WriteByte('_')
+			}
+			b.WriteRune(r + ('a' - 'A'))
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 // shortPulumiType extracts the short type from a full Pulumi type token.
 // "aws:secretsmanager/secret:Secret" → "secret:Secret"
 // "pulumi:pulumi:Stack" → "pulumi:Stack"
@@ -235,25 +264,45 @@ type notReadFieldMeta struct {
 	HashField     string
 }
 
-// buildNotReadByType builds field sets keyed by both full and short Pulumi
-// type. The fields file uses full type keys (aws:secretsmanager/secret:Secret),
-// but resources are matched by short type (secret:Secret) for convenience.
-func buildNotReadByType(fieldsFile *FieldsFile) map[string]map[string]notReadFieldMeta {
-	notReadByType := map[string]map[string]notReadFieldMeta{}
-	for fullType, cat := range fieldsFile.Fields {
-		if len(cat.NotRead) > 0 {
-			fields := make(map[string]notReadFieldMeta, len(cat.NotRead))
-			for pulumiField, info := range cat.NotRead {
-				fields[pulumiField] = notReadFieldMeta(info)
-			}
-			notReadByType[fullType] = fields
-			st := shortPulumiType(fullType)
-			if st != "" {
-				notReadByType[st] = fields
-			}
+// notReadIndex resolves a state resource's full type token to its
+// fields-file entry. A full-token key (aws:secretsmanager/secret:Secret)
+// matches only that exact type — a suffix match here once wrote an
+// autoscaling field into a live IAM group's state (#67). A key authored in
+// the short "name:Name" form is the explicit opt-in to suffix matching.
+type notReadIndex struct {
+	byFull  map[string]map[string]notReadFieldMeta
+	byShort map[string]map[string]notReadFieldMeta
+}
+
+func (idx *notReadIndex) lookup(fullType string) (map[string]notReadFieldMeta, bool) {
+	if fields, ok := idx.byFull[fullType]; ok {
+		return fields, true
+	}
+	fields, ok := idx.byShort[shortPulumiType(fullType)]
+	return fields, ok
+}
+
+func buildNotReadByType(fieldsFile *FieldsFile) *notReadIndex {
+	idx := &notReadIndex{
+		byFull:  map[string]map[string]notReadFieldMeta{},
+		byShort: map[string]map[string]notReadFieldMeta{},
+	}
+	for key, cat := range fieldsFile.Fields {
+		if len(cat.NotRead) == 0 {
+			continue
+		}
+		fields := make(map[string]notReadFieldMeta, len(cat.NotRead))
+		for pulumiField, info := range cat.NotRead {
+			fields[pulumiField] = notReadFieldMeta(info)
+		}
+		if shortPulumiType(key) == "" {
+			// Two-segment key: authored short, matched by suffix.
+			idx.byShort[key] = fields
+		} else {
+			idx.byFull[key] = fields
 		}
 	}
-	return notReadByType
+	return idx
 }
 
 // buildProviderVersions builds a map of provider URN → version string by
@@ -807,8 +856,7 @@ func PatchState(
 		resType, _ := rMap["type"].(string)
 		name := urnName(urn)
 
-		st := shortPulumiType(resType)
-		notReadFields, hasFields := notReadByType[st]
+		notReadFields, hasFields := notReadByType.lookup(resType)
 		if !hasFields {
 			result.NoFields++
 			continue
@@ -847,7 +895,7 @@ func PatchState(
 			}
 			fields = append(fields, patchFieldDescriptor{
 				PulumiName:              pulumiField,
-				TFName:                  pulumiToTFField[pulumiField],
+				TFName:                  tfNameForPulumiField(pulumiField),
 				Default:                 meta.Default,
 				HasDefault:              meta.Default != nil,
 				SuppressDefaultFallback: suppressDefault,
