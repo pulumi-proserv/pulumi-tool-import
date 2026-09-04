@@ -43,7 +43,7 @@ var terraformDoneStates = map[string]bool{
 	"deleting": true,
 }
 
-func verifyFixtureResourcesGone(t *testing.T, ctx context.Context, ids fixtureResourceIDs) {
+func verifyFixtureResourcesGone(t *testing.T, ctx context.Context, ids fixtureResourceIDs, runID string) {
 	t.Helper()
 
 	cfg, err := loadRegionalAWSConfig(ctx)
@@ -97,7 +97,7 @@ func verifyFixtureResourcesGone(t *testing.T, ctx context.Context, ids fixtureRe
 		checkIAMRoleGone(t, ctx, iamClient, ids.iamRoleName)
 	}
 
-	checkNoTaggedVPCsRemain(t, ctx, ec2Client)
+	checkNoTaggedVPCsRemain(t, ctx, ec2Client, runID)
 }
 
 func loadRegionalAWSConfig(ctx context.Context) (aws.Config, error) {
@@ -222,16 +222,20 @@ func checkIAMRoleGone(t *testing.T, ctx context.Context, c *iam.Client, name str
 	}
 }
 
-func checkNoTaggedVPCsRemain(t *testing.T, ctx context.Context, c *ec2.Client) {
+// checkNoTaggedVPCsRemain scans by this run's Name tag, not ManagedBy alone:
+// another run may be live in the same account, and its VPC is not a leak.
+func checkNoTaggedVPCsRemain(t *testing.T, ctx context.Context, c *ec2.Client, runID string) {
 	t.Helper()
+	nameTag := "tool-import-e2e-" + runID
 	out, err := c.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{
 		Filters: []ec2types.Filter{
 			{Name: aws.String("tag:ManagedBy"), Values: []string{fixtureManagedByTag}},
+			{Name: aws.String("tag:Name"), Values: []string{nameTag}},
 		},
 	})
 	if err != nil {
-		t.Errorf("scanning for leftover VPCs tagged ManagedBy=%s in %s: %v",
-			fixtureManagedByTag, fixtureRegion, err)
+		t.Errorf("scanning for leftover VPCs tagged Name=%s in %s: %v",
+			nameTag, fixtureRegion, err)
 		return
 	}
 	var leftover []string
@@ -241,8 +245,8 @@ func checkNoTaggedVPCsRemain(t *testing.T, ctx context.Context, c *ec2.Client) {
 		}
 	}
 	if len(leftover) > 0 {
-		t.Errorf("ORPHANED: %d VPC(s) tagged ManagedBy=%s still exist in %s after teardown: %s — "+
+		t.Errorf("ORPHANED: %d VPC(s) tagged Name=%s still exist in %s after teardown: %s — "+
 			"delete them by hand (and everything still attached to them)",
-			len(leftover), fixtureManagedByTag, fixtureRegion, strings.Join(leftover, ", "))
+			len(leftover), nameTag, fixtureRegion, strings.Join(leftover, ", "))
 	}
 }

@@ -16,6 +16,12 @@ permissions:
 # evicting other branches' (or main's) runs from the shared queue. Never
 # cancel a run mid-apply — that orphans AWS resources; a superseded run
 # finishes and tears itself down.
+#
+# Runs from different refs execute concurrently against the same account.
+# That is safe because every AWS-unique name in the fixture carries the run
+# ID (see test/e2e/testdata/tf/main.tf, var.run_id), but the account's
+# default quotas — 5 VPCs and 5 VPN gateways per region — cap it at roughly
+# four simultaneous runs, fewer if an orphan is sitting in the account.
 concurrency:
   group: aws-e2e-${{ github.ref }}
   cancel-in-progress: false
