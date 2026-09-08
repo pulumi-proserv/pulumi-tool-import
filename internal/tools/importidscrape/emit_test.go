@@ -29,17 +29,21 @@ func TestBuildFormatsGolden(t *testing.T) {
 	require.NoError(t, err)
 
 	// Templates: event target, elasticsearch domain, dynamodb table, wafv2 ip
-	// set, and the three acctest helper shapes (attr, attrs, crossattr).
+	// set, the three acctest helper shapes (attr, attrs, crossattr), and the
+	// two indirect shapes (assigned local, helper returning an acctest call).
 	// ManualFromTests: lambda layer perm, ec2 cross thing, iam static thing,
-	// ec2 child thing, and the four unproven acctest steps (adapter, shadow,
-	// other address, dynamic attr).
-	assert.Equal(t, Summary{Templates: 7, ManualFromTests: 8, ManualFromDocs: 2, SensitiveHits: 1}, sum)
+	// ec2 child thing, the four unproven acctest steps (adapter, shadow, other
+	// address, dynamic attr), the three indirect negatives (two bindings, other
+	// address, foreign call), and the unreadable ImportStateId thing.
+	assert.Equal(t, Summary{Templates: 9, ManualFromTests: 12, ManualFromDocs: 2, SensitiveHits: 1}, sum)
 	assert.Len(t, warnings, 1)
 	assert.Contains(t, warnings[0], "aws_cloudwatch_event_target")
 	assert.Contains(t, warnings[0], "target_id")
+	// Both types have a divergent docs example, and both have an import step
+	// proving passthrough — aws_s3_bucket by having no ImportStateIdFunc,
+	// aws_acc_cross by CrossRegionImportStateIdFunc composing exactly "{id}".
+	// A docs-only entry for either would contradict the provider's own test.
 	assert.NotContains(t, f.Types, "aws_s3_bucket")
-	// CrossRegionImportStateIdFunc proves only a passthrough ID; like a step
-	// with no ImportStateIdFunc at all it must not reach the table.
 	assert.NotContains(t, f.Types, "aws_acc_cross")
 	assert.Contains(t, f.Types["aws_cloudwatch_event_target"].Evidence, "target_helpers_test.go")
 
