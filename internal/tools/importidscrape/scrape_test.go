@@ -79,6 +79,25 @@ func TestClassifyManual(t *testing.T) {
 	c = classify(by["aws_iam_static_thing"])
 	assert.True(t, c.Manual)
 	assert.Equal(t, `ImportStateId: "fixed-id"`, c.Snippet)
+
+	// The closure's only s.RootModule().Resources[...] binding is a
+	// different resource ("aws_vpc.test") than the step under test
+	// ("aws_ec2_child_thing.test"); it must not be accepted as a receiver.
+	c = classify(by["aws_ec2_child_thing"])
+	assert.True(t, c.Manual)
+	assert.Empty(t, c.Template)
+	assert.Contains(t, c.Snippet, `Resources["aws_vpc.test"]`)
+}
+
+func TestClassifyTemplateWithNamedParam(t *testing.T) {
+	by := stepsByType(t)
+
+	// The helper's parameter is named "id", not the usual "resourceName";
+	// classify must still resolve it to the step's own address.
+	c := classify(by["aws_dynamodb_table"])
+	assert.Equal(t, "{name}", c.Template)
+	assert.False(t, c.Manual)
+	assert.Equal(t, "testAccTableImportStateIdFunc", c.Symbol)
 }
 
 func TestClassifyPassthroughIsNeither(t *testing.T) {
