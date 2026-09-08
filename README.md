@@ -226,6 +226,15 @@ are applied first. Composite/derived import IDs (e.g. Lambda Permission
 `FunctionName/StatementId`, Route53 records, security-group rules) are composed
 from the digest's attributes via a shared resolver core.
 
+**Import-ID formats.** Import IDs that differ from the Terraform state ID are
+composed from `pkg/importid/aws-import-id-formats.json`, generated from
+terraform-provider-aws's own acceptance tests at the version the providermap
+recommends (`make update-import-id-formats`). Types the scraper could not turn
+into a template are marked `manual` with the provider's composition as
+evidence; `resolve tf` reports those with the documented import form so they
+can be filled by hand. `--import-id-formats <file>` overrides the embedded
+table.
+
 **Mappings** may be passed inline (`--map 'module.X=componentName'`, repeatable) or
 via `--mapping-file`:
 
