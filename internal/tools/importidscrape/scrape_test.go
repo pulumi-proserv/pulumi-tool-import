@@ -129,6 +129,33 @@ func TestClassifyTemplateWithNamedParam(t *testing.T) {
 	assert.Equal(t, "testAccTableImportStateIdFunc", c.Symbol)
 }
 
+// The provider composes most import IDs with a handful of helpers in
+// internal/acctest whose semantics are fixed; classify reads the call, not a
+// body it can find in the test package.
+func TestClassifyAcctestHelpers(t *testing.T) {
+	by := stepsByType(t)
+	assert.Equal(t, "{arn}", classify2(t, by["aws_acc_attr"]).Template)
+	assert.Equal(t, "{group}:{name}", classify2(t, by["aws_acc_attrs"]).Template)
+	assert.Equal(t, "{id}", classify2(t, by["aws_acc_cross"]).Template)
+	assert.Equal(t, "{name}", classify2(t, by["aws_acc_crossattr"]).Template)
+	assert.True(t, classify2(t, by["aws_acc_adapter"]).Manual)
+	assert.True(t, classify2(t, by["aws_acc_shadow"]).Manual, "acctest bound to a foreign path must not be trusted")
+	assert.True(t, classify2(t, by["aws_acc_otheraddr"]).Manual, "a helper reading another resource proves nothing")
+	assert.True(t, classify2(t, by["aws_acc_dynattr"]).Manual, "a non-literal attribute name proves nothing")
+}
+
+// Evidence must cite the file the helper is defined in. The step and the
+// helper often live in different files of the same package, and citing the
+// step's file with the helper's line points at an unrelated line — or past
+// the end of the file.
+func TestClassifyCitesHelperFile(t *testing.T) {
+	c := classify2(t, stepsByType(t)["aws_cloudwatch_event_target"])
+	assert.Equal(t, "internal/service/events/target_helpers_test.go", c.File)
+
+	// With no resolved func there is nothing to cite but the step's own file.
+	assert.Equal(t, "internal/service/iam/static_test.go", classify2(t, stepsByType(t)["aws_iam_static_thing"]).File)
+}
+
 func TestClassifyPassthroughIsNeither(t *testing.T) {
 	c := classify2(t, stepsByType(t)["aws_s3_bucket"])
 	assert.Empty(t, c.Template)

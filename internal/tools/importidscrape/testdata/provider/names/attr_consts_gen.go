@@ -3,6 +3,7 @@
 package names
 
 const (
+	AttrARN    = "arn"
 	AttrName   = "name"
 	AttrScope  = "scope"
 	AttrBucket = "bucket"
