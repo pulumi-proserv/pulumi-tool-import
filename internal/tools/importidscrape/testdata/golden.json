@@ -52,6 +52,10 @@
       "manual": true,
       "snippet": "{\n\trs := s.RootModule().Resources[resourceName]\n\tparts := strings.Split(rs.Primary.Attributes[\"layer_version_arn\"], \":\")\n\treturn fmt.Sprintf(\"%s,%s\", strings.Join(parts[:len(parts)-1], \":\"), parts[len(parts)-1]), nil\n}",
       "evidence": "terraform-provider-aws/internal/service/lambda/layer_version_permission_test.go:25 testAccLayerVersionPermissionImportStateIdFunc"
+    },
+    "aws_wafv2_ip_set": {
+      "template": "{id}/{name}/{scope}",
+      "evidence": "terraform-provider-aws/internal/service/wafv2/ip_set_test.go:29 testAccIPSetImportStateIdFunc"
     }
   }
 }

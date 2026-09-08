@@ -71,7 +71,17 @@ func ensureCheckout(tag string) (string, error) {
 		return "", err
 	}
 	dest := filepath.Join(cache, "pulumi-tool-import", "terraform-provider-aws@"+tag)
-	if _, err := os.Stat(filepath.Join(dest, "internal", "service")); err == nil {
+	// Every sparse path must be probed, not just the first: a cache left by an
+	// older sparse set has internal/service but no names/, and reusing it would
+	// silently classify every names.Attr* lookup as manual.
+	complete := true
+	for _, p := range [][]string{{"internal", "service"}, {"website", "docs", "r"}, {"names"}} {
+		if _, err := os.Stat(filepath.Join(dest, filepath.Join(p...))); err != nil {
+			complete = false
+			break
+		}
+	}
+	if complete {
 		return dest, nil
 	}
 	_ = os.RemoveAll(dest)
@@ -81,7 +91,7 @@ func ensureCheckout(tag string) (string, error) {
 	steps := [][]string{
 		{"git", "clone", "--quiet", "--depth", "1", "--branch", tag, "--filter=blob:none", "--sparse",
 			"https://github.com/hashicorp/terraform-provider-aws.git", dest},
-		{"git", "-C", dest, "sparse-checkout", "set", "internal/service", "website/docs/r"},
+		{"git", "-C", dest, "sparse-checkout", "set", "internal/service", "website/docs/r", "names"},
 	}
 	for _, args := range steps {
 		cmd := exec.Command(args[0], args[1:]...)

@@ -28,10 +28,11 @@ type TFComposer func(attrs map[string]interface{}, stateID string) (id string, o
 // not a pure join of attributes. Each is a manual entry in
 // aws-import-id-formats.json; TestTFCustomTypesAreManualInTable enforces it.
 var TFCustom = map[string]TFComposer{
-	"aws_route":                      composeTFRoute,
-	"aws_security_group_rule":        composeTFSecurityGroupRule,
-	"aws_ecs_service":                composeTFEcsService,
-	"aws_iam_role_policy_attachment": composeTFRolePolicyAttachment,
+	"aws_route":                   composeTFRoute,
+	"aws_security_group_rule":     composeTFSecurityGroupRule,
+	"aws_ecs_service":             composeTFEcsService,
+	"aws_route_table_association": composeTFRouteTableAssociation,
+	"aws_lambda_permission":       composeTFLambdaPermission,
 }
 
 func str(attrs map[string]interface{}, k string) string {
@@ -90,16 +91,34 @@ func composeTFEcsService(attrs map[string]interface{}, _ string) (string, bool) 
 	return cluster + "/" + name, true
 }
 
-func composeTFRolePolicyAttachment(attrs map[string]interface{}, _ string) (string, bool) {
-	role := str(attrs, "role")
-	if role == "" {
-		if roles, ok := attrs["roles"].([]interface{}); ok && len(roles) > 0 {
-			role = fmt.Sprintf("%v", roles[0])
-		}
-	}
-	arn := str(attrs, "policy_arn")
-	if role == "" || arn == "" {
+// An association attaches a route table to either a subnet or a gateway; the
+// import ID is TARGET/ROUTETABLEID for whichever one is set. The table marks
+// this manual because that choice is a conditional, not a join.
+func composeTFRouteTableAssociation(attrs map[string]interface{}, _ string) (string, bool) {
+	rtb := str(attrs, "route_table_id")
+	if rtb == "" {
 		return "", false
 	}
-	return role + "/" + arn, true
+	target := str(attrs, "subnet_id")
+	if target == "" {
+		target = str(attrs, "gateway_id")
+	}
+	if target == "" {
+		return "", false
+	}
+	return target + "/" + rtb, true
+}
+
+// A permission on an aliased or versioned function imports as
+// FUNCTIONNAME:QUALIFIER/STATEMENTID; without a qualifier the function name
+// stands alone. Manual in the table for the same reason: a conditional.
+func composeTFLambdaPermission(attrs map[string]interface{}, _ string) (string, bool) {
+	fn, stmt := str(attrs, "function_name"), str(attrs, "statement_id")
+	if fn == "" || stmt == "" {
+		return "", false
+	}
+	if q := str(attrs, "qualifier"); q != "" {
+		return fn + ":" + q + "/" + stmt, true
+	}
+	return fn + "/" + stmt, true
 }

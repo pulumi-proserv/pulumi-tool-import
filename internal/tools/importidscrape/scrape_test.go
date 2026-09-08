@@ -40,6 +40,35 @@ func stepsByType(t *testing.T) map[string]ImportStep {
 	return out
 }
 
+// classify2 classifies a step against the fixture provider's names package.
+func classify2(t *testing.T, step ImportStep) Classification {
+	t.Helper()
+	consts, err := loadNameConsts(fixtureRoot(t))
+	require.NoError(t, err)
+	return classify(step, consts)
+}
+
+func TestLoadNameConsts(t *testing.T) {
+	consts, err := loadNameConsts(fixtureRoot(t))
+	require.NoError(t, err)
+	assert.Equal(t, "name", consts["AttrName"])
+	assert.Equal(t, "scope", consts["AttrScope"])
+	assert.NotContains(t, consts, "AttrNope")
+}
+
+// Most of the provider spells attribute keys as names.Attr* constants rather
+// than literals; without resolving them the classifier proves no template.
+func TestClassifyResolvesNamesConstants(t *testing.T) {
+	c := classify2(t, stepsByType(t)["aws_wafv2_ip_set"])
+	assert.Equal(t, "{id}/{name}/{scope}", c.Template)
+	assert.False(t, c.Manual)
+
+	// An unresolvable constant must stay manual rather than emit a bogus key.
+	c = classify(stepsByType(t)["aws_wafv2_ip_set"], nil)
+	assert.True(t, c.Manual)
+	assert.Empty(t, c.Template)
+}
+
 func TestCollectImportSteps(t *testing.T) {
 	by := stepsByType(t)
 	assert.Contains(t, by, "aws_cloudwatch_event_target")
@@ -54,12 +83,12 @@ func TestCollectImportSteps(t *testing.T) {
 func TestClassifyTemplates(t *testing.T) {
 	by := stepsByType(t)
 
-	c := classify(by["aws_cloudwatch_event_target"])
+	c := classify2(t, by["aws_cloudwatch_event_target"])
 	assert.Equal(t, "{event_bus_name}/{rule}/{target_id}", c.Template)
 	assert.False(t, c.Manual)
 	assert.Equal(t, "testAccTargetImportStateIdFunc", c.Symbol)
 
-	c = classify(by["aws_elasticsearch_domain"])
+	c = classify2(t, by["aws_elasticsearch_domain"])
 	assert.Equal(t, "{domain_name}/{id}", c.Template)
 	assert.Equal(t, "testAccDomainImportStateID", c.Symbol)
 }
@@ -67,23 +96,23 @@ func TestClassifyTemplates(t *testing.T) {
 func TestClassifyManual(t *testing.T) {
 	by := stepsByType(t)
 
-	c := classify(by["aws_lambda_layer_version_permission"])
+	c := classify2(t, by["aws_lambda_layer_version_permission"])
 	assert.True(t, c.Manual)
 	assert.Empty(t, c.Template)
 	assert.Contains(t, c.Snippet, "strings.Split")
 
-	c = classify(by["aws_ec2_cross_thing"])
+	c = classify2(t, by["aws_ec2_cross_thing"])
 	assert.True(t, c.Manual)
 	assert.Contains(t, c.Snippet, `Resources["aws_vpc.test"]`)
 
-	c = classify(by["aws_iam_static_thing"])
+	c = classify2(t, by["aws_iam_static_thing"])
 	assert.True(t, c.Manual)
 	assert.Equal(t, `ImportStateId: "fixed-id"`, c.Snippet)
 
 	// The closure's only s.RootModule().Resources[...] binding is a
 	// different resource ("aws_vpc.test") than the step under test
 	// ("aws_ec2_child_thing.test"); it must not be accepted as a receiver.
-	c = classify(by["aws_ec2_child_thing"])
+	c = classify2(t, by["aws_ec2_child_thing"])
 	assert.True(t, c.Manual)
 	assert.Empty(t, c.Template)
 	assert.Contains(t, c.Snippet, `Resources["aws_vpc.test"]`)
@@ -94,14 +123,14 @@ func TestClassifyTemplateWithNamedParam(t *testing.T) {
 
 	// The helper's parameter is named "id", not the usual "resourceName";
 	// classify must still resolve it to the step's own address.
-	c := classify(by["aws_dynamodb_table"])
+	c := classify2(t, by["aws_dynamodb_table"])
 	assert.Equal(t, "{name}", c.Template)
 	assert.False(t, c.Manual)
 	assert.Equal(t, "testAccTableImportStateIdFunc", c.Symbol)
 }
 
 func TestClassifyPassthroughIsNeither(t *testing.T) {
-	c := classify(stepsByType(t)["aws_s3_bucket"])
+	c := classify2(t, stepsByType(t)["aws_s3_bucket"])
 	assert.Empty(t, c.Template)
 	assert.False(t, c.Manual)
 }

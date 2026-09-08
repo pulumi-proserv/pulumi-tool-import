@@ -19,6 +19,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/pulumi-proserv/pulumi-tool-import/pkg/providermap"
 )
 
 func TestExpandTemplate(t *testing.T) {
@@ -74,4 +76,14 @@ func TestEmbeddedTableIsValid(t *testing.T) {
 	require.NoError(t, f.Validate())
 	assert.Equal(t, "hashicorp/aws", f.Provider)
 	assert.NotEmpty(t, f.Version)
+}
+
+// The table is only trustworthy at the provider version "resolve tf" actually
+// talks to; a drift here means the composed IDs describe a different provider
+// than the one that produced the state.
+func TestEmbeddedTableMatchesProvidermap(t *testing.T) {
+	want, ok := providermap.GetUpstreamVersion("registry.terraform.io/hashicorp/aws", "")
+	require.True(t, ok)
+	assert.Equalf(t, "v"+want, Embedded().Version,
+		"the providermap recommends terraform-provider-aws v%s but the embedded table was generated from %s; run make update-import-id-formats", want, Embedded().Version)
 }
