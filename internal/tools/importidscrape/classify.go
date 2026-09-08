@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// internal/tools/importidscrape/classify.go
 package main
 
 import (
@@ -52,7 +51,7 @@ func classify(step ImportStep) Classification {
 		c.Manual, c.Snippet = true, exprString(step.Fset, body)
 		return c
 	}
-	tmpl, ok := templateOf(ret, receiverNames(body, fn))
+	tmpl, ok := templateOf(ret, receiverNames(body, fn, step))
 	if !ok {
 		c.Manual, c.Snippet = true, exprString(step.Fset, body)
 		return c
@@ -138,27 +137,72 @@ func isNotFoundGuard(s *ast.IfStmt) bool {
 	return ok && len(rs.Results) == 2 && !isNil(rs.Results[1])
 }
 
-// receiverNames collects the local name bound to the *primary* resource's
-// s.RootModule().Resources[...] lookup (the standard test prologue). Only
-// the first such binding in the body qualifies: a manual body that reads a
-// second, unrelated resource (e.g. `other := s.RootModule().Resources["aws_vpc.test"]`)
-// must not be accepted as a whitelisted receiver, or a cross-resource read
-// would be silently classified as a template.
-func receiverNames(body *ast.BlockStmt, fn *ast.FuncDecl) map[string]bool {
+// receiverNames collects the local name bound to *this step's own resource*
+// via the standard test prologue `s.RootModule().Resources[...]`. A binding
+// only qualifies when its index provably names step.Address: a string
+// literal equal to it, or an identifier that is a parameter of fn (the
+// helper enclosing the closure) whose value at the ImportStateIdFunc call
+// site resolved to step.Address (see IDFuncArgAddrs). A binding for any
+// other resource — including a second, unrelated one such as
+// `other := s.RootModule().Resources["aws_vpc.test"]`, or a parent lookup
+// `s.RootModule().Resources[parentName]` — is never a receiver: accepting it
+// would let a manual, wrong-resource body prove a template.
+func receiverNames(body *ast.BlockStmt, fn *ast.FuncDecl, step ImportStep) map[string]bool {
 	names := map[string]bool{}
 	for _, st := range body.List {
 		as, ok := st.(*ast.AssignStmt)
 		if !ok || len(as.Rhs) != 1 {
 			continue
 		}
-		if ix, ok := as.Rhs[0].(*ast.IndexExpr); ok && isRootModuleResources(ix.X) {
-			if id, ok := as.Lhs[0].(*ast.Ident); ok {
-				names[id.Name] = true
-			}
-			break
+		ix, ok := as.Rhs[0].(*ast.IndexExpr)
+		if !ok || !isRootModuleResources(ix.X) {
+			continue
 		}
+		if !indexIsStepAddress(ix.Index, fn, step) {
+			continue
+		}
+		if id, ok := as.Lhs[0].(*ast.Ident); ok {
+			names[id.Name] = true
+		}
+		break
 	}
 	return names
+}
+
+// indexIsStepAddress reports whether idx — the key of a
+// s.RootModule().Resources[idx] lookup — provably names step.Address.
+func indexIsStepAddress(idx ast.Expr, fn *ast.FuncDecl, step ImportStep) bool {
+	if step.Address == "" {
+		return false
+	}
+	if lit, ok := idx.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+		s, err := strconv.Unquote(lit.Value)
+		return err == nil && s == step.Address
+	}
+	id, ok := idx.(*ast.Ident)
+	if !ok || fn == nil || fn.Type.Params == nil {
+		return false
+	}
+	pos := paramPosition(fn, id.Name)
+	if pos < 0 || pos >= len(step.IDFuncArgAddrs) {
+		return false
+	}
+	return step.IDFuncArgAddrs[pos] == step.Address
+}
+
+// paramPosition returns the 0-based position of name among fn's parameters,
+// or -1 if fn has no parameter by that name.
+func paramPosition(fn *ast.FuncDecl, name string) int {
+	i := 0
+	for _, field := range fn.Type.Params.List {
+		for _, n := range field.Names {
+			if n.Name == name {
+				return i
+			}
+			i++
+		}
+	}
+	return -1
 }
 
 func isRootModuleResources(e ast.Expr) bool {
@@ -215,6 +259,10 @@ func templateOf(e ast.Expr, receivers map[string]bool) (string, bool) {
 	case *ast.CallExpr: // fmt.Sprintf("%s/%s", a, b)
 		sel, ok := v.Fun.(*ast.SelectorExpr)
 		if !ok || sel.Sel.Name != "Sprintf" || len(v.Args) < 1 {
+			return "", false
+		}
+		pkgIdent, ok := sel.X.(*ast.Ident)
+		if !ok || pkgIdent.Name != "fmt" {
 			return "", false
 		}
 		format, ok := v.Args[0].(*ast.BasicLit)

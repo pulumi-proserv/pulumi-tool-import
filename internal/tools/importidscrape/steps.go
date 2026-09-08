@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// internal/tools/importidscrape/steps.go
 package main
 
 import (
@@ -29,12 +28,18 @@ import (
 
 type ImportStep struct {
 	TFType     string
+	Address    string // the step's full ResourceName, e.g. "aws_cloudwatch_event_target.test"
 	File       string
 	Line       int
 	IDFuncExpr ast.Expr
-	StaticID   string
-	Pkg        *ast.Package
-	Fset       *token.FileSet
+	// IDFuncArgAddrs holds, for each positional argument at the
+	// ImportStateIdFunc call site (when it is a call to a closure-returning
+	// helper), the address that argument resolves to, or "" when it does not
+	// resolve to a known address. Empty when IDFuncExpr is not a call.
+	IDFuncArgAddrs []string
+	StaticID       string
+	Pkg            *ast.Package
+	Fset           *token.FileSet
 }
 
 // collectImportSteps parses every *_test.go under internal/service and
@@ -138,9 +143,15 @@ func stepFromLiteral(cl *ast.CompositeLit, names map[string]string) (ImportStep,
 		case "ImportState":
 			importState = isTrue(kv.Value)
 		case "ResourceName":
-			step.TFType = tfTypeOf(kv.Value, names)
+			step.Address = addrOf(kv.Value, names)
+			step.TFType = tfTypeOf(step.Address)
 		case "ImportStateIdFunc":
 			step.IDFuncExpr = kv.Value
+			if call, ok := kv.Value.(*ast.CallExpr); ok {
+				for _, arg := range call.Args {
+					step.IDFuncArgAddrs = append(step.IDFuncArgAddrs, addrOf(arg, names))
+				}
+			}
 		case "ImportStateId":
 			if lit, ok := kv.Value.(*ast.BasicLit); ok && lit.Kind == token.STRING {
 				step.StaticID, _ = strconv.Unquote(lit.Value)
@@ -158,19 +169,26 @@ func isTrue(e ast.Expr) bool {
 	return ok && id.Name == "true"
 }
 
-// tfTypeOf reduces "aws_x.name" (literal or a local variable bound to one)
-// to "aws_x". Element literals such as []resource.TestStep{{...}} name no
-// type, so callers also accept a nil type.
-func tfTypeOf(e ast.Expr, names map[string]string) string {
-	var addr string
+// addrOf resolves e — a string literal, or a local variable bound to one via
+// `names` — to its address string ("aws_x.name"), or "" when it does not
+// resolve.
+func addrOf(e ast.Expr, names map[string]string) string {
 	switch v := e.(type) {
 	case *ast.BasicLit:
 		if v.Kind == token.STRING {
-			addr, _ = strconv.Unquote(v.Value)
+			s, _ := strconv.Unquote(v.Value)
+			return s
 		}
 	case *ast.Ident:
-		addr = names[v.Name]
+		return names[v.Name]
 	}
+	return ""
+}
+
+// tfTypeOf reduces an address ("aws_x.name") to its resource type ("aws_x").
+// Element literals such as []resource.TestStep{{...}} name no type, so
+// callers also tolerate an empty address.
+func tfTypeOf(addr string) string {
 	if i := strings.Index(addr, "."); i > 0 {
 		return addr[:i]
 	}
