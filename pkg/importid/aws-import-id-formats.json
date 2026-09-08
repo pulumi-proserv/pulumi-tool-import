@@ -1,5 +1,10 @@
 {
   "provider": "hashicorp/aws",
   "version": "v6.38.0",
-  "types": {}
+  "types": {
+    "aws_ecs_service": { "manual": true, "evidence": "seed: composer in pkg/importid/tf_custom.go pending scrape" },
+    "aws_iam_role_policy_attachment": { "manual": true, "evidence": "seed: composer in pkg/importid/tf_custom.go pending scrape" },
+    "aws_route": { "manual": true, "evidence": "seed: composer in pkg/importid/tf_custom.go pending scrape" },
+    "aws_security_group_rule": { "manual": true, "evidence": "seed: composer in pkg/importid/tf_custom.go pending scrape" }
+  }
 }
