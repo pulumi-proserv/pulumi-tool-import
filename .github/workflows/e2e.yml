@@ -30,15 +30,15 @@ jobs:
     timeout-minutes: 55
     steps:
       - name: Checkout code
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Pulumi
-        uses: pulumi/actions@8582a9e8cc630786854029b4e09281acd6794b58 # v6
+        uses: pulumi/actions@8e5e406f4007fca908480587cb9893c07090f58d # v7.0.0
         with:
           pulumi-version: 3.259.0
 
       - name: Set up Go
-        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: 'go.mod'
 
@@ -46,7 +46,7 @@ jobs:
         run: go mod download
 
       - name: Set up OpenTofu
-        uses: opentofu/setup-opentofu@9d84900f3238fab8cd84ce47d658d25dd008be2f # v1
+        uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
         with:
           tofu_version: 1.11.5
 
@@ -54,7 +54,7 @@ jobs:
       # provider binaries with live credentials, so it must not restore
       # entries written by the uncredentialed workflow.
       - name: Cache provider downloads
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.pulumi/plugins
@@ -118,7 +118,7 @@ jobs:
       # then destroy best-effort before the runner (and the state) vanish.
       - name: Upload leaked fixture state
         if: always() && steps.e2e.outcome != 'success' && steps.e2e.outcome != 'skipped'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: e2e-tf-fixtures
           path: /tmp/pulumi-tool-import-e2e-tf-*
