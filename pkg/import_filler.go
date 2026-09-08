@@ -16,6 +16,7 @@ package pkg
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/importid"
@@ -494,26 +495,50 @@ func TranslateImportIDs(importFile *ImportFile, digest *ModuleMap) int {
 // importid.TFCustom, or leave the ID alone with a note quoting the
 // documented form. Types absent from the table keep the state ID.
 func TranslateImportIDsWith(importFile *ImportFile, digest *ModuleMap, formats *importid.Formats) TranslateResult {
+	// A state ID that belongs to more than one managed resource cannot pick
+	// out the attributes to compose from: the import entry names the ID and
+	// nothing else. Whichever resource happened to be indexed last would
+	// otherwise compose a confident, unverifiable import ID, so record the
+	// collisions and leave those entries alone.
 	tfByID := map[string]*ModuleResource{}
-	for i := range digest.RootResources {
-		r := &digest.RootResources[i]
-		if r.Mode == "managed" && r.ImportID != "" {
-			tfByID[r.ImportID] = r
+	ambiguous := map[string][]string{}
+	index := func(r *ModuleResource) {
+		if r.Mode != "managed" || r.ImportID == "" {
+			return
 		}
+		if prev, seen := tfByID[r.ImportID]; seen {
+			if len(ambiguous[r.ImportID]) == 0 {
+				ambiguous[r.ImportID] = []string{prev.TerraformAddress}
+			}
+			ambiguous[r.ImportID] = append(ambiguous[r.ImportID], r.TerraformAddress)
+			return
+		}
+		tfByID[r.ImportID] = r
+	}
+	for i := range digest.RootResources {
+		index(&digest.RootResources[i])
 	}
 	for _, entry := range digest.Modules {
 		for i := range entry.Resources {
-			r := &entry.Resources[i]
-			if r.Mode == "managed" && r.ImportID != "" {
-				tfByID[r.ImportID] = r
-			}
+			index(&entry.Resources[i])
 		}
 	}
 
 	var res TranslateResult
+	noted := map[string]bool{}
 	for i := range importFile.Resources {
 		entry := &importFile.Resources[i]
 		if entry.Component || entry.ID == "" || entry.ID == "<PLACEHOLDER>" {
+			continue
+		}
+		if addrs := ambiguous[entry.ID]; len(addrs) > 0 {
+			if !noted[entry.ID] {
+				noted[entry.ID] = true
+				sorted := append([]string(nil), addrs...)
+				sort.Strings(sorted)
+				res.Notes = append(res.Notes, fmt.Sprintf("%s: share state ID %q; import ID left unresolved — set it by hand",
+					strings.Join(sorted, ", "), entry.ID))
+			}
 			continue
 		}
 		tf := tfByID[entry.ID]
