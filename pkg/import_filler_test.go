@@ -599,6 +599,10 @@ func TestTranslateImportIDsWithNotes(t *testing.T) {
 		"aws_thing":  {Template: "{group}:{name}", Evidence: "t"},
 		"aws_manual": {Manual: true, Docs: "terraform import aws_manual.x a/b/c", Evidence: "t"},
 		"aws_route":  {Manual: true, Evidence: "t"},
+		// Docs-only entries are review candidates, not evidence that the
+		// state ID is wrong: no test proved a divergent form, so warning
+		// about every one of them is noise.
+		"aws_docsonly": {Manual: true, Docs: "terraform import aws_docsonly.x a/b", Evidence: "docs-only: multi-segment example in r/docsonly.html.markdown, no import test found"},
 	}}
 	digest := &ModuleMap{RootResources: []ModuleResource{
 		{Mode: "managed", ImportID: "id-1", TerraformAddress: "aws_thing.ok", Attributes: map[string]interface{}{"group": "g", "name": "n"}},
@@ -606,6 +610,7 @@ func TestTranslateImportIDsWithNotes(t *testing.T) {
 		{Mode: "managed", ImportID: "id-3", TerraformAddress: "aws_manual.m", Attributes: map[string]interface{}{}},
 		{Mode: "managed", ImportID: "id-4", TerraformAddress: "aws_route.r", Attributes: map[string]interface{}{"route_table_id": "rtb-1", "destination_cidr_block": "0.0.0.0/0"}},
 		{Mode: "managed", ImportID: "id-5", TerraformAddress: "aws_untouched.u", Attributes: map[string]interface{}{}},
+		{Mode: "managed", ImportID: "id-6", TerraformAddress: "aws_docsonly.d", Attributes: map[string]interface{}{}},
 	}}
 	importFile := &ImportFile{Resources: []ImportEntry{
 		{Type: "aws:x/thing:Thing", Name: "ok", ID: "id-1"},
@@ -613,6 +618,7 @@ func TestTranslateImportIDsWithNotes(t *testing.T) {
 		{Type: "aws:x/manual:Manual", Name: "m", ID: "id-3"},
 		{Type: "aws:ec2/route:Route", Name: "r", ID: "id-4"},
 		{Type: "aws:x/untouched:Untouched", Name: "u", ID: "id-5"},
+		{Type: "aws:x/docsonly:DocsOnly", Name: "d", ID: "id-6"},
 	}}
 
 	res := TranslateImportIDsWith(importFile, digest, formats)
@@ -623,9 +629,18 @@ func TestTranslateImportIDsWithNotes(t *testing.T) {
 	assert.Equal(t, "id-3", importFile.Resources[2].ID)
 	assert.Equal(t, "rtb-1_0.0.0.0/0", importFile.Resources[3].ID)
 	assert.Equal(t, "id-5", importFile.Resources[4].ID)
+	assert.Equal(t, "id-6", importFile.Resources[5].ID)
 	require.Len(t, res.Notes, 2)
 	assert.Contains(t, res.Notes[0], `module.m.aws_thing.missing[0]: cannot compose import ID "{group}:{name}": attribute "name" absent from state`)
 	assert.Contains(t, res.Notes[1], `aws_manual.m: import ID must be composed by hand; documented form: terraform import aws_manual.x a/b/c`)
+	for _, n := range res.Notes {
+		assert.NotContains(t, n, "aws_docsonly.d", "a docs-only entry must not produce a note")
+	}
+}
+
+func TestFormatEntryDocsOnly(t *testing.T) {
+	assert.True(t, importid.FormatEntry{Evidence: "docs-only: x"}.DocsOnly())
+	assert.False(t, importid.FormatEntry{Evidence: "terraform-provider-aws/internal/service/x_test.go:1 f"}.DocsOnly())
 }
 
 func TestTerraformType(t *testing.T) {

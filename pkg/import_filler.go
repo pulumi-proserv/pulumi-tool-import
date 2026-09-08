@@ -545,8 +545,14 @@ func TranslateImportIDsWith(importFile *ImportFile, digest *ModuleMap, formats *
 			}
 			newID = id
 		default:
-			res.Notes = append(res.Notes, fmt.Sprintf("%s: import ID must be composed by hand; documented form: %s",
-				tf.TerraformAddress, format.Docs))
+			// A docs-only entry is a review candidate — the docs show a
+			// composite example and no import test was found — not evidence
+			// that this resource's state ID is wrong. Warning about every one
+			// of them buries the notes that were proven by a test.
+			if !format.DocsOnly() {
+				res.Notes = append(res.Notes, fmt.Sprintf("%s: import ID must be composed by hand; documented form: %s",
+					tf.TerraformAddress, format.Docs))
+			}
 			continue
 		}
 
