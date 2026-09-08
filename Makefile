@@ -116,10 +116,12 @@ update-import-id-formats:
 	    --out pkg/importid/aws-import-id-formats.json
 
 # Fails when the committed table is not what the scraper produces at the
-# table's own recorded version. Needs network for the first sparse clone.
+# version providermapversion reports — the same source update-import-id-formats
+# uses, and the version the table records, which TestEmbeddedTableMatchesProvidermap
+# keeps in step. Needs network for the first sparse clone.
 import-id-formats-check:
-	@tmp=$$(mktemp) && \
-	ver=$$(jq -r .version pkg/importid/aws-import-id-formats.json) && \
+	@tmp=$$(mktemp) && trap 'rm -f "$$tmp"' EXIT && \
+	ver=$$($(GO) run ./internal/tools/providermapversion aws) && \
 	$(GO) run ./internal/tools/importidscrape --provider-version $$ver --out $$tmp && \
 	if ! diff -u pkg/importid/aws-import-id-formats.json $$tmp; then \
 	    echo "pkg/importid/aws-import-id-formats.json is stale; run: make update-import-id-formats"; exit 1; fi
