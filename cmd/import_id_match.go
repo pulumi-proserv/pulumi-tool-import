@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg"
+	"github.com/pulumi-proserv/pulumi-tool-import/pkg/importid"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -134,7 +135,12 @@ Examples:
 			result := pkg.FillImportFile(&digest, &importFile, moduleMappings, resourceMappings)
 
 			// Translate TF import IDs to Pulumi-expected formats.
-			translated := pkg.TranslateImportIDs(&importFile, &digest)
+			formats := importid.Embedded()
+			translation := pkg.TranslateImportIDsWith(&importFile, &digest, formats)
+			translated := translation.Translated
+			for _, note := range translation.Notes {
+				fmt.Fprintf(os.Stderr, "  import ID not composed: %s\n", note)
+			}
 
 			// Write output.
 			outData, err := json.MarshalIndent(&importFile, "", "    ")

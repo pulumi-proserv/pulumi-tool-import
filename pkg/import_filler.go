@@ -17,6 +17,8 @@ package pkg
 import (
 	"fmt"
 	"strings"
+
+	"github.com/pulumi-proserv/pulumi-tool-import/pkg/importid"
 )
 
 // ImportEntry represents a single resource in a Pulumi import file.
@@ -474,11 +476,24 @@ func normalizeInstanceKey(s string) string {
 	return base + "_" + key
 }
 
-// TranslateImportIDs translates TF import IDs to Pulumi-expected formats.
-// TF and Pulumi often use different import ID formats for the same resource type.
-// This function looks up digest attributes to construct the correct Pulumi ID.
+// TranslateResult is what composing import IDs from the formats table did.
+type TranslateResult struct {
+	Translated int
+	Notes      []string
+}
+
+// TranslateImportIDs composes Pulumi import IDs from the embedded formats
+// table. See TranslateImportIDsWith.
 func TranslateImportIDs(importFile *ImportFile, digest *ModuleMap) int {
-	// Build TF resource lookup by importId.
+	return TranslateImportIDsWith(importFile, digest, importid.Embedded()).Translated
+}
+
+// TranslateImportIDsWith rewrites each import-file entry's ID for Terraform
+// types whose import ID is not their state ID. Template entries expand over
+// the digest resource's attributes; manual entries use the composer in
+// importid.TFCustom, or leave the ID alone with a note quoting the
+// documented form. Types absent from the table keep the state ID.
+func TranslateImportIDsWith(importFile *ImportFile, digest *ModuleMap, formats *importid.Formats) TranslateResult {
 	tfByID := map[string]*ModuleResource{}
 	for i := range digest.RootResources {
 		r := &digest.RootResources[i]
@@ -495,162 +510,63 @@ func TranslateImportIDs(importFile *ImportFile, digest *ModuleMap) int {
 		}
 	}
 
-	translated := 0
+	var res TranslateResult
 	for i := range importFile.Resources {
 		entry := &importFile.Resources[i]
 		if entry.Component || entry.ID == "" || entry.ID == "<PLACEHOLDER>" {
 			continue
 		}
-
 		tf := tfByID[entry.ID]
 		if tf == nil {
 			continue
 		}
-		attrs := tf.Attributes
+		typ := terraformType(tf.TerraformAddress)
+		format, ok := formats.Types[typ]
+		if !ok {
+			continue
+		}
 
 		var newID string
-		switch entry.Type {
-		case "aws:wafv2/ipSet:IpSet", "aws:wafv2/webAcl:WebAcl":
-			// uuid -> id/name/scope
-			if name, _ := attrs["name"].(string); name != "" {
-				scope, _ := attrs["scope"].(string)
-				newID = entry.ID + "/" + name + "/" + scope
+		switch {
+		case format.Template != "":
+			id, err := importid.Expand(format.Template, tf.Attributes, tf.ImportID)
+			if err != nil {
+				res.Notes = append(res.Notes, fmt.Sprintf("%s: cannot compose import ID %q: %v",
+					tf.TerraformAddress, format.Template, err))
+				continue
 			}
-
-		case "aws:ec2/route:Route":
-			// TF state carries an opaque "r-<rtb>…<hash>" id; Pulumi expects
-			// ROUTETABLEID_DESTINATION. Exactly one destination attribute is
-			// set, and it may be an IPv4 CIDR, an IPv6 CIDR, or a prefix list.
-			if rtb, _ := attrs["route_table_id"].(string); rtb != "" {
-				for _, key := range []string{
-					"destination_cidr_block",
-					"destination_ipv6_cidr_block",
-					"destination_prefix_list_id",
-				} {
-					if dest, _ := attrs[key].(string); dest != "" {
-						newID = rtb + "_" + dest
-						break
-					}
-				}
+			newID = id
+		case importid.TFCustom[typ] != nil:
+			id, ok := importid.TFCustom[typ](tf.Attributes, tf.ImportID)
+			if !ok {
+				res.Notes = append(res.Notes, fmt.Sprintf("%s: cannot compose import ID from state attributes; documented form: %s",
+					tf.TerraformAddress, format.Docs))
+				continue
 			}
-
-		case "aws:ec2/routeTableAssociation:RouteTableAssociation":
-			// rtbassoc -> subnet/rtb
-			if sid, _ := attrs["subnet_id"].(string); sid != "" {
-				rtb, _ := attrs["route_table_id"].(string)
-				newID = sid + "/" + rtb
-			}
-
-		case "aws:ec2/securityGroupRule:SecurityGroupRule":
-			// sgrule -> sg_type_proto_from_to_source
-			sg, _ := attrs["security_group_id"].(string)
-			t, _ := attrs["type"].(string)
-			proto, _ := attrs["protocol"].(string)
-			fp := fmt.Sprintf("%v", attrs["from_port"])
-			tp := fmt.Sprintf("%v", attrs["to_port"])
-			var src string
-			if self, _ := attrs["self"].(bool); self {
-				src = "self"
-			} else if cidrs, ok := attrs["cidr_blocks"].([]interface{}); ok && len(cidrs) > 0 {
-				parts := make([]string, len(cidrs))
-				for i, c := range cidrs {
-					parts[i] = fmt.Sprintf("%v", c)
-				}
-				src = strings.Join(parts, "_")
-			} else {
-				src = sg
-			}
-			newID = sg + "_" + t + "_" + proto + "_" + fp + "_" + tp + "_" + src
-
-		case "aws:appautoscaling/target:Target":
-			ns, _ := attrs["service_namespace"].(string)
-			rid, _ := attrs["resource_id"].(string)
-			dim, _ := attrs["scalable_dimension"].(string)
-			newID = ns + "/" + rid + "/" + dim
-
-		case "aws:appautoscaling/policy:Policy":
-			ns, _ := attrs["service_namespace"].(string)
-			rid, _ := attrs["resource_id"].(string)
-			dim, _ := attrs["scalable_dimension"].(string)
-			name, _ := attrs["name"].(string)
-			newID = ns + "/" + rid + "/" + dim + "/" + name
-
-		case "aws:iam/rolePolicyAttachment:RolePolicyAttachment":
-			role, _ := attrs["role"].(string)
-			if role == "" {
-				if roles, ok := attrs["roles"].([]interface{}); ok && len(roles) > 0 {
-					role, _ = roles[0].(string)
-				}
-			}
-			arn, _ := attrs["policy_arn"].(string)
-			if role != "" && arn != "" {
-				newID = role + "/" + arn
-			}
-
-		case "aws:iam/policyAttachment:PolicyAttachment":
-			if name, _ := attrs["name"].(string); name != "" {
-				newID = name
-			}
-
-		case "aws:opensearch/serverlessAccessPolicy:ServerlessAccessPolicy",
-			"aws:opensearch/serverlessSecurityPolicy:ServerlessSecurityPolicy":
-			name, _ := attrs["name"].(string)
-			typ, _ := attrs["type"].(string)
-			if name != "" && typ != "" {
-				newID = name + "/" + typ
-			}
-
-		case "aws:ecs/cluster:Cluster":
-			if name, _ := attrs["name"].(string); name != "" {
-				newID = name
-			}
-
-		case "aws:ecs/service:Service":
-			cluster, _ := attrs["cluster"].(string)
-			svcName, _ := attrs["name"].(string)
-			if cluster != "" && svcName != "" {
-				if strings.Contains(cluster, "arn:") {
-					parts := strings.Split(cluster, "/")
-					cluster = parts[len(parts)-1]
-				}
-				newID = cluster + "/" + svcName
-			}
-
-		case "aws:ecs/taskDefinition:TaskDefinition":
-			if arn, _ := attrs["arn"].(string); arn != "" {
-				newID = arn
-			}
-
-		case "aws:apigatewayv2/apiMapping:ApiMapping":
-			if domain, _ := attrs["domain_name"].(string); domain != "" {
-				newID = entry.ID + "/" + domain
-			}
-
-		case "aws:kinesis/stream:Stream":
-			if name, _ := attrs["name"].(string); name != "" {
-				newID = name
-			}
-
-		case "aws:lambda/permission:Permission":
-			fn, _ := attrs["function_name"].(string)
-			stmt, _ := attrs["statement_id"].(string)
-			if fn != "" && stmt != "" {
-				newID = fn + "/" + stmt
-			}
-
-		case "aws:s3/bucketObject:BucketObject", "aws:s3/bucketObjectv2:BucketObjectv2":
-			bucket, _ := attrs["bucket"].(string)
-			key, _ := attrs["key"].(string)
-			if bucket != "" && key != "" {
-				newID = "s3://" + bucket + "/" + key
-			}
+			newID = id
+		default:
+			res.Notes = append(res.Notes, fmt.Sprintf("%s: import ID must be composed by hand; documented form: %s",
+				tf.TerraformAddress, format.Docs))
+			continue
 		}
 
 		if newID != "" && newID != entry.ID {
 			entry.ID = newID
-			translated++
+			res.Translated++
 		}
 	}
+	return res
+}
 
-	return translated
+// terraformType returns the resource type segment of a Terraform address:
+// "module.a.aws_foo.bar[0]" -> "aws_foo".
+func terraformType(address string) string {
+	if i := strings.Index(address, "["); i >= 0 {
+		address = address[:i]
+	}
+	parts := strings.Split(address, ".")
+	if len(parts) < 2 {
+		return address
+	}
+	return parts[len(parts)-2]
 }

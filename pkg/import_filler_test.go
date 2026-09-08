@@ -17,6 +17,7 @@ package pkg
 import (
 	"testing"
 
+	"github.com/pulumi-proserv/pulumi-tool-import/pkg/importid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -590,6 +591,47 @@ func TestTranslateImportIDs(t *testing.T) {
 	assert.Equal(t, "aws-us-east-1", importFile.Resources[0].Provider)
 	assert.NotNil(t, importFile.NameTable)
 	assert.Equal(t, "urn:pulumi:stack::proj::pulumi:providers:aws::default", importFile.NameTable["provider"])
+}
+
+func TestTranslateImportIDsWithNotes(t *testing.T) {
+	t.Parallel()
+	formats := &importid.Formats{Provider: "hashicorp/aws", Version: "v0", Types: map[string]importid.FormatEntry{
+		"aws_thing":  {Template: "{group}:{name}", Evidence: "t"},
+		"aws_manual": {Manual: true, Docs: "terraform import aws_manual.x a/b/c", Evidence: "t"},
+		"aws_route":  {Manual: true, Evidence: "t"},
+	}}
+	digest := &ModuleMap{RootResources: []ModuleResource{
+		{Mode: "managed", ImportID: "id-1", TerraformAddress: "aws_thing.ok", Attributes: map[string]interface{}{"group": "g", "name": "n"}},
+		{Mode: "managed", ImportID: "id-2", TerraformAddress: "module.m.aws_thing.missing[0]", Attributes: map[string]interface{}{"group": "g"}},
+		{Mode: "managed", ImportID: "id-3", TerraformAddress: "aws_manual.m", Attributes: map[string]interface{}{}},
+		{Mode: "managed", ImportID: "id-4", TerraformAddress: "aws_route.r", Attributes: map[string]interface{}{"route_table_id": "rtb-1", "destination_cidr_block": "0.0.0.0/0"}},
+		{Mode: "managed", ImportID: "id-5", TerraformAddress: "aws_untouched.u", Attributes: map[string]interface{}{}},
+	}}
+	importFile := &ImportFile{Resources: []ImportEntry{
+		{Type: "aws:x/thing:Thing", Name: "ok", ID: "id-1"},
+		{Type: "aws:x/thing:Thing", Name: "missing", ID: "id-2"},
+		{Type: "aws:x/manual:Manual", Name: "m", ID: "id-3"},
+		{Type: "aws:ec2/route:Route", Name: "r", ID: "id-4"},
+		{Type: "aws:x/untouched:Untouched", Name: "u", ID: "id-5"},
+	}}
+
+	res := TranslateImportIDsWith(importFile, digest, formats)
+
+	assert.Equal(t, 2, res.Translated)
+	assert.Equal(t, "g:n", importFile.Resources[0].ID)
+	assert.Equal(t, "id-2", importFile.Resources[1].ID)
+	assert.Equal(t, "id-3", importFile.Resources[2].ID)
+	assert.Equal(t, "rtb-1_0.0.0.0/0", importFile.Resources[3].ID)
+	assert.Equal(t, "id-5", importFile.Resources[4].ID)
+	require.Len(t, res.Notes, 2)
+	assert.Contains(t, res.Notes[0], `module.m.aws_thing.missing[0]: cannot compose import ID "{group}:{name}": attribute "name" absent from state`)
+	assert.Contains(t, res.Notes[1], `aws_manual.m: import ID must be composed by hand; documented form: terraform import aws_manual.x a/b/c`)
+}
+
+func TestTerraformType(t *testing.T) {
+	assert.Equal(t, "aws_foo", terraformType("aws_foo.bar"))
+	assert.Equal(t, "aws_foo", terraformType("module.a.module.b.aws_foo.bar[0]"))
+	assert.Equal(t, "aws_foo", terraformType(`aws_foo.bar["k"]`))
 }
 
 func TestProviderAndNameTablePreserved(t *testing.T) {

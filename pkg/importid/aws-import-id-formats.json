@@ -5,6 +5,21 @@
     "aws_ecs_service": { "manual": true, "evidence": "seed: composer in pkg/importid/tf_custom.go pending scrape" },
     "aws_iam_role_policy_attachment": { "manual": true, "evidence": "seed: composer in pkg/importid/tf_custom.go pending scrape" },
     "aws_route": { "manual": true, "evidence": "seed: composer in pkg/importid/tf_custom.go pending scrape" },
-    "aws_security_group_rule": { "manual": true, "evidence": "seed: composer in pkg/importid/tf_custom.go pending scrape" }
+    "aws_security_group_rule": { "manual": true, "evidence": "seed: composer in pkg/importid/tf_custom.go pending scrape" },
+    "aws_wafv2_ip_set":            { "template": "{id}/{name}/{scope}", "evidence": "seed: migrated from TranslateImportIDs pending scrape" },
+    "aws_wafv2_web_acl":           { "template": "{id}/{name}/{scope}", "evidence": "seed: migrated from TranslateImportIDs pending scrape" },
+    "aws_route_table_association": { "template": "{subnet_id}/{route_table_id}", "evidence": "seed: migrated from TranslateImportIDs pending scrape" },
+    "aws_appautoscaling_target":   { "template": "{service_namespace}/{resource_id}/{scalable_dimension}", "evidence": "seed: migrated from TranslateImportIDs pending scrape" },
+    "aws_appautoscaling_policy":   { "template": "{service_namespace}/{resource_id}/{scalable_dimension}/{name}", "evidence": "seed: migrated from TranslateImportIDs pending scrape" },
+    "aws_iam_policy_attachment":   { "template": "{name}", "evidence": "seed: migrated from TranslateImportIDs pending scrape" },
+    "aws_opensearchserverless_access_policy":   { "template": "{name}/{type}", "evidence": "seed: migrated from TranslateImportIDs pending scrape" },
+    "aws_opensearchserverless_security_policy": { "template": "{name}/{type}", "evidence": "seed: migrated from TranslateImportIDs pending scrape" },
+    "aws_ecs_cluster":             { "template": "{name}", "evidence": "seed: migrated from TranslateImportIDs pending scrape" },
+    "aws_ecs_task_definition":     { "template": "{arn}", "evidence": "seed: migrated from TranslateImportIDs pending scrape" },
+    "aws_apigatewayv2_api_mapping": { "template": "{id}/{domain_name}", "evidence": "seed: migrated from TranslateImportIDs pending scrape" },
+    "aws_kinesis_stream":          { "template": "{name}", "evidence": "seed: migrated from TranslateImportIDs pending scrape" },
+    "aws_lambda_permission":       { "template": "{function_name}/{statement_id}", "evidence": "seed: migrated from TranslateImportIDs pending scrape" },
+    "aws_s3_object":               { "template": "s3://{bucket}/{key}", "evidence": "seed: migrated from TranslateImportIDs pending scrape" },
+    "aws_s3_bucket_object":        { "template": "s3://{bucket}/{key}", "evidence": "seed: migrated from TranslateImportIDs pending scrape" }
   }
 }
