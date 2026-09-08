@@ -22,9 +22,19 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 )
+
+func sortedKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
 
 type ImportStep struct {
 	TFType     string
@@ -69,10 +79,17 @@ func collectImportSteps(providerRoot string) ([]ImportStep, error) {
 		if err != nil {
 			return nil, fmt.Errorf("parsing %s: %w", dir, err)
 		}
-		for _, pkg := range pkgs {
-			for path, file := range pkg.Files {
+		// Both maps must be walked in sorted order. A type often has several
+		// equally-classified import steps in different files (portal_test.go
+		// and portal_tags_gen_test.go, say); buildFormats keeps the first, so
+		// map order would otherwise pick a different evidence file:line on
+		// every run and make the generated table — and import-id-formats-check
+		// — nondeterministic.
+		for _, pkgName := range sortedKeys(pkgs) {
+			pkg := pkgs[pkgName]
+			for _, path := range sortedKeys(pkg.Files) {
 				rel, _ := filepath.Rel(providerRoot, path)
-				steps = append(steps, stepsInFile(fset, pkg, file, filepath.ToSlash(rel))...)
+				steps = append(steps, stepsInFile(fset, pkg, pkg.Files[path], filepath.ToSlash(rel))...)
 			}
 		}
 	}
