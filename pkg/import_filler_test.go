@@ -638,6 +638,251 @@ func TestTranslateImportIDsWithNotes(t *testing.T) {
 	}
 }
 
+// Two managed resources can share a state ID (a resource and the association
+// keyed by it, say). The import entry names only the ID, so which resource's
+// attributes to compose from is unknowable — and composing from the wrong one
+// yields a confident wrong import ID. Leave it alone and say so.
+func TestTranslateImportIDsAmbiguousStateID(t *testing.T) {
+	t.Parallel()
+	formats := &importid.Formats{Provider: "hashicorp/aws", Version: "v0", Types: map[string]importid.FormatEntry{
+		"aws_thing": {Template: "{group}:{name}", Evidence: "t"},
+	}}
+	digest := &ModuleMap{RootResources: []ModuleResource{
+		{Mode: "managed", ImportID: "shared", TerraformAddress: "aws_thing.a", Attributes: map[string]interface{}{"group": "g1", "name": "n1"}},
+		{Mode: "managed", ImportID: "shared", TerraformAddress: "aws_other.b", Attributes: map[string]interface{}{}},
+		{Mode: "managed", ImportID: "solo", TerraformAddress: "aws_thing.c", Attributes: map[string]interface{}{"group": "g2", "name": "n2"}},
+	}}
+	importFile := &ImportFile{Resources: []ImportEntry{
+		{Type: "aws:x/thing:Thing", Name: "a", ID: "shared"},
+		{Type: "aws:x/thing:Thing", Name: "c", ID: "solo"},
+	}}
+
+	res := TranslateImportIDsWith(importFile, digest, formats)
+
+	assert.Equal(t, 1, res.Translated)
+	assert.Equal(t, "shared", importFile.Resources[0].ID, "an ambiguous ID must be left for a human")
+	assert.Equal(t, "g2:n2", importFile.Resources[1].ID)
+	require.Len(t, res.Notes, 1)
+	assert.Equal(t, `aws_other.b, aws_thing.a: share state ID "shared"; import ID left unresolved — set it by hand`, res.Notes[0])
+}
+
+// TestTranslateImportIDsOldSwitchParity pins the outcome for every Pulumi
+// type the hand-written switch in TranslateImportIDs used to handle (deleted
+// in 1d9f27a), against the EMBEDDED table. It is what makes the next provider
+// bump safe: a regenerated table that changes any of these strings fails here
+// instead of silently emitting a wrong import ID.
+//
+// Two rows deliberately differ from the old switch, because the provider's
+// own import tests prove the old switch was wrong; each says so inline.
+func TestTranslateImportIDsOldSwitchParity(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		pulumi   string
+		tfAddr   string
+		stateID  string
+		attrs    map[string]interface{}
+		want     string
+		whyDiffs string
+	}{{
+		name:    "wafv2 ip set",
+		pulumi:  "aws:wafv2/ipSet:IpSet",
+		tfAddr:  "aws_wafv2_ip_set.test",
+		stateID: "a1b2c3d4-d5f6-7777-8888-9999aaaabbbb",
+		attrs:   map[string]interface{}{"name": "example", "scope": "REGIONAL"},
+		want:    "a1b2c3d4-d5f6-7777-8888-9999aaaabbbb/example/REGIONAL",
+	}, {
+		name:    "wafv2 web acl",
+		pulumi:  "aws:wafv2/webAcl:WebAcl",
+		tfAddr:  "aws_wafv2_web_acl.test",
+		stateID: "a1b2c3d4-d5f6-7777-8888-9999aaaabbbb",
+		attrs:   map[string]interface{}{"name": "example", "scope": "CLOUDFRONT"},
+		want:    "a1b2c3d4-d5f6-7777-8888-9999aaaabbbb/example/CLOUDFRONT",
+	}, {
+		name:    "ec2 route",
+		pulumi:  "aws:ec2/route:Route",
+		tfAddr:  "aws_route.test",
+		stateID: "r-rtb-0abc1234567890abc1080289494",
+		attrs:   map[string]interface{}{"route_table_id": "rtb-0abc123", "destination_cidr_block": "10.42.0.0/16"},
+		want:    "rtb-0abc123_10.42.0.0/16",
+	}, {
+		name:    "ec2 route table association (subnet)",
+		pulumi:  "aws:ec2/routeTableAssociation:RouteTableAssociation",
+		tfAddr:  "aws_route_table_association.test",
+		stateID: "rtbassoc-0abc123",
+		attrs:   map[string]interface{}{"subnet_id": "subnet-0abc123", "route_table_id": "rtb-0abc123"},
+		want:    "subnet-0abc123/rtb-0abc123",
+	}, {
+		name:    "ec2 route table association (gateway)",
+		pulumi:  "aws:ec2/routeTableAssociation:RouteTableAssociation",
+		tfAddr:  "aws_route_table_association.gw",
+		stateID: "rtbassoc-0def456",
+		attrs:   map[string]interface{}{"gateway_id": "igw-0abc123", "route_table_id": "rtb-0abc123"},
+		// DIFFERS from the old switch, which required subnet_id and so left a
+		// gateway association's ID untranslated. The provider composes
+		// subnet-or-gateway/route_table_id
+		// (internal/service/ec2/vpc_route_table_association_test.go:257,
+		// testAccRouteTabAssocImportStateIdFunc).
+		want:     "igw-0abc123/rtb-0abc123",
+		whyDiffs: "old switch left this as the state ID; the provider imports gateway associations by gateway_id/route_table_id",
+	}, {
+		name:    "ec2 security group rule",
+		pulumi:  "aws:ec2/securityGroupRule:SecurityGroupRule",
+		tfAddr:  "aws_security_group_rule.test",
+		stateID: "sgrule-1234567890",
+		attrs: map[string]interface{}{
+			"security_group_id": "sg-0abc123", "type": "ingress", "protocol": "tcp",
+			"from_port": 8000, "to_port": 8000, "cidr_blocks": []interface{}{"10.0.3.0/24"},
+		},
+		want: "sg-0abc123_ingress_tcp_8000_8000_10.0.3.0/24",
+	}, {
+		name:    "appautoscaling target",
+		pulumi:  "aws:appautoscaling/target:Target",
+		tfAddr:  "aws_appautoscaling_target.test",
+		stateID: "service/my-cluster/my-service",
+		attrs: map[string]interface{}{
+			"service_namespace": "ecs", "resource_id": "service/my-cluster/my-service",
+			"scalable_dimension": "ecs:service:DesiredCount",
+		},
+		want: "ecs/service/my-cluster/my-service/ecs:service:DesiredCount",
+	}, {
+		name:    "appautoscaling policy",
+		pulumi:  "aws:appautoscaling/policy:Policy",
+		tfAddr:  "aws_appautoscaling_policy.test",
+		stateID: "my-scale-policy",
+		attrs: map[string]interface{}{
+			"service_namespace": "ecs", "resource_id": "service/my-cluster/my-service",
+			"scalable_dimension": "ecs:service:DesiredCount", "name": "my-scale-policy",
+		},
+		want: "ecs/service/my-cluster/my-service/ecs:service:DesiredCount/my-scale-policy",
+	}, {
+		name:    "iam role policy attachment",
+		pulumi:  "aws:iam/rolePolicyAttachment:RolePolicyAttachment",
+		tfAddr:  "aws_iam_role_policy_attachment.test",
+		stateID: "test-role-20260101000000000000000001",
+		attrs:   map[string]interface{}{"role": "test-role", "policy_arn": "arn:aws:iam::123456789012:policy/test-policy"},
+		want:    "test-role/arn:aws:iam::123456789012:policy/test-policy",
+	}, {
+		name:   "iam policy attachment",
+		pulumi: "aws:iam/policyAttachment:PolicyAttachment",
+		tfAddr: "aws_iam_policy_attachment.test",
+		// The old switch emitted attrs["name"]. The provider sets the state ID
+		// from the same attribute (internal/service/iam/policy_attachment.go:98,
+		// d.SetId(d.Get(names.AttrName).(string))), so the type is correctly
+		// absent from the table and the untranslated state ID already IS the
+		// old switch's output.
+		stateID: "test-attachment",
+		attrs:   map[string]interface{}{"name": "test-attachment"},
+		want:    "test-attachment",
+	}, {
+		name:    "opensearch serverless access policy",
+		pulumi:  "aws:opensearch/serverlessAccessPolicy:ServerlessAccessPolicy",
+		tfAddr:  "aws_opensearchserverless_access_policy.test",
+		stateID: "example",
+		attrs:   map[string]interface{}{"name": "example", "type": "data"},
+		want:    "example/data",
+	}, {
+		name:    "opensearch serverless security policy",
+		pulumi:  "aws:opensearch/serverlessSecurityPolicy:ServerlessSecurityPolicy",
+		tfAddr:  "aws_opensearchserverless_security_policy.test",
+		stateID: "example",
+		attrs:   map[string]interface{}{"name": "example", "type": "encryption"},
+		want:    "example/encryption",
+	}, {
+		name:    "ecs cluster",
+		pulumi:  "aws:ecs/cluster:Cluster",
+		tfAddr:  "aws_ecs_cluster.test",
+		stateID: "arn:aws:ecs:us-east-1:123456789012:cluster/stateless-app",
+		attrs:   map[string]interface{}{"name": "stateless-app"},
+		want:    "stateless-app",
+	}, {
+		name:    "ecs service",
+		pulumi:  "aws:ecs/service:Service",
+		tfAddr:  "aws_ecs_service.test",
+		stateID: "arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service",
+		attrs: map[string]interface{}{
+			"cluster": "arn:aws:ecs:us-east-1:123456789012:cluster/my-cluster", "name": "my-service",
+		},
+		want: "my-cluster/my-service",
+	}, {
+		name:    "ecs task definition",
+		pulumi:  "aws:ecs/taskDefinition:TaskDefinition",
+		tfAddr:  "aws_ecs_task_definition.test",
+		stateID: "mytaskfamily",
+		attrs:   map[string]interface{}{"arn": "arn:aws:ecs:us-east-1:123456789012:task-definition/mytaskfamily:123"},
+		want:    "arn:aws:ecs:us-east-1:123456789012:task-definition/mytaskfamily:123",
+	}, {
+		name:    "apigatewayv2 api mapping",
+		pulumi:  "aws:apigatewayv2/apiMapping:ApiMapping",
+		tfAddr:  "aws_apigatewayv2_api_mapping.test",
+		stateID: "1122334",
+		attrs:   map[string]interface{}{"domain_name": "ws-api.example.com"},
+		want:    "1122334/ws-api.example.com",
+	}, {
+		name:   "kinesis stream",
+		pulumi: "aws:kinesis/stream:Stream",
+		tfAddr: "aws_kinesis_stream.test",
+		// The state ID is the stream ARN (internal/service/kinesis/stream.go:215);
+		// the import ID is the bare name, as the old switch also had it.
+		stateID: "arn:aws:kinesis:us-east-1:123456789012:stream/terraform-kinesis-test",
+		attrs:   map[string]interface{}{"name": "terraform-kinesis-test"},
+		want:    "terraform-kinesis-test",
+	}, {
+		name:    "lambda permission",
+		pulumi:  "aws:lambda/permission:Permission",
+		tfAddr:  "aws_lambda_permission.test",
+		stateID: "AllowExecutionFromCloudWatch",
+		attrs: map[string]interface{}{
+			"function_name": "my_test_lambda_function", "statement_id": "AllowExecutionFromCloudWatch",
+		},
+		want: "my_test_lambda_function/AllowExecutionFromCloudWatch",
+	}, {
+		name:    "lambda permission (qualified)",
+		pulumi:  "aws:lambda/permission:Permission",
+		tfAddr:  "aws_lambda_permission.qualified",
+		stateID: "AllowExecutionFromCloudWatch",
+		attrs: map[string]interface{}{
+			"function_name": "my_test_lambda_function", "qualifier": "live",
+			"statement_id": "AllowExecutionFromCloudWatch",
+		},
+		// DIFFERS from the old switch, which dropped the qualifier and would
+		// have imported the unqualified permission. The provider composes
+		// FUNCTION:QUALIFIER/STATEMENT
+		// (internal/service/lambda/permission_test.go:827,
+		// testAccPermissionImportStateIDFunc).
+		want:     "my_test_lambda_function:live/AllowExecutionFromCloudWatch",
+		whyDiffs: "old switch dropped the qualifier, producing an import ID for the wrong permission",
+	}, {
+		name:    "s3 bucket object",
+		pulumi:  "aws:s3/bucketObject:BucketObject",
+		tfAddr:  "aws_s3_bucket_object.test",
+		stateID: "some/key.txt",
+		attrs:   map[string]interface{}{"bucket": "some-bucket-name", "key": "some/key.txt"},
+		want:    "s3://some-bucket-name/some/key.txt",
+	}}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if tc.whyDiffs != "" {
+				t.Logf("differs from the old switch on purpose: %s", tc.whyDiffs)
+			}
+			digest := &ModuleMap{RootResources: []ModuleResource{
+				{Mode: "managed", ImportID: tc.stateID, TerraformAddress: tc.tfAddr, Attributes: tc.attrs},
+			}}
+			importFile := &ImportFile{Resources: []ImportEntry{
+				{Type: tc.pulumi, Name: "test", ID: tc.stateID},
+			}}
+
+			TranslateImportIDsWith(importFile, digest, importid.Embedded())
+
+			assert.Equal(t, tc.want, importFile.Resources[0].ID)
+		})
+	}
+}
+
 func TestFormatEntryDocsOnly(t *testing.T) {
 	assert.True(t, importid.FormatEntry{Evidence: "docs-only: x"}.DocsOnly())
 	assert.False(t, importid.FormatEntry{Evidence: "terraform-provider-aws/internal/service/x_test.go:1 f"}.DocsOnly())

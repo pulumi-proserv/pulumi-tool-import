@@ -33,6 +33,7 @@ var TFCustom = map[string]TFComposer{
 	"aws_ecs_service":             composeTFEcsService,
 	"aws_route_table_association": composeTFRouteTableAssociation,
 	"aws_lambda_permission":       composeTFLambdaPermission,
+	"aws_kinesis_stream":          composeTFKinesisStream,
 }
 
 func str(attrs map[string]interface{}, k string) string {
@@ -107,6 +108,24 @@ func composeTFRouteTableAssociation(attrs map[string]interface{}, _ string) (str
 		return "", false
 	}
 	return target + "/" + rtb, true
+}
+
+// A Kinesis stream's state ID is its ARN — the create sets it from
+// StreamDescription.StreamARN (internal/service/kinesis/stream.go:215) — but
+// it imports by the bare stream name ("import Kinesis Streams using the
+// `name`", website/docs/r/kinesis_stream.html.markdown), which is what the
+// provider's own import steps pass as ImportStateId. Without this composer
+// the ARN would be handed to Pulumi as the import ID.
+//
+// This is a composer rather than a scraped template because the steps spell
+// their ID as a variable (ImportStateId: rName), so the scraper can see that
+// the type diverges but not what it composes.
+func composeTFKinesisStream(attrs map[string]interface{}, _ string) (string, bool) {
+	name := str(attrs, "name")
+	if name == "" {
+		return "", false
+	}
+	return name, true
 }
 
 // A permission on an aliased or versioned function imports as
