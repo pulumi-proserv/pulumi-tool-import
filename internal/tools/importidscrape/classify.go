@@ -16,6 +16,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -92,6 +94,15 @@ func classify(step ImportStep, consts map[string]string) Classification {
 	if step.StaticID != "" {
 		return Classification{Manual: true, Snippet: `ImportStateId: ` + strconv.Quote(step.StaticID), File: step.File, Line: step.Line}
 	}
+	// An ImportStateId the classifier cannot read is still an explicit import
+	// ID, so the step is not evidence of passthrough — it is evidence of
+	// divergence whose value happens to be out of reach. Reading it as
+	// passthrough is how aws_kinesis_stream (ImportStateId: rName, state ID =
+	// the stream ARN, internal/service/kinesis/stream.go:215) would compose a
+	// silently wrong import ID.
+	if step.StaticIDExpr != nil {
+		return Classification{Manual: true, Snippet: `ImportStateId: ` + exprString(step.Fset, step.StaticIDExpr), File: step.File, Line: step.Line}
+	}
 	if step.IDFuncExpr == nil {
 		return Classification{}
 	}
@@ -106,11 +117,33 @@ func classify(step ImportStep, consts map[string]string) Classification {
 	}
 	pos := step.Fset.Position(fn.Pos())
 	c := Classification{Symbol: symbol, File: relToProvider(step, pos.Filename), Line: pos.Line}
+
+	// A helper that returns an acctest helper call instead of a closure
+	// literal, e.g. testAccPolicyImportStateIdFunc in appautoscaling. Its own
+	// parameters stand in for the step's call-site arguments, so the first
+	// argument still has to prove the step's own address.
+	if inner := returnedCall(fn); inner != nil {
+		sub := step
+		sub.Syntax = fileOf(step, fn)
+		sub.IDFuncArgAddrs = mappedArgAddrs(inner.Args, fn, step)
+		if tmpl, innerSymbol, ok := acctestTemplate(inner, sub, consts); ok {
+			c.Template, c.Symbol = tmpl, symbol+" -> "+innerSymbol
+			return c
+		}
+	}
+
 	body := closureBody(fn)
 	ret := returnedIDExpr(body)
 	if ret == nil {
 		c.Manual, c.Snippet = true, exprString(step.Fset, body)
 		return c
+	}
+	if id, ok := ret.(*ast.Ident); ok {
+		ret = soleBinding(body, id.Name)
+		if ret == nil {
+			c.Manual, c.Snippet = true, exprString(step.Fset, body)
+			return c
+		}
 	}
 	tmpl, ok := templateOf(ret, receiverNames(body, fn, step), consts)
 	if !ok {
@@ -202,6 +235,70 @@ func acctestTemplate(call *ast.CallExpr, step ImportStep, consts map[string]stri
 	return "", "", false
 }
 
+// acctestHelperNames are the helpers acctestTemplate models, in the order
+// their sources are hashed.
+var acctestHelperNames = []string{
+	"AttrImportStateIdFunc",
+	"AttrsImportStateIdFunc",
+	"CrossRegionAttrImportStateIdFunc",
+	"CrossRegionImportStateIdFunc",
+}
+
+// acctestHelpersSHA256 is hashAcctestHelpers' value for terraform-provider-aws
+// v6.38.0. It is the only thing tying acctestTemplate's hard-coded semantics
+// to the source they claim to model: if a version bump rewrites one of these
+// helpers, the scrape fails here instead of silently composing wrong IDs.
+// Update it only after re-reading the four bodies and re-checking
+// acctestTemplate against them.
+const acctestHelpersSHA256 = "403d8802e5d3f5dfca07b4a8c9eb81eb742877b65ffe18a7ff342717061a27f7"
+
+// hashAcctestHelpers parses internal/acctest/state_id.go and hashes the four
+// modelled FuncDecls, printed by go/printer without comments so the hash
+// covers their code and nothing else.
+func hashAcctestHelpers(providerRoot string) (string, error) {
+	path := filepath.Join(providerRoot, "internal", "acctest", "state_id.go")
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, nil, 0)
+	if err != nil {
+		return "", fmt.Errorf("parsing %s: %w", path, err)
+	}
+	decls := map[string]*ast.FuncDecl{}
+	for _, d := range file.Decls {
+		if fd, ok := d.(*ast.FuncDecl); ok && fd.Recv == nil {
+			decls[fd.Name.Name] = fd
+		}
+	}
+	h := sha256.New()
+	for _, name := range acctestHelperNames {
+		fd, ok := decls[name]
+		if !ok {
+			return "", fmt.Errorf("%s: helper %s not found", path, name)
+		}
+		if err := printer.Fprint(h, fset, fd); err != nil {
+			return "", err
+		}
+		_, _ = h.Write([]byte("\n"))
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// checkAcctestHelpers fails the scrape when the provider's import-ID helpers
+// are no longer the ones acctestTemplate models.
+func checkAcctestHelpers(providerRoot string) error {
+	got, err := hashAcctestHelpers(providerRoot)
+	if err != nil {
+		return err
+	}
+	if got != acctestHelpersSHA256 {
+		return fmt.Errorf("%s: the acctest import-ID helpers %v changed (sha256 %s, expected %s); "+
+			"re-verify acctestTemplate in internal/tools/importidscrape/classify.go against those bodies, "+
+			"refresh internal/tools/importidscrape/testdata/provider/internal/acctest/state_id.go, "+
+			"then update acctestHelpersSHA256",
+			filepath.Join(providerRoot, "internal", "acctest", "state_id.go"), acctestHelperNames, got, acctestHelpersSHA256)
+	}
+	return nil
+}
+
 // importsProviderAcctest reports whether name is bound, in this file, to the
 // provider's own internal/acctest package. Without the check a test that
 // imports some other package under the same name would be read with the
@@ -273,6 +370,109 @@ func closureBody(fn *ast.FuncDecl) *ast.BlockStmt {
 	return fn.Body
 }
 
+// returnedCall returns the call a helper's body returns directly — the whole
+// body must be `return <call>`, so nothing else can influence the result.
+func returnedCall(fn *ast.FuncDecl) *ast.CallExpr {
+	if fn.Body == nil || len(fn.Body.List) != 1 {
+		return nil
+	}
+	rs, ok := fn.Body.List[0].(*ast.ReturnStmt)
+	if !ok || len(rs.Results) != 1 {
+		return nil
+	}
+	call, _ := rs.Results[0].(*ast.CallExpr)
+	return call
+}
+
+// fileOf returns the *ast.File of step's package that contains fn, so the
+// acctest import can be checked in the file the helper is actually written
+// in rather than the file the TestStep is written in.
+func fileOf(step ImportStep, fn *ast.FuncDecl) *ast.File {
+	if step.Pkg == nil {
+		return step.Syntax
+	}
+	want := step.Fset.Position(fn.Pos()).Filename
+	for path, f := range step.Pkg.Files {
+		if path == want {
+			return f
+		}
+	}
+	return step.Syntax
+}
+
+// mappedArgAddrs resolves each argument of a call inside a helper to the
+// address it names: a string literal directly, or a parameter of the helper
+// via the address that parameter was given at the step's call site. Anything
+// else is "", which acctestTemplate treats as unproven.
+func mappedArgAddrs(args []ast.Expr, fn *ast.FuncDecl, step ImportStep) []string {
+	out := make([]string, len(args))
+	for i, a := range args {
+		switch v := a.(type) {
+		case *ast.BasicLit:
+			if v.Kind == token.STRING {
+				out[i], _ = strconv.Unquote(v.Value)
+			}
+		case *ast.Ident:
+			if fn.Type.Params == nil {
+				continue
+			}
+			if p := paramPosition(fn, v.Name); p >= 0 && p < len(step.IDFuncArgAddrs) {
+				out[i] = step.IDFuncArgAddrs[p]
+			}
+		}
+	}
+	return out
+}
+
+// soleBinding returns the RHS of the one and only assignment to name in body,
+// or nil when name is bound zero times, more than once, or by a form other
+// than a single-value `name := expr` / `name = expr`. A second binding would
+// mean the returned value is not the expression this one names.
+func soleBinding(body *ast.BlockStmt, name string) ast.Expr {
+	var found ast.Expr
+	n := 0
+	for _, st := range body.List {
+		switch s := st.(type) {
+		case *ast.AssignStmt:
+			for _, lhs := range s.Lhs {
+				id, ok := lhs.(*ast.Ident)
+				if !ok || id.Name != name {
+					continue
+				}
+				n++
+				// Only a plain single-value assignment names an expression
+				// this classifier can read; a tuple assignment does not.
+				if len(s.Lhs) == 1 && len(s.Rhs) == 1 {
+					found = s.Rhs[0]
+				} else {
+					found = nil
+				}
+			}
+		case *ast.DeclStmt:
+			gd, ok := s.Decl.(*ast.GenDecl)
+			if !ok {
+				continue
+			}
+			for _, spec := range gd.Specs {
+				vs, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for _, vn := range vs.Names {
+					if vn.Name == name {
+						n++
+						found = nil
+					}
+				}
+			}
+		}
+	}
+	if n != 1 {
+		return nil
+	}
+	return found
+}
+
 // returnedIDExpr is the first result of the last `return x, nil` in body,
 // or nil when the body has a return whose second value is not nil or any
 // control flow other than the standard "not found" guard.
@@ -317,11 +517,12 @@ func isNotFoundGuard(s *ast.IfStmt) bool {
 // only qualifies when its index provably names step.Address: a string
 // literal equal to it, or an identifier that is a parameter of fn (the
 // helper enclosing the closure) whose value at the ImportStateIdFunc call
-// site resolved to step.Address (see IDFuncArgAddrs). A binding for any
-// other resource — including a second, unrelated one such as
-// `other := s.RootModule().Resources["aws_vpc.test"]`, or a parent lookup
-// `s.RootModule().Resources[parentName]` — is never a receiver: accepting it
-// would let a manual, wrong-resource body prove a template.
+// site resolved to step.Address (see IDFuncArgAddrs). Those two forms are all
+// it proves; every other index — a lookup of some other literal address such
+// as `other := s.RootModule().Resources["aws_vpc.test"]`, a parent lookup
+// `s.RootModule().Resources[parentName]`, or any expression it cannot read —
+// is simply not proven to be this step's resource, and so yields no receiver.
+// Accepting an unproven one would let a wrong-resource body prove a template.
 func receiverNames(body *ast.BlockStmt, fn *ast.FuncDecl, step ImportStep) map[string]bool {
 	names := map[string]bool{}
 	for _, st := range body.List {

@@ -19,7 +19,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"sort"
 	"strings"
 
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/importid"
@@ -31,6 +30,9 @@ type Summary struct {
 
 // buildFormats runs the four stages against a provider checkout.
 func buildFormats(providerRoot, version string, warn func(string)) (*importid.Formats, Summary, error) {
+	if err := checkAcctestHelpers(providerRoot); err != nil {
+		return nil, Summary{}, err
+	}
 	steps, err := collectImportSteps(providerRoot)
 	if err != nil {
 		return nil, Summary{}, err
@@ -47,24 +49,38 @@ func buildFormats(providerRoot, version string, warn func(string)) (*importid.Fo
 	f := &importid.Formats{Provider: "hashicorp/aws", Version: version, Types: map[string]importid.FormatEntry{}}
 	var sum Summary
 
+	// provenPassthrough holds the types some import test proved to import by
+	// their state ID. A divergent-looking docs example for such a type is a
+	// documentation shorthand, not evidence, so the docs pass below must not
+	// invent an entry for it: that entry would put a "compose this by hand"
+	// note on a resource the provider's own tests import by its state ID.
+	provenPassthrough := map[string]bool{}
+
 	// A type with several import steps: any non-passthrough step wins, and a
 	// template beats a manual (a passthrough-looking step elsewhere is a
 	// different test's shortcut, not a contradiction).
 	for _, step := range steps {
 		c := classify(step, consts)
-		if c.Template == "" && !c.Manual {
-			continue
-		}
-		// A step proving exactly "{id}" says the import ID is the state ID —
-		// the same thing a step with no ImportStateIdFunc says. It is not a
-		// divergence, so it neither creates an entry nor overrides one.
-		// ("{id}" inside a composite such as "{rest_api_id}/{id}" is a real
-		// template and is unaffected.)
-		if c.Template == "{id}" {
+		// A step with no ImportStateIdFunc, and a step proving exactly "{id}",
+		// both say the import ID is the state ID. That is not a divergence, so
+		// it neither creates an entry nor overrides one. ("{id}" inside a
+		// composite such as "{rest_api_id}/{id}" is a real template and is
+		// unaffected.)
+		if (c.Template == "" && !c.Manual) || c.Template == "{id}" {
+			provenPassthrough[step.TFType] = true
 			continue
 		}
 		existing, seen := f.Types[step.TFType]
 		if seen && existing.Template != "" {
+			// Two of a type's import steps proving different templates is a
+			// real contradiction — one of them is a shape the whitelist reads
+			// wrongly, or the type's import ID depends on configuration. The
+			// first in sorted order still wins; the warning is so a human
+			// looks.
+			if c.Template != "" && c.Template != existing.Template {
+				warn(fmt.Sprintf("%s: import steps prove different templates %q and %q; keeping %q",
+					step.TFType, existing.Template, c.Template, existing.Template))
+			}
 			continue
 		}
 		if seen && c.Manual {
@@ -92,7 +108,7 @@ func buildFormats(providerRoot, version string, warn func(string)) (*importid.Fo
 			f.Types[typ] = e
 			continue
 		}
-		if d.Divergent {
+		if d.Divergent && !provenPassthrough[typ] {
 			f.Types[typ] = importid.FormatEntry{
 				Manual:     true,
 				Docs:       "terraform import " + typ + ".example " + d.Example,
@@ -102,7 +118,7 @@ func buildFormats(providerRoot, version string, warn func(string)) (*importid.Fo
 		}
 	}
 
-	for typ, e := range f.Types {
+	for _, e := range f.Types {
 		switch {
 		case e.Template != "":
 			sum.Templates++
@@ -111,7 +127,6 @@ func buildFormats(providerRoot, version string, warn func(string)) (*importid.Fo
 		default:
 			sum.ManualFromTests++
 		}
-		_ = typ
 	}
 	if err := f.Validate(); err != nil {
 		return nil, Summary{}, err
@@ -146,14 +161,4 @@ func writeFormats(path string, f *importid.Formats) error {
 		return err
 	}
 	return os.WriteFile(path, buf.Bytes(), 0o644)
-}
-
-// sortedTypes is for the summary printout only.
-func sortedTypes(f *importid.Formats) []string {
-	out := make([]string, 0, len(f.Types))
-	for k := range f.Types {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }

@@ -33,8 +33,14 @@ func TestCollectDocs(t *testing.T) {
 	assert.Equal(t, "domain_name", docs["aws_elasticsearch_domain"].Example)
 	assert.True(t, docs["aws_elasticsearch_domain"].Divergent, "prose says 'using the `domain_name`'")
 
-	assert.Equal(t, "bucket-name", docs["aws_s3_bucket"].Example)
-	assert.False(t, docs["aws_s3_bucket"].Divergent)
+	// A single-segment example with no attribute prose is not divergent.
+	assert.Equal(t, "plain-name", docs["aws_plain_thing"].Example)
+	assert.False(t, docs["aws_plain_thing"].Divergent)
+
+	// aws_s3_bucket's example is divergent; buildFormats suppresses it anyway
+	// because an import step proves the type is passthrough.
+	assert.Equal(t, "some-bucket/some-key", docs["aws_s3_bucket"].Example)
+	assert.True(t, docs["aws_s3_bucket"].Divergent)
 
 	assert.True(t, docs["aws_docs_only_thing"].Divergent)
 	assert.Equal(t, "a/b", docs["aws_block_form_thing"].Example)

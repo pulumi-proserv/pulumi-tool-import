@@ -7,6 +7,15 @@
       "snippet": "acctest.CrossRegionImportStateIdFuncAdapter(resourceName, testAccAccImportStateIDFunc)",
       "evidence": "terraform-provider-aws/internal/service/acc/acc_test.go:71 "
     },
+    "aws_acc_assign": {
+      "template": "{service_namespace}/{name}",
+      "evidence": "terraform-provider-aws/internal/service/acc/assign_test.go:31 testAccAssignImportStateIdFunc"
+    },
+    "aws_acc_assigntwice": {
+      "manual": true,
+      "snippet": "{\n\trs, ok := s.RootModule().Resources[resourceName]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"Not found: %s\", resourceName)\n\t}\n\n\tid := rs.Primary.Attributes[\"first\"]\n\tid = rs.Primary.Attributes[\"second\"]\n\treturn id, nil\n}",
+      "evidence": "terraform-provider-aws/internal/service/acc/assign_test.go:60 testAccAssignTwiceImportStateIdFunc"
+    },
     "aws_acc_attr": {
       "template": "{arn}",
       "evidence": "terraform-provider-aws/internal/service/acc/acc_test.go:19 acctest.AttrImportStateIdFunc"
@@ -23,6 +32,20 @@
       "manual": true,
       "snippet": "acctest.AttrImportStateIdFunc(resourceName, attr)",
       "evidence": "terraform-provider-aws/internal/service/acc/acc_test.go:107 "
+    },
+    "aws_acc_indirect": {
+      "template": "{group}/{name}",
+      "evidence": "terraform-provider-aws/internal/service/acc/assign_test.go:88 testAccIndirectImportStateIdFunc -> acctest.AttrsImportStateIdFunc"
+    },
+    "aws_acc_indirectforeign": {
+      "manual": true,
+      "snippet": "{\n\treturn localIDFunc(resourceName, \"/\", \"group\", \"name\")\n}",
+      "evidence": "terraform-provider-aws/internal/service/acc/assign_test.go:123 testAccIndirectForeignImportStateIdFunc"
+    },
+    "aws_acc_indirectother": {
+      "manual": true,
+      "snippet": "{\n\treturn acctest.AttrImportStateIdFunc(\"aws_vpc.test\", names.AttrName)\n}",
+      "evidence": "terraform-provider-aws/internal/service/acc/assign_test.go:105 testAccIndirectOtherImportStateIdFunc"
     },
     "aws_acc_otheraddr": {
       "manual": true,
@@ -74,6 +97,11 @@
       "docs": "terraform import aws_elasticsearch_domain.example domain_name",
       "docsSource": "terraform-provider-aws/website/docs/r/elasticsearch_domain.html.markdown",
       "evidence": "terraform-provider-aws/internal/service/elasticsearch/domain_test.go:24 testAccDomainImportStateID"
+    },
+    "aws_iam_dynamic_static_thing": {
+      "manual": true,
+      "snippet": "ImportStateId: rName",
+      "evidence": "terraform-provider-aws/internal/service/iam/static_test.go:23 "
     },
     "aws_iam_static_thing": {
       "manual": true,

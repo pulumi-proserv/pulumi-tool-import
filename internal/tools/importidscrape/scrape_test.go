@@ -15,6 +15,8 @@
 package main
 
 import (
+	"bytes"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -67,6 +69,36 @@ func TestClassifyResolvesNamesConstants(t *testing.T) {
 	c = classify(stepsByType(t)["aws_wafv2_ip_set"], nil)
 	assert.True(t, c.Manual)
 	assert.Empty(t, c.Template)
+}
+
+// acctestTemplate hard-codes four helpers' semantics. The hash is what makes
+// that safe across a provider bump, so it must match the checked-in copy of
+// the helpers — which is therefore proven byte-faithful to the tag.
+func TestAcctestHelperHashPinsTheFixture(t *testing.T) {
+	got, err := hashAcctestHelpers(fixtureRoot(t))
+	require.NoError(t, err)
+	assert.Equal(t, acctestHelpersSHA256, got)
+	require.NoError(t, checkAcctestHelpers(fixtureRoot(t)))
+}
+
+// A changed helper body must stop the scrape, not be absorbed silently.
+func TestAcctestHelperHashRejectsAMutatedHelper(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "internal", "acctest")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	src, err := os.ReadFile(filepath.Join(fixtureRoot(t), "internal", "acctest", "state_id.go"))
+	require.NoError(t, err)
+	// Change the separator AttrsImportStateIdFunc joins with: same shape,
+	// different composed ID.
+	mutated := bytes.Replace(src, []byte(`}), sep), nil`), []byte(`}), sep+"!"), nil`), 1)
+	require.NotEqual(t, string(src), string(mutated))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "state_id.go"), mutated, 0o644))
+
+	err = checkAcctestHelpers(root)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "state_id.go")
+	assert.Contains(t, err.Error(), "AttrsImportStateIdFunc")
+	assert.Contains(t, err.Error(), acctestHelpersSHA256)
 }
 
 func TestCollectImportSteps(t *testing.T) {
@@ -144,6 +176,44 @@ func TestClassifyAcctestHelpers(t *testing.T) {
 	assert.True(t, classify2(t, by["aws_acc_dynattr"]).Manual, "a non-literal attribute name proves nothing")
 }
 
+// Two shapes the provider uses that are still pure joins of the step's own
+// resource: a joined ID bound to a local and returned
+// (aws_appautoscaling_target), and a helper that returns an acctest helper
+// call instead of a closure literal (aws_appautoscaling_policy).
+func TestClassifyIndirectShapes(t *testing.T) {
+	by := stepsByType(t)
+
+	c := classify2(t, by["aws_acc_assign"])
+	assert.Equal(t, "{service_namespace}/{name}", c.Template)
+	assert.False(t, c.Manual)
+
+	c = classify2(t, by["aws_acc_indirect"])
+	assert.Equal(t, "{group}/{name}", c.Template)
+	assert.False(t, c.Manual)
+	assert.Equal(t, "testAccIndirectImportStateIdFunc -> acctest.AttrsImportStateIdFunc", c.Symbol)
+}
+
+// The boundary of those two extensions.
+func TestClassifyIndirectNegatives(t *testing.T) {
+	by := stepsByType(t)
+
+	// Each RHS alone would prove a template; two bindings must not.
+	c := classify2(t, by["aws_acc_assigntwice"])
+	assert.True(t, c.Manual)
+	assert.Empty(t, c.Template)
+
+	// The helper hands acctest a different resource's address.
+	c = classify2(t, by["aws_acc_indirectother"])
+	assert.True(t, c.Manual)
+	assert.Empty(t, c.Template)
+
+	// The helper returns a call that is not one of the acctest helpers whose
+	// semantics acctestTemplate models.
+	c = classify2(t, by["aws_acc_indirectforeign"])
+	assert.True(t, c.Manual)
+	assert.Empty(t, c.Template)
+}
+
 // Evidence must cite the file the helper is defined in. The step and the
 // helper often live in different files of the same package, and citing the
 // step's file with the helper's line points at an unrelated line — or past
@@ -160,4 +230,15 @@ func TestClassifyPassthroughIsNeither(t *testing.T) {
 	c := classify2(t, stepsByType(t)["aws_s3_bucket"])
 	assert.Empty(t, c.Template)
 	assert.False(t, c.Manual)
+}
+
+// A step with an ImportStateId the scraper cannot read still says the import
+// ID is not the state ID. Reading it as passthrough is the silent-wrong-value
+// failure: aws_kinesis_stream imports by name via `ImportStateId: rName`
+// while its state ID is the stream ARN (internal/service/kinesis/stream.go:215).
+func TestClassifyUnreadableStaticIDIsManual(t *testing.T) {
+	c := classify2(t, stepsByType(t)["aws_iam_dynamic_static_thing"])
+	assert.True(t, c.Manual)
+	assert.Empty(t, c.Template)
+	assert.Equal(t, "ImportStateId: rName", c.Snippet)
 }

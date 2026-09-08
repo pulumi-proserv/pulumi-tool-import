@@ -48,9 +48,14 @@ type ImportStep struct {
 	// resolve to a known address. Empty when IDFuncExpr is not a call.
 	IDFuncArgAddrs []string
 	StaticID       string
-	Pkg            *ast.Package
-	Syntax         *ast.File // the file File names, for its import block
-	Fset           *token.FileSet
+	// StaticIDExpr is the step's ImportStateId expression, set whenever the
+	// key is present — including when it is not a literal and StaticID is
+	// therefore empty. Its presence alone says the step imports by an ID that
+	// is not the state ID, which is the opposite of a passthrough step.
+	StaticIDExpr ast.Expr
+	Pkg          *ast.Package
+	Syntax       *ast.File // the file File names, for its import block
+	Fset         *token.FileSet
 }
 
 // collectImportSteps parses every *_test.go under internal/service and
@@ -171,6 +176,7 @@ func stepFromLiteral(cl *ast.CompositeLit, names map[string]string) (ImportStep,
 				}
 			}
 		case "ImportStateId":
+			step.StaticIDExpr = kv.Value
 			if lit, ok := kv.Value.(*ast.BasicLit); ok && lit.Kind == token.STRING {
 				step.StaticID, _ = strconv.Unquote(lit.Value)
 			}
