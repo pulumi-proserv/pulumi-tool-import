@@ -28,9 +28,9 @@ func TestBuildFormatsGolden(t *testing.T) {
 	f, sum, err := buildFormats(fixtureRoot(t), "v0.0.0-fixture", func(s string) { warnings = append(warnings, s) })
 	require.NoError(t, err)
 
-	// Templates: event target, elasticsearch domain, dynamodb table.
+	// Templates: event target, elasticsearch domain, dynamodb table, wafv2 ip set.
 	// ManualFromTests: lambda layer perm, ec2 cross thing, iam static thing, ec2 child thing.
-	assert.Equal(t, Summary{Templates: 3, ManualFromTests: 4, ManualFromDocs: 2, SensitiveHits: 1}, sum)
+	assert.Equal(t, Summary{Templates: 4, ManualFromTests: 4, ManualFromDocs: 2, SensitiveHits: 1}, sum)
 	assert.Len(t, warnings, 1)
 	assert.Contains(t, warnings[0], "aws_cloudwatch_event_target")
 	assert.Contains(t, warnings[0], "target_id")

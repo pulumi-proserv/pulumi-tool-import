@@ -39,6 +39,10 @@ func buildFormats(providerRoot, version string, warn func(string)) (*importid.Fo
 	if err != nil {
 		return nil, Summary{}, err
 	}
+	consts, err := loadNameConsts(providerRoot)
+	if err != nil {
+		return nil, Summary{}, err
+	}
 
 	f := &importid.Formats{Provider: "hashicorp/aws", Version: version, Types: map[string]importid.FormatEntry{}}
 	var sum Summary
@@ -47,7 +51,7 @@ func buildFormats(providerRoot, version string, warn func(string)) (*importid.Fo
 	// template beats a manual (a passthrough-looking step elsewhere is a
 	// different test's shortcut, not a contradiction).
 	for _, step := range steps {
-		c := classify(step)
+		c := classify(step, consts)
 		if c.Template == "" && !c.Manual {
 			continue
 		}

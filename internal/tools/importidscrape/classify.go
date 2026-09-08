@@ -16,9 +16,13 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"go/ast"
+	"go/parser"
 	"go/printer"
 	"go/token"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -31,9 +35,56 @@ type Classification struct {
 	Line     int
 }
 
+// loadNameConsts reads the provider's "names" package and returns its
+// untyped string constants by identifier, e.g. AttrName -> "name".
+//
+// The provider spells most attribute lookups rs.Primary.Attributes[names.AttrName]
+// rather than with a literal. Those constants are generated string literals, so
+// resolving one is substitution, not inference: it does not admit any expression
+// shape templateOf would otherwise reject, it only lets the existing
+// Attributes[<string literal>] shape see the literal it was already written as.
+// Without this the classifier proves a template only for the shrinking minority
+// of tests still using bare literals.
+func loadNameConsts(providerRoot string) (map[string]string, error) {
+	dir := filepath.Join(providerRoot, "names")
+	fset := token.NewFileSet()
+	pkgs, err := parser.ParseDir(fset, dir, func(fi os.FileInfo) bool {
+		return strings.HasSuffix(fi.Name(), ".go") && !strings.HasSuffix(fi.Name(), "_test.go")
+	}, 0)
+	if err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", dir, err)
+	}
+	out := map[string]string{}
+	for _, pkg := range pkgs {
+		for _, file := range pkg.Files {
+			for _, d := range file.Decls {
+				gd, ok := d.(*ast.GenDecl)
+				if !ok || gd.Tok != token.CONST {
+					continue
+				}
+				for _, spec := range gd.Specs {
+					vs, ok := spec.(*ast.ValueSpec)
+					if !ok || len(vs.Names) != 1 || len(vs.Values) != 1 {
+						continue
+					}
+					lit, ok := vs.Values[0].(*ast.BasicLit)
+					if !ok || lit.Kind != token.STRING {
+						continue
+					}
+					if s, err := strconv.Unquote(lit.Value); err == nil && s != "" {
+						out[vs.Names[0].Name] = s
+					}
+				}
+			}
+		}
+	}
+	return out, nil
+}
+
 // classify proves a template for the step's ImportStateIdFunc or marks it
 // manual. A passthrough step (no func, no static id) yields the zero value.
-func classify(step ImportStep) Classification {
+// consts is the provider's "names" package, from loadNameConsts.
+func classify(step ImportStep, consts map[string]string) Classification {
 	if step.StaticID != "" {
 		return Classification{Manual: true, Snippet: `ImportStateId: ` + strconv.Quote(step.StaticID), Line: step.Line}
 	}
@@ -51,7 +102,7 @@ func classify(step ImportStep) Classification {
 		c.Manual, c.Snippet = true, exprString(step.Fset, body)
 		return c
 	}
-	tmpl, ok := templateOf(ret, receiverNames(body, fn, step))
+	tmpl, ok := templateOf(ret, receiverNames(body, fn, step), consts)
 	if !ok {
 		c.Manual, c.Snippet = true, exprString(step.Fset, body)
 		return c
@@ -218,9 +269,30 @@ func isRootModuleResources(e ast.Expr) bool {
 	return ok && inner.Sel.Name == "RootModule"
 }
 
+// attrKeyOf resolves the key of an Attributes[...] lookup: a string literal,
+// or a names.AttrFoo constant from the provider's names package.
+func attrKeyOf(e ast.Expr, consts map[string]string) (string, bool) {
+	switch v := e.(type) {
+	case *ast.BasicLit:
+		if v.Kind != token.STRING {
+			return "", false
+		}
+		s, err := strconv.Unquote(v.Value)
+		return s, err == nil && s != ""
+	case *ast.SelectorExpr:
+		pkg, ok := v.X.(*ast.Ident)
+		if !ok || pkg.Name != "names" {
+			return "", false
+		}
+		s, ok := consts[v.Sel.Name]
+		return s, ok && s != ""
+	}
+	return "", false
+}
+
 // templateOf converts a whitelisted expression into a template. ok=false
 // for any form outside the whitelist.
-func templateOf(e ast.Expr, receivers map[string]bool) (string, bool) {
+func templateOf(e ast.Expr, receivers map[string]bool, consts map[string]string) (string, bool) {
 	switch v := e.(type) {
 	case *ast.BasicLit:
 		if v.Kind != token.STRING {
@@ -229,13 +301,13 @@ func templateOf(e ast.Expr, receivers map[string]bool) (string, bool) {
 		s, err := strconv.Unquote(v.Value)
 		return s, err == nil
 	case *ast.ParenExpr:
-		return templateOf(v.X, receivers)
+		return templateOf(v.X, receivers, consts)
 	case *ast.BinaryExpr:
 		if v.Op != token.ADD {
 			return "", false
 		}
-		l, ok1 := templateOf(v.X, receivers)
-		r, ok2 := templateOf(v.Y, receivers)
+		l, ok1 := templateOf(v.X, receivers, consts)
+		r, ok2 := templateOf(v.Y, receivers, consts)
 		return l + r, ok1 && ok2
 	case *ast.SelectorExpr: // rs.Primary.ID
 		if v.Sel.Name == "ID" && isPrimaryOf(v.X, receivers) {
@@ -247,12 +319,8 @@ func templateOf(e ast.Expr, receivers map[string]bool) (string, bool) {
 		if !ok || sel.Sel.Name != "Attributes" || !isPrimaryOf(sel.X, receivers) {
 			return "", false
 		}
-		lit, ok := v.Index.(*ast.BasicLit)
-		if !ok || lit.Kind != token.STRING {
-			return "", false
-		}
-		k, err := strconv.Unquote(lit.Value)
-		if err != nil || k == "" {
+		k, ok := attrKeyOf(v.Index, consts)
+		if !ok {
 			return "", false
 		}
 		return "{" + k + "}", true
@@ -280,7 +348,7 @@ func templateOf(e ast.Expr, receivers map[string]bool) (string, bool) {
 		var b strings.Builder
 		b.WriteString(parts[0])
 		for i, arg := range v.Args[1:] {
-			t, ok := templateOf(arg, receivers)
+			t, ok := templateOf(arg, receivers, consts)
 			if !ok {
 				return "", false
 			}
