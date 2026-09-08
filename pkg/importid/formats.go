@@ -124,7 +124,7 @@ func Expand(template string, attrs map[string]interface{}, stateID string) (stri
 		name := m[1 : len(m)-1]
 		if name == "id" {
 			if stateID == "" {
-				firstErr = firstOf(firstErr, fmt.Errorf("state id is empty"))
+				firstErr = firstOf(firstErr, fmt.Errorf(`placeholder "id" has no state id`))
 			}
 			return stateID
 		}

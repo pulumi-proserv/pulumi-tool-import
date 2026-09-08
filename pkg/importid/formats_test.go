@@ -47,6 +47,10 @@ func TestExpandTemplateErrors(t *testing.T) {
 
 	_, err = Expand("{secret}", map[string]interface{}{"secret": "(sensitive)"}, "")
 	require.ErrorContains(t, err, `attribute "secret" is sensitive`)
+
+	// Like its siblings, this error names the placeholder that failed.
+	_, err = Expand("{rule}/{id}", map[string]interface{}{"rule": "r1"}, "")
+	require.ErrorContains(t, err, `placeholder "id" has no state id`)
 }
 
 func TestFormatsValidate(t *testing.T) {
