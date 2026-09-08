@@ -47,6 +47,11 @@
       "snippet": "{\n\treturn acctest.AttrImportStateIdFunc(\"aws_vpc.test\", names.AttrName)\n}",
       "evidence": "terraform-provider-aws/internal/service/acc/assign_test.go:105 testAccIndirectOtherImportStateIdFunc"
     },
+    "aws_acc_indirectshadow": {
+      "manual": true,
+      "snippet": "{\n\treturn acctest.AttrsImportStateIdFunc(resourceName, \"/\", \"group\", names.AttrName)\n}",
+      "evidence": "terraform-provider-aws/internal/service/acc/indirect_helpers_test.go:17 testAccIndirectShadowImportStateIdFunc"
+    },
     "aws_acc_otheraddr": {
       "manual": true,
       "snippet": "acctest.AttrImportStateIdFunc(\"aws_vpc.test\", names.AttrName)",

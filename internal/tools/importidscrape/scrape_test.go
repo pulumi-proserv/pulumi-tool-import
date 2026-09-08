@@ -212,6 +212,13 @@ func TestClassifyIndirectNegatives(t *testing.T) {
 	c = classify2(t, by["aws_acc_indirectforeign"])
 	assert.True(t, c.Manual)
 	assert.Empty(t, c.Template)
+
+	// The step's file imports the real internal/acctest, but the helper's
+	// file binds "acctest" to a foreign package. The semantics belong to the
+	// package the helper's file names, so this must not be trusted.
+	c = classify2(t, by["aws_acc_indirectshadow"])
+	assert.True(t, c.Manual)
+	assert.Empty(t, c.Template)
 }
 
 // Evidence must cite the file the helper is defined in. The step and the

@@ -127,3 +127,19 @@ func testAccIndirectForeignImportStateIdFunc(resourceName string) resource.Impor
 func localIDFunc(resourceName, sep string, attrs ...string) resource.ImportStateIdFunc {
 	return acctest.AttrsImportStateIdFunc(resourceName, sep, attrs...)
 }
+
+// Negative: this file imports the provider's real internal/acctest, but the
+// helper is defined in indirect_helpers_test.go, where "acctest" is bound to
+// a foreign package. The import check must follow the helper's file.
+func TestAccAcc_indirectShadow(t *testing.T) {
+	resourceName := "aws_acc_indirectshadow.test"
+	resource.ParallelTest(t, resource.TestCase{
+		Steps: []resource.TestStep{
+			{
+				ResourceName:      resourceName,
+				ImportState:       true,
+				ImportStateIdFunc: testAccIndirectShadowImportStateIdFunc(resourceName),
+			},
+		},
+	})
+}
