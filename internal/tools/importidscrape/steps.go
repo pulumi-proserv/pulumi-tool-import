@@ -49,6 +49,7 @@ type ImportStep struct {
 	IDFuncArgAddrs []string
 	StaticID       string
 	Pkg            *ast.Package
+	Syntax         *ast.File // the file File names, for its import block
 	Fset           *token.FileSet
 }
 
@@ -124,7 +125,7 @@ func stepsInFile(fset *token.FileSet, pkg *ast.Package, file *ast.File, rel stri
 			}
 			step, ok := stepFromLiteral(cl, names)
 			if ok {
-				step.File, step.Line, step.Pkg, step.Fset = rel, fset.Position(cl.Pos()).Line, pkg, fset
+				step.File, step.Line, step.Pkg, step.Syntax, step.Fset = rel, fset.Position(cl.Pos()).Line, pkg, file, fset
 				steps = append(steps, step)
 			}
 			return true

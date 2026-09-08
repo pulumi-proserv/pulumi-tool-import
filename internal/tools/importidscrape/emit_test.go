@@ -28,13 +28,20 @@ func TestBuildFormatsGolden(t *testing.T) {
 	f, sum, err := buildFormats(fixtureRoot(t), "v0.0.0-fixture", func(s string) { warnings = append(warnings, s) })
 	require.NoError(t, err)
 
-	// Templates: event target, elasticsearch domain, dynamodb table, wafv2 ip set.
-	// ManualFromTests: lambda layer perm, ec2 cross thing, iam static thing, ec2 child thing.
-	assert.Equal(t, Summary{Templates: 4, ManualFromTests: 4, ManualFromDocs: 2, SensitiveHits: 1}, sum)
+	// Templates: event target, elasticsearch domain, dynamodb table, wafv2 ip
+	// set, and the three acctest helper shapes (attr, attrs, crossattr).
+	// ManualFromTests: lambda layer perm, ec2 cross thing, iam static thing,
+	// ec2 child thing, and the four unproven acctest steps (adapter, shadow,
+	// other address, dynamic attr).
+	assert.Equal(t, Summary{Templates: 7, ManualFromTests: 8, ManualFromDocs: 2, SensitiveHits: 1}, sum)
 	assert.Len(t, warnings, 1)
 	assert.Contains(t, warnings[0], "aws_cloudwatch_event_target")
 	assert.Contains(t, warnings[0], "target_id")
 	assert.NotContains(t, f.Types, "aws_s3_bucket")
+	// CrossRegionImportStateIdFunc proves only a passthrough ID; like a step
+	// with no ImportStateIdFunc at all it must not reach the table.
+	assert.NotContains(t, f.Types, "aws_acc_cross")
+	assert.Contains(t, f.Types["aws_cloudwatch_event_target"].Evidence, "target_helpers_test.go")
 
 	out := filepath.Join(t.TempDir(), "out.json")
 	require.NoError(t, writeFormats(out, f))

@@ -75,7 +75,7 @@ func ensureCheckout(tag string) (string, error) {
 	// older sparse set has internal/service but no names/, and reusing it would
 	// silently classify every names.Attr* lookup as manual.
 	complete := true
-	for _, p := range [][]string{{"internal", "service"}, {"website", "docs", "r"}, {"names"}} {
+	for _, p := range [][]string{{"internal", "service"}, {"internal", "acctest"}, {"website", "docs", "r"}, {"names"}} {
 		if _, err := os.Stat(filepath.Join(dest, filepath.Join(p...))); err != nil {
 			complete = false
 			break
@@ -91,7 +91,10 @@ func ensureCheckout(tag string) (string, error) {
 	steps := [][]string{
 		{"git", "clone", "--quiet", "--depth", "1", "--branch", tag, "--filter=blob:none", "--sparse",
 			"https://github.com/hashicorp/terraform-provider-aws.git", dest},
-		{"git", "-C", dest, "sparse-checkout", "set", "internal/service", "website/docs/r", "names"},
+		// internal/acctest is not parsed: classify.go hard-codes the import-ID
+		// helpers' semantics. It is checked out so a reviewer can diff those
+		// against the source at the scraped tag.
+		{"git", "-C", dest, "sparse-checkout", "set", "internal/service", "internal/acctest", "website/docs/r", "names"},
 	}
 	for _, args := range steps {
 		cmd := exec.Command(args[0], args[1:]...)

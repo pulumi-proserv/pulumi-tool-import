@@ -55,6 +55,14 @@ func buildFormats(providerRoot, version string, warn func(string)) (*importid.Fo
 		if c.Template == "" && !c.Manual {
 			continue
 		}
+		// A step proving exactly "{id}" says the import ID is the state ID —
+		// the same thing a step with no ImportStateIdFunc says. It is not a
+		// divergence, so it neither creates an entry nor overrides one.
+		// ("{id}" inside a composite such as "{rest_api_id}/{id}" is a real
+		// template and is unaffected.)
+		if c.Template == "{id}" {
+			continue
+		}
 		existing, seen := f.Types[step.TFType]
 		if seen && existing.Template != "" {
 			continue
@@ -63,7 +71,7 @@ func buildFormats(providerRoot, version string, warn func(string)) (*importid.Fo
 			continue
 		}
 		e := importid.FormatEntry{
-			Evidence: fmt.Sprintf("terraform-provider-aws/%s:%d %s", step.File, evidenceLine(c, step), c.Symbol),
+			Evidence: fmt.Sprintf("terraform-provider-aws/%s:%d %s", evidenceFile(c, step), evidenceLine(c, step), c.Symbol),
 		}
 		if c.Template != "" {
 			e.Template = c.Template
@@ -109,6 +117,15 @@ func buildFormats(providerRoot, version string, warn func(string)) (*importid.Fo
 		return nil, Summary{}, err
 	}
 	return f, sum, nil
+}
+
+// evidenceFile pairs with evidenceLine: the line is the resolved helper's, so
+// the file must be the helper's too, which is often a sibling of the step's.
+func evidenceFile(c Classification, step ImportStep) string {
+	if c.File != "" {
+		return c.File
+	}
+	return step.File
 }
 
 func evidenceLine(c Classification, step ImportStep) int {

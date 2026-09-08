@@ -32,7 +32,11 @@ type Classification struct {
 	Manual   bool
 	Snippet  string
 	Symbol   string
-	Line     int
+	// File is the provider-relative path Line refers to. A helper usually
+	// lives in a sibling file of the TestStep that names it, so pairing the
+	// step's file with the helper's line cites an unrelated line.
+	File string
+	Line int
 }
 
 // loadNameConsts reads the provider's "names" package and returns its
@@ -86,16 +90,22 @@ func loadNameConsts(providerRoot string) (map[string]string, error) {
 // consts is the provider's "names" package, from loadNameConsts.
 func classify(step ImportStep, consts map[string]string) Classification {
 	if step.StaticID != "" {
-		return Classification{Manual: true, Snippet: `ImportStateId: ` + strconv.Quote(step.StaticID), Line: step.Line}
+		return Classification{Manual: true, Snippet: `ImportStateId: ` + strconv.Quote(step.StaticID), File: step.File, Line: step.Line}
 	}
 	if step.IDFuncExpr == nil {
 		return Classification{}
 	}
+	if call, ok := step.IDFuncExpr.(*ast.CallExpr); ok {
+		if tmpl, symbol, ok := acctestTemplate(call, step, consts); ok {
+			return Classification{Template: tmpl, Symbol: symbol, File: step.File, Line: step.Line}
+		}
+	}
 	fn, symbol := resolveIDFunc(step)
 	if fn == nil {
-		return Classification{Manual: true, Snippet: exprString(step.Fset, step.IDFuncExpr), Symbol: symbol, Line: step.Line}
+		return Classification{Manual: true, Snippet: exprString(step.Fset, step.IDFuncExpr), Symbol: symbol, File: step.File, Line: step.Line}
 	}
-	c := Classification{Symbol: symbol, Line: step.Fset.Position(fn.Pos()).Line}
+	pos := step.Fset.Position(fn.Pos())
+	c := Classification{Symbol: symbol, File: relToProvider(step, pos.Filename), Line: pos.Line}
 	body := closureBody(fn)
 	ret := returnedIDExpr(body)
 	if ret == nil {
@@ -109,6 +119,120 @@ func classify(step ImportStep, consts map[string]string) Classification {
 	}
 	c.Template = tmpl
 	return c
+}
+
+// relToProvider turns an absolute path from the FileSet into a
+// provider-relative, slash-separated one. The provider root is recovered from
+// the step, whose absolute and relative paths are both known; a path outside
+// that root (which cannot happen — the resolved func is in the step's own
+// package) falls back to the step's file.
+func relToProvider(step ImportStep, abs string) string {
+	stepAbs := filepath.ToSlash(step.Fset.Position(step.Syntax.Pos()).Filename)
+	root := strings.TrimSuffix(stepAbs, step.File)
+	rel := filepath.ToSlash(abs)
+	if root == "" || !strings.HasPrefix(rel, root) {
+		return step.File
+	}
+	return strings.TrimPrefix(rel, root)
+}
+
+// acctestTemplate proves a template for a call to one of the provider's own
+// import-ID helpers in internal/acctest. Their bodies live outside
+// internal/service, so the classifier never sees them; their semantics are
+// fixed at the scraped tag and mirrored in
+// testdata/provider/internal/acctest/state_id.go.
+//
+// The helpers that append "@<region>" (CrossRegion*) yield the same template
+// as their plain counterparts: the suffix is Terraform's region-override
+// syntax for the test, not part of the resource's import-ID format.
+func acctestTemplate(call *ast.CallExpr, step ImportStep, consts map[string]string) (string, string, bool) {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return "", "", false
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	if !ok || pkg.Name != "acctest" || !importsProviderAcctest(step.Syntax, pkg.Name) {
+		return "", "", false
+	}
+	// A spread (attrs...) hides the attribute names.
+	if call.Ellipsis.IsValid() {
+		return "", "", false
+	}
+	// Every helper's first argument names the resource whose state it reads.
+	// If that is not this step's own resource, the template it composes is
+	// some other resource's ID.
+	if step.Address == "" || len(step.IDFuncArgAddrs) == 0 || step.IDFuncArgAddrs[0] != step.Address {
+		return "", "", false
+	}
+	symbol := "acctest." + sel.Sel.Name
+	args := call.Args
+	switch sel.Sel.Name {
+	case "AttrImportStateIdFunc", "CrossRegionAttrImportStateIdFunc":
+		if len(args) != 2 {
+			return "", "", false
+		}
+		k, ok := attrKeyOf(args[1], consts)
+		if !ok {
+			return "", "", false
+		}
+		return "{" + k + "}", symbol, true
+	case "AttrsImportStateIdFunc":
+		if len(args) < 3 {
+			return "", "", false
+		}
+		sep, ok := stringLit(args[1])
+		if !ok {
+			return "", "", false
+		}
+		parts := make([]string, 0, len(args)-2)
+		for _, a := range args[2:] {
+			k, ok := attrKeyOf(a, consts)
+			if !ok {
+				return "", "", false
+			}
+			parts = append(parts, "{"+k+"}")
+		}
+		return strings.Join(parts, sep), symbol, true
+	case "CrossRegionImportStateIdFunc":
+		if len(args) != 1 {
+			return "", "", false
+		}
+		return "{id}", symbol, true
+	}
+	return "", "", false
+}
+
+// importsProviderAcctest reports whether name is bound, in this file, to the
+// provider's own internal/acctest package. Without the check a test that
+// imports some other package under the same name would be read with the
+// wrong semantics.
+func importsProviderAcctest(file *ast.File, name string) bool {
+	if file == nil {
+		return false
+	}
+	for _, imp := range file.Imports {
+		path, err := strconv.Unquote(imp.Path.Value)
+		if err != nil {
+			continue
+		}
+		local := path[strings.LastIndex(path, "/")+1:]
+		if imp.Name != nil {
+			local = imp.Name.Name
+		}
+		if local == name {
+			return strings.HasSuffix(path, "/internal/acctest")
+		}
+	}
+	return false
+}
+
+func stringLit(e ast.Expr) (string, bool) {
+	lit, ok := e.(*ast.BasicLit)
+	if !ok || lit.Kind != token.STRING {
+		return "", false
+	}
+	s, err := strconv.Unquote(lit.Value)
+	return s, err == nil
 }
 
 // resolveIDFunc finds the FuncDecl behind the ImportStateIdFunc value: an
