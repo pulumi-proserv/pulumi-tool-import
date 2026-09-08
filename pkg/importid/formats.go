@@ -39,6 +39,13 @@ type FormatEntry struct {
 	Evidence   string   `json:"evidence"`
 }
 
+// DocsOnly reports whether the entry is manual because the provider's
+// documentation shows a composite example and no import test was found —
+// a review candidate rather than a proven divergence.
+func (e FormatEntry) DocsOnly() bool {
+	return strings.HasPrefix(e.Evidence, "docs-only:")
+}
+
 // Formats is the import-ID composition table for one upstream provider
 // version. Absence of a type means its state ID is its import ID.
 type Formats struct {
