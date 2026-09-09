@@ -20,6 +20,13 @@ import (
 )
 
 // composeScalingPolicy composes the import ID for aws:appautoscaling/policy:Policy.
+//
+// KNOWN BUG (out of scope here, see #80): this puts the policy name first
+// (name/namespace/resource/dimension), but the provider imports by
+// service-namespace/resource-id/scalable-dimension/policy-name instead. The
+// scraped table has the correct order; see specsAgreementExceptions in
+// tf_custom_test.go for the verified reasoning. Do not "fix" this composer
+// without also updating that exception entry.
 func composeScalingPolicy(get func(Role) string, _ string) (string, error) {
 	name := get(RoleName)
 	parts := strings.Split(get(RoleScalingTargetID), "|")
