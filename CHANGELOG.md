@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `resolve tf`: import IDs for composite-keyed and alias-identified AWS types
+  are composed from a table generated from the provider source; new make
+  target `update-import-id-formats` (#70). This replaces the hand-written
+  `TranslateImportIDs` switch: composed IDs for the ~17 types it used to
+  handle can differ (two were corrected outright), and ~316 more types are
+  now covered that previously passed through unchanged. `resolve tf` gains
+  `--import-id-formats <file>` to override the embedded table, and warns when
+  the digest's pinned AWS provider is newer than the version the table was
+  generated from.
+
 ### Fixed
 
 - **`resolve cfn`: the Application Auto Scaling policy import ID is now
@@ -38,15 +50,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `resolve tf`: import IDs for composite-keyed and alias-identified AWS types
-  are composed from a table generated from the provider source; new make
-  target `update-import-id-formats` (#70). This replaces the hand-written
-  `TranslateImportIDs` switch: composed IDs for the ~17 types it used to
-  handle can differ (two were corrected outright), and ~316 more types are
-  now covered that previously passed through unchanged. `resolve tf` gains
-  `--import-id-formats <file>` to override the embedded table, and warns when
-  the digest's pinned AWS provider is newer than the version the table was
-  generated from.
 - Stack mode's `--out`: `patch-state tf --project-dir/--stack` can also write
   the state to a file, after verification passes — the file is always the
   verified artifact (#39). It carries decrypted secrets like the backup;
