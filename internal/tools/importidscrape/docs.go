@@ -24,9 +24,12 @@ import (
 )
 
 type DocEntry struct {
-	TFType    string
-	Example   string
-	Source    string
+	TFType  string
+	Example string
+	Source  string
+	// Divergent reports whether the import example looks like more than a
+	// bare state ID (multi-segment, or prose naming an attribute); see
+	// docEntryFromFile.
 	Divergent bool
 }
 

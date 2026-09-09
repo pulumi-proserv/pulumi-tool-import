@@ -28,7 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `resolve tf`: import IDs for composite-keyed and alias-identified AWS types
   are composed from a table generated from the provider source; new make
-  target `update-import-id-formats` (#70).
+  target `update-import-id-formats` (#70). This replaces the hand-written
+  `TranslateImportIDs` switch: composed IDs for the ~17 types it used to
+  handle can differ (two were corrected outright), and ~316 more types are
+  now covered that previously passed through unchanged.
 - Stack mode's `--out`: `patch-state tf --project-dir/--stack` can also write
   the state to a file, after verification passes — the file is always the
   verified artifact (#39). It carries decrypted secrets like the backup;
