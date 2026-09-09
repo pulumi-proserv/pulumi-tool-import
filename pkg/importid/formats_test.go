@@ -73,6 +73,11 @@ func TestFormatsValidate(t *testing.T) {
 		"aws_d": {Template: "{x}"},
 	}}
 	require.ErrorContains(t, bad.Validate(), "aws_d: missing evidence")
+
+	// A table for the wrong provider (or a mis-edited Provider field) must be
+	// rejected rather than silently applied to aws resources.
+	wrongProvider := &Formats{Provider: "hashicorp/azurerm", Types: map[string]FormatEntry{}}
+	require.ErrorContains(t, wrongProvider.Validate(), `unsupported provider "hashicorp/azurerm"`)
 }
 
 func TestEmbeddedTableIsValid(t *testing.T) {

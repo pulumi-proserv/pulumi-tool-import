@@ -99,6 +99,9 @@ var placeholderRe = regexp.MustCompile(`\{([^{}]*)\}`)
 
 // Validate enforces the table's invariants.
 func (f *Formats) Validate() error {
+	if f.Provider != "" && f.Provider != "hashicorp/aws" {
+		return fmt.Errorf("unsupported provider %q: only hashicorp/aws import-ID formats are supported", f.Provider)
+	}
 	for typ, e := range f.Types {
 		switch {
 		case e.Template != "" && e.Manual:
