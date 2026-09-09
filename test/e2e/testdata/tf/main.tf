@@ -39,7 +39,10 @@ locals {
 # The topology mirrors the v0.2.0 end-to-end run: a VPC with three route
 # tables, a VPN gateway whose route propagation onto each table is a resource
 # type Terraform cannot import, and a VPN connection carrying a static route
-# which likewise cannot be imported.
+# which likewise cannot be imported. It also carries six resources (igw/route,
+# sg/sgrule, subnet/assoc, stream, lg/ls, rpa) added solely to prove that
+# "resolve tf"'s COMPOSED import IDs -- not just passthrough ones -- actually
+# import; see the comment block above them.
 
 resource "aws_vpc" "main" {
   cidr_block           = "10.42.0.0/16"
@@ -330,4 +333,83 @@ output "vpn_connection_id" {
 # migrations take.
 module "certs" {
   source = "./modules/certs"
+}
+
+# ---------------------------------------------------------------------------
+# Composed import IDs. Six resources, one per composition category in
+# pkg/importid, added to prove "resolve tf" doesn't just translate the
+# passthrough case -- it composes a Pulumi import ID out of several
+# Terraform attributes, and that composed ID actually imports:
+#   - aws_route: one-of-three destination attributes joined onto the route
+#     table ID (TFCustom).
+#   - aws_security_group_rule: a list attribute (cidr_blocks) joined into the
+#     ID (TFCustom).
+#   - aws_route_table_association: a conditional choice between two possible
+#     target attributes (TFCustom).
+#   - aws_kinesis_stream: the state ID is the ARN, but the composer must
+#     import by name instead (TFCustom alias).
+#   - aws_cloudwatch_log_stream: a scraped two-field template
+#     ({log_group_name}:{id}).
+#   - aws_iam_role_policy_attachment: a scraped two-field template
+#     ({role}/{policy_arn}).
+# ---------------------------------------------------------------------------
+
+resource "aws_internet_gateway" "igw" {
+  vpc_id = aws_vpc.main.id
+  tags   = local.tags
+}
+
+resource "aws_route" "route" {
+  route_table_id         = aws_route_table.rt[0].id
+  destination_cidr_block = "0.0.0.0/0"
+  gateway_id             = aws_internet_gateway.igw.id
+}
+
+resource "aws_security_group" "sg" {
+  name   = "${local.name}-sg"
+  vpc_id = aws_vpc.main.id
+  tags   = local.tags
+}
+
+resource "aws_security_group_rule" "sgrule" {
+  type              = "ingress"
+  security_group_id = aws_security_group.sg.id
+  from_port         = 443
+  to_port           = 443
+  protocol          = "tcp"
+  cidr_blocks       = ["10.0.0.0/8", "10.1.0.0/16"]
+}
+
+resource "aws_subnet" "subnet" {
+  vpc_id     = aws_vpc.main.id
+  cidr_block = "10.42.1.0/24"
+  tags       = local.tags
+}
+
+resource "aws_route_table_association" "assoc" {
+  subnet_id      = aws_subnet.subnet.id
+  route_table_id = aws_route_table.rt[0].id
+}
+
+resource "aws_kinesis_stream" "stream" {
+  name             = "${local.name}-stream"
+  shard_count      = 1
+  retention_period = 24
+  tags             = local.tags
+}
+
+resource "aws_cloudwatch_log_group" "lg" {
+  name              = "/${local.name}/lg"
+  retention_in_days = 1
+  tags              = local.tags
+}
+
+resource "aws_cloudwatch_log_stream" "ls" {
+  name           = "${local.name}-ls"
+  log_group_name = aws_cloudwatch_log_group.lg.name
+}
+
+resource "aws_iam_role_policy_attachment" "rpa" {
+  role       = aws_iam_role.lambda.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }

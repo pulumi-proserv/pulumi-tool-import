@@ -241,6 +241,9 @@ func TestNonImportableStateInjection(t *testing.T) {
 	t.Run("CorruptDeltaFailsPreview", func(t *testing.T) {
 		testCorruptDeltaFailsPreview(t, ctx, fx)
 	})
+	t.Run("ComposedImportIDsImport", func(t *testing.T) {
+		testComposedImportIDsImport(t, ctx, fx)
+	})
 }
 
 var stackSeq int64
@@ -1621,6 +1624,84 @@ func testCorruptDeltaFailsPreview(t *testing.T, ctx context.Context, fx *fixture
 	t.Logf("confirmed the delta is load-bearing: preview failed against a corrupt delta on %s "+
 		"(%v). Every other delta assertion in this file is therefore sensitive to delta "+
 		"correctness, not merely consistent with it.", corruptedURN, previewErr)
+}
+
+// composedImportIDCases pairs the Pulumi type and logical name of each
+// resource added solely to prove that "resolve tf"'s COMPOSED import IDs
+// (not just its passthrough ones) actually import. See the comment block
+// above these resources in testdata/tf/main.tf and testdata/pulumi-ts/index.ts.
+var composedImportIDCases = []struct {
+	typ, name string
+}{
+	{"aws:ec2/route:Route", "route"},
+	{"aws:ec2/securityGroupRule:SecurityGroupRule", "sgrule"},
+	{"aws:ec2/routeTableAssociation:RouteTableAssociation", "assoc"},
+	{"aws:kinesis/stream:Stream", "stream"},
+	{"aws:cloudwatch/logStream:LogStream", "ls"},
+	{"aws:iam/rolePolicyAttachment:RolePolicyAttachment", "rpa"},
+}
+
+func testComposedImportIDsImport(t *testing.T, ctx context.Context, fx *fixture) {
+	p := provisionStack(t, ctx, fx)
+
+	ops := runPreviewJSON(t, ctx, p.pulumiDir, fx.env, p.stackName).OpsByURN()
+	for _, c := range composedImportIDCases {
+		urn := expectedURN(pulumiProject, p.stackName, c.typ, c.name)
+		op, ok := ops[urn]
+		if !ok || op == "create" {
+			t.Fatalf("%s has no step in the preview (ok=%v) or previews as %q — a composed import "+
+				"ID that failed to import, or was left unresolved, previews as \"create\"", urn, ok, op)
+		}
+		t.Logf("%s previews as %q after import", urn, op)
+		if op != "same" {
+			t.Errorf("%s previews as %q, not \"same\" — a wrong-but-accepted composed import ID "+
+				"still imports (pulumi import does not validate the ID against reality), but the "+
+				"resource then disagrees with the account; run \"pulumi preview --diff\" to see "+
+				"which attribute differs", urn, op)
+		}
+	}
+
+	digest, err := pkg.LoadDigest(p.digestPath)
+	if err != nil {
+		t.Fatalf("loading digest %s: %v", p.digestPath, err)
+	}
+	var rtbID string
+	for _, r := range digest.RootResources {
+		if r.TerraformAddress == "aws_route_table.rt[0]" {
+			rtbID = r.ImportID
+		}
+	}
+	if rtbID == "" {
+		t.Fatalf("digest has no ImportID for aws_route_table.rt[0] — cannot pin the composed route ID")
+	}
+	wantRouteID := rtbID + "_0.0.0.0/0"
+
+	data, err := os.ReadFile(p.filledImportPath)
+	if err != nil {
+		t.Fatalf("reading filled import file %s: %v", p.filledImportPath, err)
+	}
+	var importFile pkg.ImportFile
+	if err := json.Unmarshal(data, &importFile); err != nil {
+		t.Fatalf("parsing filled import file %s: %v", p.filledImportPath, err)
+	}
+	var gotRouteID string
+	found := false
+	for _, r := range importFile.Resources {
+		if r.Name == "route" {
+			gotRouteID = r.ID
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("filled import file has no entry named %q", "route")
+	}
+	if gotRouteID != wantRouteID {
+		t.Errorf("the \"route\" import entry has ID %q, want %q — this pins that composeTFRoute "+
+			"actually ran (joining the route table ID onto the destination CIDR), not merely that "+
+			"the subsequent import happened to succeed", gotRouteID, wantRouteID)
+	} else {
+		t.Logf("confirmed the composed route import ID is %q", gotRouteID)
+	}
 }
 
 var deltasAttachedRe = regexp.MustCompile(`Deltas attached \(injected\):\s+(\d+) of (\d+)`)

@@ -241,3 +241,80 @@ class Certs extends pulumi.ComponentResource {
 }
 
 const certs = new Certs("certs");
+
+// ---------------------------------------------------------------------------
+// Composed import IDs. Six resources, one per composition category in
+// pkg/importid, mirroring the block of the same name in testdata/tf/main.tf --
+// added to prove "resolve tf"'s COMPOSED import IDs actually import, not just
+// its passthrough ones:
+//   - aws.ec2.Route: one-of-three destination attributes joined onto the
+//     route table ID (TFCustom).
+//   - aws.ec2.SecurityGroupRule: a list attribute (cidrBlocks) joined into
+//     the ID (TFCustom).
+//   - aws.ec2.RouteTableAssociation: a conditional choice between two
+//     possible target attributes (TFCustom).
+//   - aws.kinesis.Stream: the state ID is the ARN, but the composer must
+//     import by name instead (TFCustom alias).
+//   - aws.cloudwatch.LogStream: a scraped two-field template.
+//   - aws.iam.RolePolicyAttachment: a scraped two-field template.
+// ---------------------------------------------------------------------------
+
+const igw = new aws.ec2.InternetGateway("igw", {
+    vpcId: main.id,
+    tags: tags,
+});
+
+const igwRoute = new aws.ec2.Route("route", {
+    routeTableId: routeTables[0].id,
+    destinationCidrBlock: "0.0.0.0/0",
+    gatewayId: igw.id,
+});
+
+const sg = new aws.ec2.SecurityGroup("sg", {
+    name: `${name}-sg`,
+    vpcId: main.id,
+    tags: tags,
+});
+
+const sgrule = new aws.ec2.SecurityGroupRule("sgrule", {
+    type: "ingress",
+    securityGroupId: sg.id,
+    fromPort: 443,
+    toPort: 443,
+    protocol: "tcp",
+    cidrBlocks: ["10.0.0.0/8", "10.1.0.0/16"],
+});
+
+const subnet = new aws.ec2.Subnet("subnet", {
+    vpcId: main.id,
+    cidrBlock: "10.42.1.0/24",
+    tags: tags,
+});
+
+const assoc = new aws.ec2.RouteTableAssociation("assoc", {
+    subnetId: subnet.id,
+    routeTableId: routeTables[0].id,
+});
+
+const stream = new aws.kinesis.Stream("stream", {
+    name: `${name}-stream`,
+    shardCount: 1,
+    retentionPeriod: 24,
+    tags: tags,
+});
+
+const lg = new aws.cloudwatch.LogGroup("lg", {
+    name: `/${name}/lg`,
+    retentionInDays: 1,
+    tags: tags,
+});
+
+const ls = new aws.cloudwatch.LogStream("ls", {
+    name: `${name}-ls`,
+    logGroupName: lg.name,
+});
+
+const rpa = new aws.iam.RolePolicyAttachment("rpa", {
+    role: lambdaRole.name,
+    policyArn: "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
+});

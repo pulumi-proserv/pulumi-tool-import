@@ -24,10 +24,12 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/iam"
 	"github.com/aws/aws-sdk-go-v2/service/iot"
+	"github.com/aws/aws-sdk-go-v2/service/kinesis"
 	"github.com/aws/aws-sdk-go-v2/service/lambda"
 	"github.com/aws/aws-sdk-go-v2/service/vpclattice"
 )
@@ -58,6 +60,8 @@ func verifyFixtureResourcesGone(t *testing.T, ctx context.Context, ids fixtureRe
 	vpcLatticeClient := vpclattice.NewFromConfig(cfg)
 	lambdaClient := lambda.NewFromConfig(cfg)
 	iamClient := iam.NewFromConfig(cfg)
+	kinesisClient := kinesis.NewFromConfig(cfg)
+	logsClient := cloudwatchlogs.NewFromConfig(cfg)
 
 	if ids.vpnConnectionID != "" {
 		checkVPNConnectionGone(t, ctx, ec2Client, ids.vpnConnectionID)
@@ -95,6 +99,15 @@ func verifyFixtureResourcesGone(t *testing.T, ctx context.Context, ids fixtureRe
 	}
 	if ids.iamRoleName != "" {
 		checkIAMRoleGone(t, ctx, iamClient, ids.iamRoleName)
+	}
+	if ids.kinesisStreamName != "" {
+		checkKinesisStreamGone(t, ctx, kinesisClient, ids.kinesisStreamName)
+	}
+	if ids.logGroupName != "" {
+		checkLogGroupGone(t, ctx, logsClient, ids.logGroupName)
+	}
+	if ids.rpaRoleName != "" && ids.rpaPolicyArn != "" {
+		checkRolePolicyAttachmentGone(t, ctx, iamClient, ids.rpaRoleName, ids.rpaPolicyArn)
 	}
 
 	checkNoTaggedVPCsRemain(t, ctx, ec2Client, runID)
@@ -219,6 +232,59 @@ func checkIAMRoleGone(t *testing.T, ctx context.Context, c *iam.Client, name str
 	}
 	if !isNotFoundErr(err) {
 		t.Errorf("verifying IAM role %s is gone: %v", name, err)
+	}
+}
+
+func checkKinesisStreamGone(t *testing.T, ctx context.Context, c *kinesis.Client, name string) {
+	t.Helper()
+	_, err := c.DescribeStreamSummary(ctx, &kinesis.DescribeStreamSummaryInput{StreamName: aws.String(name)})
+	if err == nil {
+		t.Errorf("ORPHANED: Kinesis stream %s still exists in AWS after teardown — delete it by hand", name)
+		return
+	}
+	if !isNotFoundErr(err) {
+		t.Errorf("verifying Kinesis stream %s is gone: %v", name, err)
+	}
+}
+
+func checkLogGroupGone(t *testing.T, ctx context.Context, c *cloudwatchlogs.Client, name string) {
+	t.Helper()
+	out, err := c.DescribeLogGroups(ctx, &cloudwatchlogs.DescribeLogGroupsInput{
+		LogGroupNamePrefix: aws.String(name),
+	})
+	if err != nil {
+		if isNotFoundErr(err) {
+			return
+		}
+		t.Errorf("verifying CloudWatch log group %s is gone: %v", name, err)
+		return
+	}
+	for _, lg := range out.LogGroups {
+		if aws.ToString(lg.LogGroupName) == name {
+			t.Errorf("ORPHANED: CloudWatch log group %s still exists in AWS after teardown — "+
+				"delete it by hand", name)
+			return
+		}
+	}
+}
+
+func checkRolePolicyAttachmentGone(t *testing.T, ctx context.Context, c *iam.Client, role, policyArn string) {
+	t.Helper()
+	out, err := c.ListAttachedRolePolicies(ctx, &iam.ListAttachedRolePoliciesInput{RoleName: aws.String(role)})
+	if err != nil {
+		if isNotFoundErr(err) {
+			// The role itself is gone, so the attachment cannot have survived it.
+			return
+		}
+		t.Errorf("verifying IAM role policy attachment %s/%s is gone: %v", role, policyArn, err)
+		return
+	}
+	for _, p := range out.AttachedPolicies {
+		if aws.ToString(p.PolicyArn) == policyArn {
+			t.Errorf("ORPHANED: IAM role policy attachment %s/%s still exists in AWS after "+
+				"teardown — delete it by hand", role, policyArn)
+			return
+		}
 	}
 }
 
