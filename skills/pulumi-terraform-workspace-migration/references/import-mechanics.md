@@ -82,9 +82,15 @@ high. Common causes of a low rate:
 - **Unsupported import-ID format.** When an import fails with "resource does not
   exist", first treat it as a *wrong ID format*, not a missing resource: check
   the type's documented format (`pulumi package get-schema aws`, the `## Import`
-  section). If the built-in translation doesn't cover the type, add it to
-  `TranslateImportIDs` in the tool, or set the ID via a resource mapping. The
-  same message also appears when the type has no importer at all — see below.
+  section). Composition is table-driven: the embedded
+  `pkg/importid/aws-import-id-formats.json` (generated from the provider's own
+  acceptance tests via `make update-import-id-formats`) covers most divergent
+  types automatically, and `resolve tf` prints the documented form for types it
+  leaves manual. A conditional shape (the ID depends on another attribute, not
+  just concatenation) needs a `TFCustom` composer in `pkg/importid/tf_custom.go`
+  instead of a table entry. If neither covers the type, set the ID via a
+  resource mapping. The same message also appears when the type has no importer
+  at all — see below.
 - **Non-importable types.** Some Terraform resource types declare no importer,
   so no ID can ever import them; the attempt fails with the same misleading
   "resource '<id>' does not exist". `digest tf` detects these by asking the

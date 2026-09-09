@@ -26,7 +26,7 @@ func composeScalingPolicy(get func(Role) string, _ string) (string, error) {
 	if name == "" || len(parts) != 3 {
 		return "", fmt.Errorf("scaling policy needs name + 3-part target id")
 	}
-	return name + "/" + parts[2] + "/" + parts[0] + "/" + parts[1], nil
+	return parts[2] + "/" + parts[0] + "/" + parts[1] + "/" + name, nil
 }
 
 // composeScalableTarget composes the import ID for aws:appautoscaling/target:Target.

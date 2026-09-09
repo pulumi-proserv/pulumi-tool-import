@@ -1,0 +1,64 @@
+// Copyright 2016-2026, Pulumi Corporation.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestBuildFormatsGolden(t *testing.T) {
+	var warnings []string
+	f, sum, err := buildFormats(fixtureRoot(t), "v0.0.0-fixture", func(s string) { warnings = append(warnings, s) })
+	require.NoError(t, err)
+
+	// Templates: event target, elasticsearch domain, dynamodb table, wafv2 ip
+	// set, the three acctest helper shapes (attr, attrs, crossattr), and the
+	// two indirect shapes (assigned local, helper returning an acctest call).
+	// ManualFromTests: lambda layer perm, ec2 cross thing, iam static thing,
+	// ec2 child thing, the four unproven acctest steps (adapter, shadow, other
+	// address, dynamic attr), the three indirect negatives (two bindings, other
+	// address, foreign call, cross-file shadowed acctest), the unreadable
+	// ImportStateId thing, and the two "%s@%s"/"%s#%s" negatives that are not
+	// the recognized region-override shape (wrong identifier, wrong separator).
+	assert.Equal(t, Summary{Templates: 9, ManualFromTests: 15, ManualFromDocs: 2, SensitiveHits: 1}, sum)
+	assert.Len(t, warnings, 1)
+	assert.Contains(t, warnings[0], "aws_cloudwatch_event_target")
+	assert.Contains(t, warnings[0], "target_id")
+	// Both types have a divergent docs example, and both have an import step
+	// proving passthrough — aws_s3_bucket by having no ImportStateIdFunc,
+	// aws_acc_cross by CrossRegionImportStateIdFunc composing exactly "{id}".
+	// A docs-only entry for either would contradict the provider's own test.
+	assert.NotContains(t, f.Types, "aws_s3_bucket")
+	assert.NotContains(t, f.Types, "aws_acc_cross")
+	assert.Contains(t, f.Types["aws_cloudwatch_event_target"].Evidence, "target_helpers_test.go")
+
+	out := filepath.Join(t.TempDir(), "out.json")
+	require.NoError(t, writeFormats(out, f))
+	got, err := os.ReadFile(out)
+	require.NoError(t, err)
+
+	goldenPath := "testdata/golden.json"
+	if os.Getenv("UPDATE_GOLDEN") != "" {
+		require.NoError(t, os.WriteFile(goldenPath, got, 0o644))
+	}
+	want, err := os.ReadFile(goldenPath)
+	require.NoError(t, err)
+	assert.Equal(t, string(want), string(got))
+}

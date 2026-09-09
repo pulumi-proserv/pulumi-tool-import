@@ -20,16 +20,25 @@ make build      # compile the CLI to ./bin
 make test       # run the Go test suite
 make lint       # run golangci-lint
 make fmt        # gofmt the tree
-make check      # fmt-check + vet + lint (fast local gate)
+make check      # fmt-check + vet + lint + import-id-formats-check (local gate)
 ```
+
+`make check` also regenerates the AWS import-ID table from the Terraform
+provider source and fails on any difference from the committed
+`pkg/importid/aws-import-id-formats.json`. The first run sparse-clones
+terraform-provider-aws (network, one to two minutes); later runs reuse the
+checkout cached under your OS cache directory
+(`~/Library/Caches/pulumi-tool-import/` on macOS). If the table is stale, run
+`make update-import-id-formats` and commit the result.
 
 ## Tests
 
 The suite mixes fast unit tests with heavier integration tests that download and
 bridge real Pulumi providers and warm up OpenTofu. Those integration tests need
 network access and a Pulumi access token, and some skip themselves when the
-required infrastructure or credentials are absent. `make lint` and `make check`
-need neither, so run those for a quick local signal.
+required infrastructure or credentials are absent. `make lint` needs neither,
+so run it for a quick local signal; `make check` needs network on its first run
+for the provider clone described above, but no credentials.
 
 ## Pull requests
 

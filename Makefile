@@ -7,16 +7,21 @@
 #   make lint      - run golangci-lint
 #   make fmt       - format the tree (gofmt)
 #   make tidy      - go mod tidy
-#   make check     - fmt-check + vet + lint (what CI enforces, minus the integration tests)
-#                    vet and lint each also cover the "e2e"-tagged build, which is
-#                    otherwise invisible to every target and CI job.
+#   make check     - fmt-check + vet + lint + import-id-formats-check (what CI
+#                    enforces, minus the integration tests). vet and lint each
+#                    also cover the "e2e"-tagged build, which is otherwise
+#                    invisible to every target and CI job.
+#   make update-import-id-formats - regenerate the import-ID composition table
+#                    from terraform-provider-aws (needs network)
+#   make import-id-formats-check  - fail if that table is stale (needs network)
 
 GO      ?= go
 BINARY  ?= pulumi-tool-import
 PKG     ?= ./...
 E2E_TIMEOUT ?= 40m
 
-.PHONY: all build test test-e2e lint lint-e2e fmt fmt-check vet vet-e2e tidy check clean
+.PHONY: all build test test-e2e lint lint-e2e fmt fmt-check vet vet-e2e tidy check clean \
+	update-import-id-formats import-id-formats-check
 
 all: build
 
@@ -101,7 +106,27 @@ vet-e2e:
 tidy:
 	$(GO) mod tidy
 
-check: fmt-check vet lint
+# Regenerates the import-ID composition table from terraform-provider-aws at
+# the version the providermap recommends. The diff is the review surface: a
+# type gaining or losing an entry, or a template changing, is a provider
+# behaviour change that "resolve tf" must follow.
+update-import-id-formats:
+	$(GO) run ./internal/tools/importidscrape \
+	    --provider-version $$($(GO) run ./internal/tools/providermapversion aws) \
+	    --out pkg/importid/aws-import-id-formats.json
+
+# Fails when the committed table is not what the scraper produces at the
+# version providermapversion reports — the same source update-import-id-formats
+# uses, and the version the table records, which TestEmbeddedTableMatchesProvidermap
+# keeps in step. Needs network for the first sparse clone.
+import-id-formats-check:
+	@tmp=$$(mktemp) && trap 'rm -f "$$tmp"' EXIT && \
+	ver=$$($(GO) run ./internal/tools/providermapversion aws) && \
+	$(GO) run ./internal/tools/importidscrape --provider-version $$ver --out $$tmp && \
+	if ! diff -u pkg/importid/aws-import-id-formats.json $$tmp; then \
+	    echo "pkg/importid/aws-import-id-formats.json is stale; run: make update-import-id-formats"; exit 1; fi
+
+check: fmt-check vet lint import-id-formats-check
 
 clean:
 	rm -rf bin dist
