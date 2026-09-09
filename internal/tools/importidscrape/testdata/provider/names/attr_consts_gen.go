@@ -3,8 +3,9 @@
 package names
 
 const (
-	AttrARN    = "arn"
-	AttrName   = "name"
-	AttrScope  = "scope"
-	AttrBucket = "bucket"
+	AttrARN     = "arn"
+	AttrName    = "name"
+	AttrScope   = "scope"
+	AttrBucket  = "bucket"
+	AttrRoleARN = "role_arn"
 )
