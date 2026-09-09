@@ -18,9 +18,9 @@ import "testing"
 
 func TestCustomComposers(t *testing.T) {
 	t.Parallel()
-	// ScalingPolicy: ScalingTargetId "a|b|c" + PolicyName "cpu" -> cpu/c/a/b
+	// ScalingPolicy: ScalingTargetId "svc|rid|dim" + PolicyName "cpu" -> dim/svc/rid/cpu
 	got, err := composeScalingPolicy(role(map[Role]string{RoleName: "cpu", RoleScalingTargetID: "svc|rid|dim"}), "classic")
-	must(t, got, err, "cpu/dim/svc/rid")
+	must(t, got, err, "dim/svc/rid/cpu")
 
 	// ScalableTarget: Id "a|b|c" -> c/a/b
 	got, err = composeScalableTarget(role(map[Role]string{RoleScalingTargetID: "svc|rid|dim"}), "classic")

@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`resolve cfn`: the Application Auto Scaling policy import ID is now
+  `namespace/resource/dimension/name`**, the order the provider imports; it
+  was previously name-first and failed to import.
 - **`patch-state` silently ignored the digest for most fields.** The
   Pulumi→Terraform field-name mapping came only from a small hand-curated
   table; any fields-file entry outside it skipped the digest lookup and fell

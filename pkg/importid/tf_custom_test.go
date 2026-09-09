@@ -188,14 +188,7 @@ var specsAgreementExceptions = map[string]string{
 	// disagreement — see #80 for unifying the two vocabularies.
 	"aws_appautoscaling_target": "Specs' Custom composer splits the CFN ScalingTargetId and yields the same {service_namespace}/{resource_id}/{scalable_dimension}",
 
-	// KNOWN BUG in the CFN path, not in the table: composeScalingPolicy emits
-	// name/namespace/resource/dimension, but the provider imports by
-	// service-namespace/resource-id/scalable-dimension/policy-name
-	// (website/docs/r/appautoscaling_policy.html.markdown, and
-	// testAccPolicyImportStateIdFunc joins the attributes in that order).
-	// The scraped template is the correct one. Fixing custom.go is out of
-	// scope for the import-ID table work; tracked for the CFN path.
-	"aws_appautoscaling_policy": "Specs' Custom composer puts the policy name first, which the provider's docs and import test contradict; the table is right and the CFN composer is a known bug",
+	"aws_appautoscaling_policy": "Specs is Custom only to split CFN's pipe-joined ScalingTargetId; yields the same {service_namespace}/{resource_id}/{scalable_dimension}/{name} as the scraped template — not a disagreement",
 
 	// Absent from the table because the provider's own SetId already produces
 	// exactly what Specs composes, so in Terraform these are passthrough. The
