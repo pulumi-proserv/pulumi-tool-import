@@ -26,11 +26,17 @@ func TestFormatsVersionWarning(t *testing.T) {
 	formats := &importid.Formats{Provider: "hashicorp/aws", Version: "v6.38.0"}
 
 	// Digest pinned to a Pulumi version whose upstream is older or equal: quiet.
-	older := &pkg.ModuleMap{Providers: map[string]string{"registry.terraform.io/hashicorp/aws": "v7.24.0"}}
+	// digest.Providers holds "<identifier>@<version>" for a statically bridged
+	// provider (pkg.ResolvedPulumi), not a bare version.
+	older := &pkg.ModuleMap{Providers: map[string]string{"registry.terraform.io/hashicorp/aws": "aws@v7.24.0"}}
 	assert.Equal(t, "", formatsVersionWarning(older, formats))
 
 	// No aws provider at all: quiet.
 	assert.Equal(t, "", formatsVersionWarning(&pkg.ModuleMap{}, formats))
+
+	// A dynamic pin (no static "aws@" identifier): quiet, never looked up.
+	dyn := &pkg.ModuleMap{Providers: map[string]string{"registry.terraform.io/hashicorp/aws": "dynamic@1.2.3"}}
+	assert.Equal(t, "", formatsVersionWarning(dyn, formats))
 
 	// Table older than the digest's upstream: warn, naming both and the make target.
 	stale := &importid.Formats{Provider: "hashicorp/aws", Version: "v6.0.0"}

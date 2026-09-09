@@ -36,7 +36,15 @@ func formatsVersionWarning(digest *pkg.ModuleMap, formats *importid.Formats) str
 	if !ok {
 		return ""
 	}
-	upstream, ok := providermap.GetUpstreamVersion(providermap.TerraformProviderName(awsAddr), pin)
+	// digest.Providers[addr] is ResolvedPulumi: "<identifier>@<version>" for a
+	// statically bridged provider, "dynamic" or "dynamic@<tfVersion>"
+	// otherwise. Only the "aws@<version>" form names a version we can compare
+	// against the embedded table.
+	identifier, version, found := strings.Cut(pin, "@")
+	if !found || identifier != "aws" {
+		return ""
+	}
+	upstream, ok := providermap.GetUpstreamVersion(providermap.TerraformProviderName(awsAddr), version)
 	if !ok {
 		return ""
 	}
