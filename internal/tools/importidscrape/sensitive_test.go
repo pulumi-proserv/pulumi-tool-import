@@ -18,11 +18,22 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSensitiveAttrs(t *testing.T) {
 	root := fixtureRoot(t)
-	assert.Equal(t, []string{"target_id"}, sensitiveAttrs(root, "aws_cloudwatch_event_target", "{event_bus_name}/{rule}/{target_id}"))
-	assert.Nil(t, sensitiveAttrs(root, "aws_cloudwatch_event_target", "{rule}"))
-	assert.Nil(t, sensitiveAttrs(root, "aws_no_such_type", "{x}"))
+	consts, err := loadNameConsts(root)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"target_id"},
+		sensitiveAttrs(root, "aws_cloudwatch_event_target", "{event_bus_name}/{rule}/{target_id}", consts))
+	assert.Nil(t, sensitiveAttrs(root, "aws_cloudwatch_event_target", "{rule}", consts))
+	assert.Nil(t, sensitiveAttrs(root, "aws_no_such_type", "{x}", consts))
+
+	// The schema key is spelled names.AttrRoleARN, not a string literal —
+	// this must resolve through the same consts table classify.go's
+	// attrKeyOf uses, not just literal keys.
+	assert.Equal(t, []string{"role_arn"},
+		sensitiveAttrs(root, "aws_cloudwatch_event_target", "{role_arn}", consts))
 }

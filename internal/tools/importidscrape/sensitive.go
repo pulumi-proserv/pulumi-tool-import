@@ -21,7 +21,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 )
 
@@ -31,8 +30,10 @@ var placeholderRe = regexp.MustCompile(`\{([^{}]+)\}`)
 // @FrameworkResource annotation and reports which template placeholders it
 // marks Sensitive. Both SDKv2 (`"k": {... Sensitive: true}`) and Framework
 // (`"k": schema.StringAttribute{... Sensitive: true}`) shapes are keyed
-// string literals whose value literal contains a `Sensitive: true` field.
-func sensitiveAttrs(providerRoot, tfType, template string) []string {
+// either by a string literal or by a names.AttrFoo constant (resolved
+// through consts, the same table classify.go's attrKeyOf uses) whose value
+// literal contains a `Sensitive: true` field.
+func sensitiveAttrs(providerRoot, tfType, template string, consts map[string]string) []string {
 	file := findSchemaFile(providerRoot, tfType)
 	if file == nil {
 		return nil
@@ -43,11 +44,10 @@ func sensitiveAttrs(providerRoot, tfType, template string) []string {
 		if !ok {
 			return true
 		}
-		lit, ok := kv.Key.(*ast.BasicLit)
-		if !ok || lit.Kind != token.STRING {
+		key, ok := attrKeyOf(kv.Key, consts)
+		if !ok {
 			return true
 		}
-		key, _ := strconv.Unquote(lit.Value)
 		if cl, ok := kv.Value.(*ast.CompositeLit); ok && hasSensitiveTrue(cl) {
 			sensitive[key] = true
 		}

@@ -24,6 +24,8 @@ import (
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/importid"
 )
 
+// Summary tallies buildFormats' output by how each entry's evidence was
+// classified; see the loop at the end of buildFormats.
 type Summary struct {
 	Templates, ManualFromTests, ManualFromDocs, SensitiveHits int
 }
@@ -91,7 +93,7 @@ func buildFormats(providerRoot, version string, warn func(string)) (*importid.Fo
 		}
 		if c.Template != "" {
 			e.Template = c.Template
-			if s := sensitiveAttrs(providerRoot, step.TFType, c.Template); len(s) > 0 {
+			if s := sensitiveAttrs(providerRoot, step.TFType, c.Template, consts); len(s) > 0 {
 				e.Sensitive = s
 				sum.SensitiveHits++
 				warn(fmt.Sprintf("%s: template %q reads Sensitive attribute(s) %s", step.TFType, c.Template, strings.Join(s, ", ")))
