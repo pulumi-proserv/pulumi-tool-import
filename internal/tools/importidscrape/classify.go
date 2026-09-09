@@ -666,6 +666,21 @@ func templateOf(e ast.Expr, receivers map[string]bool, consts map[string]string)
 		if err != nil {
 			return "", false
 		}
+		// fmt.Sprintf("%s@%s", <id-expr>, region) is Terraform's
+		// <id>@<region> region-override syntax applied locally by a test
+		// helper — the same semantics acctestTemplate already gives
+		// CrossRegionImportStateIdFunc: the "@region" suffix selects which
+		// provider alias performs the import, it is not part of the
+		// resource's import-ID format. Only this exact shape — the literal
+		// format string "%s@%s" and a second argument that is the
+		// identifier "region" — is recognized; any other identifier or
+		// separator falls through to the general case below (and, if
+		// unproven, to manual).
+		if f == "%s@%s" && len(v.Args) == 3 {
+			if id, ok := v.Args[2].(*ast.Ident); ok && id.Name == "region" {
+				return templateOf(v.Args[1], receivers, consts)
+			}
+		}
 		parts := strings.Split(f, "%s")
 		if len(parts)-1 != len(v.Args)-1 || strings.Contains(strings.Join(parts, ""), "%") {
 			return "", false

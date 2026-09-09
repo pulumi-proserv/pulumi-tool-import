@@ -34,9 +34,10 @@ func TestBuildFormatsGolden(t *testing.T) {
 	// ManualFromTests: lambda layer perm, ec2 cross thing, iam static thing,
 	// ec2 child thing, the four unproven acctest steps (adapter, shadow, other
 	// address, dynamic attr), the three indirect negatives (two bindings, other
-	// address, foreign call, cross-file shadowed acctest), and the unreadable
-	// ImportStateId thing.
-	assert.Equal(t, Summary{Templates: 9, ManualFromTests: 13, ManualFromDocs: 2, SensitiveHits: 1}, sum)
+	// address, foreign call, cross-file shadowed acctest), the unreadable
+	// ImportStateId thing, and the two "%s@%s"/"%s#%s" negatives that are not
+	// the recognized region-override shape (wrong identifier, wrong separator).
+	assert.Equal(t, Summary{Templates: 9, ManualFromTests: 15, ManualFromDocs: 2, SensitiveHits: 1}, sum)
 	assert.Len(t, warnings, 1)
 	assert.Contains(t, warnings[0], "aws_cloudwatch_event_target")
 	assert.Contains(t, warnings[0], "target_id")

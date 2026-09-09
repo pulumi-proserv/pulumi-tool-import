@@ -12,6 +12,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`resolve cfn`: the Application Auto Scaling policy import ID is now
   `namespace/resource/dimension/name`**, the order the provider imports; it
   was previously name-first and failed to import.
+- **`resolve tf` printed a "compose by hand" note for `aws_vpc`,
+  `aws_vpc_peering_connection_accepter`, and `aws_appfabric_app_bundle`**
+  even though all three are plain passthrough IDs. A local test helper's
+  `fmt.Sprintf("%s@%s", id, region)` — Terraform's own `<id>@<region>`
+  region-override syntax, applied locally instead of via the provider's
+  `acctest.CrossRegionImportStateIdFunc` — made the scraper's classifier
+  treat the type as manual. The scraper now recognizes that exact shape and
+  drops the `@region` suffix, the same way it already handles the acctest
+  helper.
 - **`patch-state` silently ignored the digest for most fields.** The
   Pulumi→Terraform field-name mapping came only from a small hand-curated
   table; any fields-file entry outside it skipped the digest lookup and fell
