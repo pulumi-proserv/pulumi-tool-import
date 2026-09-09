@@ -80,3 +80,22 @@ jobs:
         with:
           go-version-file: go.mod
           repo-checkout: false
+
+  import-id-formats-check:
+    name: import-id-formats-check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # Guards against pkg/importid/aws-import-id-formats.json drifting from
+      # the terraform-provider-aws version providermap pins: without this the
+      # embedded import-ID composition table can silently go stale with
+      # nothing to catch it. Needs network egress — it does a sparse clone of
+      # the provider's acceptance tests (~1-2 min).
+      - name: import-id-formats-check
+        run: make import-id-formats-check
