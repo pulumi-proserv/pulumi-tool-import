@@ -249,3 +249,25 @@ func TestClassifyUnreadableStaticIDIsManual(t *testing.T) {
 	assert.Empty(t, c.Template)
 	assert.Equal(t, "ImportStateId: rName", c.Snippet)
 }
+
+// fmt.Sprintf("%s@%s", <id-expr>, region) is Terraform's local
+// region-override syntax applied to a plain passthrough ID — the same
+// semantics as acctest.CrossRegionImportStateIdFunc. Only the exact shape
+// (literal "%s@%s", second arg named "region") is recognized.
+func TestClassifyRegionOverrideSuffix(t *testing.T) {
+	by := stepsByType(t)
+
+	c := classify2(t, by["aws_ec2_regionthing"])
+	assert.Equal(t, "{id}", c.Template)
+	assert.False(t, c.Manual)
+
+	// Second argument is not named "region".
+	c = classify2(t, by["aws_ec2_regionthing_other"])
+	assert.True(t, c.Manual)
+	assert.Empty(t, c.Template)
+
+	// Different separator ("%s#%s") even with a "region" argument.
+	c = classify2(t, by["aws_ec2_regionthing_hash"])
+	assert.True(t, c.Manual)
+	assert.Empty(t, c.Template)
+}

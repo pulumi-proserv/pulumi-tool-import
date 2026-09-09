@@ -97,6 +97,16 @@
       "snippet": "{\n\trs := s.RootModule().Resources[\"aws_ec2_cross_thing.test\"]\n\tother := s.RootModule().Resources[\"aws_vpc.test\"]\n\treturn other.Primary.ID + \"/\" + rs.Primary.ID, nil\n}",
       "evidence": "terraform-provider-aws/internal/service/ec2/cross_test.go:18 crossID"
     },
+    "aws_ec2_regionthing_hash": {
+      "manual": true,
+      "snippet": "{\n\trs := s.RootModule().Resources[resourceName]\n\treturn fmt.Sprintf(\"%s#%s\", rs.Primary.ID, region), nil\n}",
+      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_region_test.go:74 testAccRegionThingHashImportStateIdFunc"
+    },
+    "aws_ec2_regionthing_other": {
+      "manual": true,
+      "snippet": "{\n\trs := s.RootModule().Resources[resourceName]\n\treturn fmt.Sprintf(\"%s@%s\", rs.Primary.ID, other), nil\n}",
+      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_region_test.go:52 testAccRegionThingOtherImportStateIdFunc"
+    },
     "aws_elasticsearch_domain": {
       "template": "{domain_name}/{id}",
       "docs": "terraform import aws_elasticsearch_domain.example domain_name",

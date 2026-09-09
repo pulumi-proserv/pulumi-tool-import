@@ -166,13 +166,6 @@
       "docsSource": "terraform-provider-aws/website/docs/r/appautoscaling_target.html.markdown",
       "evidence": "terraform-provider-aws/internal/service/appautoscaling/target_test.go:866 testAccTargetImportStateIdFunc"
     },
-    "aws_appfabric_app_bundle": {
-      "manual": true,
-      "snippet": "{\n\trs, ok := s.RootModule().Resources[n]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"Not found: %s\", n)\n\t}\n\n\treturn fmt.Sprintf(\"%s@%s\", rs.Primary.Attributes[names.AttrID], region), nil\n}",
-      "docs": "terraform import aws_appfabric_app_bundle.example arn:aws:appfabric:[region]:[account]:appbundle/ee5587b4-5765-4288-a202-xxxxxxxxxx",
-      "docsSource": "terraform-provider-aws/website/docs/r/appfabric_app_bundle.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/appfabric/app_bundle_test.go:655 testAccAppBundleRegionImportStateIDFunc"
-    },
     "aws_appmesh_gateway_route": {
       "template": "{mesh_name}/{virtual_gateway_name}/{name}",
       "docs": "terraform import aws_appmesh_gateway_route.example mesh/gw1/example-gateway-route",
@@ -1783,13 +1776,6 @@
       "docsSource": "terraform-provider-aws/website/docs/r/volume_attachment.html.markdown",
       "evidence": "terraform-provider-aws/internal/service/ec2/ebs_volume_attachment_test.go:405 testAccVolumeAttachmentImportStateIDFunc"
     },
-    "aws_vpc": {
-      "manual": true,
-      "snippet": "{\n\trs, ok := s.RootModule().Resources[n]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"Not found: %s\", n)\n\t}\n\n\treturn fmt.Sprintf(\"%s@%s\", rs.Primary.Attributes[names.AttrID], region), nil\n}",
-      "docs": "terraform import aws_vpc.example vpc-a01106c2",
-      "docsSource": "terraform-provider-aws/website/docs/r/vpc.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_test.go:1253 testAccVPCRegionImportStateIDFunc"
-    },
     "aws_vpc_dhcp_options_association": {
       "template": "{vpc_id}",
       "docs": "terraform import aws_vpc_dhcp_options_association.example vpc-0f001273ec18911b1",
@@ -1833,13 +1819,6 @@
       "docs": "terraform import aws_vpc_ipv6_cidr_block_association.example vpc-cidr-assoc-0754129087e149dcd",
       "docsSource": "terraform-provider-aws/website/docs/r/vpc_ipv6_cidr_block_association.html.markdown",
       "evidence": "terraform-provider-aws/internal/service/ec2/vpc_ipv6_cidr_block_association_test.go:128 "
-    },
-    "aws_vpc_peering_connection_accepter": {
-      "manual": true,
-      "snippet": "{\n\trs, ok := s.RootModule().Resources[n]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"Not found: %s\", n)\n\t}\n\n\treturn fmt.Sprintf(\"%s@%s\", rs.Primary.Attributes[names.AttrID], region), nil\n}",
-      "docs": "terraform import aws_vpc_peering_connection_accepter.example pcx-12345678",
-      "docsSource": "terraform-provider-aws/website/docs/r/vpc_peering_connection_accepter.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_peering_connection_accepter_test.go:237 testAccVPCPeeringConnectionAccepterImportStateIDFunc"
     },
     "aws_vpc_route_server": {
       "template": "{route_server_id}",
