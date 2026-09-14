@@ -1633,7 +1633,7 @@ func testCorruptDeltaFailsPreview(t *testing.T, ctx context.Context, fx *fixture
 var composedImportIDCases = []struct {
 	typ, name string
 }{
-	{"aws:ec2/route:Route", "route"},
+	{"aws:ec2/route:Route", "igw_route"},
 	{"aws:ec2/securityGroupRule:SecurityGroupRule", "sgrule"},
 	{"aws:ec2/routeTableAssociation:RouteTableAssociation", "assoc"},
 	{"aws:kinesis/stream:Stream", "stream"},
@@ -1687,16 +1687,16 @@ func testComposedImportIDsImport(t *testing.T, ctx context.Context, fx *fixture)
 	var gotRouteID string
 	found := false
 	for _, r := range importFile.Resources {
-		if r.Name == "route" {
+		if r.Name == "igw_route" && r.Type == "aws:ec2/route:Route" {
 			gotRouteID = r.ID
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("filled import file has no entry named %q", "route")
+		t.Fatalf("filled import file has no entry named %q", "igw_route")
 	}
 	if gotRouteID != wantRouteID {
-		t.Errorf("the \"route\" import entry has ID %q, want %q — this pins that composeTFRoute "+
+		t.Errorf("the \"igw_route\" import entry has ID %q, want %q — this pins that composeTFRoute "+
 			"actually ran (joining the route table ID onto the destination CIDR), not merely that "+
 			"the subsequent import happened to succeed", gotRouteID, wantRouteID)
 	} else {

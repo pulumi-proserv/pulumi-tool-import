@@ -359,7 +359,7 @@ resource "aws_internet_gateway" "igw" {
   tags   = local.tags
 }
 
-resource "aws_route" "route" {
+resource "aws_route" "igw_route" {
   route_table_id         = aws_route_table.rt[0].id
   destination_cidr_block = "0.0.0.0/0"
   gateway_id             = aws_internet_gateway.igw.id

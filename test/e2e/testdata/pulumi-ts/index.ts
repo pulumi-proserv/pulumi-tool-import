@@ -264,7 +264,7 @@ const igw = new aws.ec2.InternetGateway("igw", {
     tags: tags,
 });
 
-const igwRoute = new aws.ec2.Route("route", {
+const igwRoute = new aws.ec2.Route("igw_route", {
     routeTableId: routeTables[0].id,
     destinationCidrBlock: "0.0.0.0/0",
     gatewayId: igw.id,
