@@ -1644,6 +1644,35 @@ var composedImportIDCases = []struct {
 	{"aws:iam/rolePolicyAttachment:RolePolicyAttachment", "rpa"},
 }
 
+// logComposedImportDiff re-runs the preview with --diff and logs the block
+// for the given resource's URN, so a CI run that shows a composed import ID
+// previewing as something other than "same" also shows which property
+// differs, rather than leaving the controller to guess.
+func logComposedImportDiff(t *testing.T, ctx context.Context, p *provisioned, fx *fixture, typ, name string) {
+	t.Helper()
+
+	out, _ := runPulumiAllowFail(t, ctx, p.pulumiDir, fx.env,
+		"preview", "--diff", "--stack", p.stackName)
+
+	lines := strings.Split(out, "\n")
+	start := -1
+	for i, line := range lines {
+		if strings.Contains(line, typ) && strings.Contains(line, name) {
+			start = i
+			break
+		}
+	}
+	if start == -1 {
+		t.Logf("could not find a diff block for %s %s in \"pulumi preview --diff\" output:\n%s", typ, name, out)
+		return
+	}
+	end := start
+	for end < len(lines) && strings.TrimSpace(lines[end]) != "" {
+		end++
+	}
+	t.Logf("diff for %s %s:\n%s", typ, name, strings.Join(lines[start:end], "\n"))
+}
+
 func testComposedImportIDsImport(t *testing.T, ctx context.Context, fx *fixture) {
 	p := provisionStack(t, ctx, fx)
 
@@ -1657,6 +1686,7 @@ func testComposedImportIDsImport(t *testing.T, ctx context.Context, fx *fixture)
 		}
 		t.Logf("%s previews as %q after import", urn, op)
 		if op != "same" {
+			logComposedImportDiff(t, ctx, p, fx, c.typ, c.name)
 			t.Errorf("%s previews as %q, not \"same\" — a wrong-but-accepted composed import ID "+
 				"still imports (pulumi import does not validate the ID against reality), but the "+
 				"resource then disagrees with the account; run \"pulumi preview --diff\" to see "+
