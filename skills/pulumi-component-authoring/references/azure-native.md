@@ -209,7 +209,10 @@ optional arg on the component and say so in its doc comment.
   and add `dependsOn` from routes to origins. Profile deletion takes 10 to 30
   minutes.
 - vWAN hub creation takes 5 to 30 minutes. Do not put one in a smoke test
-  unless the test budget allows it.
+  unless the test budget allows it. If a run is cancelled mid-create, the hub
+  can exist in Azure without being in state; `destroy` then fails on the
+  Virtual WAN with `InUseVirtualWanCannotBeDeleted`. Delete the hub with
+  `az network vhub delete` and destroy again.
 - Front Door Premium Private Link origins create a private endpoint
   connection on the origin that the origin owner must approve. The connection
   name is generated, so approval needs discovery at deploy time (a
