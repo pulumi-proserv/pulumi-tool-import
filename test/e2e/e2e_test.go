@@ -306,12 +306,15 @@ func provisionStackWith(t *testing.T, ctx context.Context, fx *fixture, secretsP
 	runPulumi(t, ctx, pulumiDir, fx.env, "preview",
 		"--stack", stackName, "--import-file", importSkeletonPath)
 
+	// Every resource is paired through testdata/mappings.yaml, the way the
+	// migration skill has agents work; nothing here relies on resolve's
+	// name-based fallback (#83 removes it).
 	filledImportPath := filepath.Join(t.TempDir(), "filled-import.json")
 	runTool(t, ctx, fx.binPath, fx.repoRoot, fx.env, "resolve", "tf",
 		"--digest", digestPath,
 		"--import-file", importSkeletonPath,
 		"--out", filledImportPath,
-		"--map", "module.certs=certs",
+		"--mapping-file", filepath.Join(fx.repoRoot, "test", "e2e", "testdata", "mappings.yaml"),
 	)
 
 	sidecarPath := nonImportableSidecarPath(filledImportPath)
@@ -682,9 +685,9 @@ func testComponentParent(t *testing.T, ctx context.Context, fx *fixture) {
 	}
 	if parented == nil {
 		t.Fatalf("the sidecar has no %q entry — the module's certificate was not matched. "+
-			"Check that \"resolve tf\" was given --map module.certs=certs: without it the "+
-			"module's resources and the component's children are never joined "+
-			"(pkg/import_filler.go:198)", parentedCertName)
+			"Check testdata/mappings.yaml still maps module.certs.aws_iot_certificate.inmodule "+
+			"to %q: without that line the module's certificate is never paired",
+			parentedCertName, parentedCertName)
 	}
 	urn := sidecarURN(p.stackName, *parented)
 
