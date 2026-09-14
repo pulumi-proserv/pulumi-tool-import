@@ -21,6 +21,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The import-support prober restarts a crashed provider instead of
+  abandoning it for the rest of a digest** (#84, evidence for #68). Live
+  digests reliably crash the AWS provider on `aws_kinesis_stream`'s import
+  probe ("Plugin did not respond"); previously the prober fell back to the
+  curated non-importable list for every type probed afterward, so an
+  uncovered type like `aws_iot_policy_attachment` came back `Unknown` — read
+  as importable — and landed in the import file instead of the injection
+  sidecar. The prober now discards and reloads the provider after a crash,
+  retrying up to 3 times before giving up on it for good. `module_map.go`
+  also now warns once per resource when import support is `Unknown`, since an
+  unresolved verdict silently stays in the import file.
 - **`resolve cfn`: the Application Auto Scaling policy import ID is now
   `namespace/resource/dimension/name`**, the order the provider imports; it
   was previously name-first and failed to import.
