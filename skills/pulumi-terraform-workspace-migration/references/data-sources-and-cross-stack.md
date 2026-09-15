@@ -36,6 +36,12 @@ Provider functions need `{ parent: this }` inside a component — see the
 | `null_resource` as a dependency trigger | Remove it — Pulumi models dependencies natively via `dependsOn` |
 | A provider with no native Pulumi package | Check the [Pulumi Registry](https://www.pulumi.com/registry/) and [Pulumiverse](https://github.com/pulumiverse) first. Only if neither has it, use the [dynamically bridged provider](https://www.pulumi.com/registry/packages/terraform-provider/): `pulumi package add terraform-provider <provider-source>` |
 
+**Note on the code samples below:** they're shown in TypeScript. The same
+`@pulumi/pulumiservice` / `@pulumi/terraform` / `pulumi.StackReference` APIs
+exist in every Pulumi SDK — translate idiomatically for the target language
+(see the **pulumi-terraform-workspace-migration** skill's "Choose a target
+language" section).
+
 ## Replacing `data.terraform_remote_state`
 
 **Preferred — the ESC `terraform-state` provider.** Define an ESC environment (as
@@ -103,6 +109,19 @@ Once the upstream workspace is itself migrated, use a `StackReference`:
 ```typescript
 const networkStack = new pulumi.StackReference("<org>/<project>/<stack>");
 const certificateArn = networkStack.getOutput("certificateArn");
+```
+
+```python
+network_stack = pulumi.StackReference("<org>/<project>/<stack>")
+certificate_arn = network_stack.get_output("certificateArn")
+```
+
+```go
+networkStack, err := pulumi.NewStackReference(ctx, "<org>/<project>/<stack>", nil)
+if err != nil {
+    return err
+}
+certificateArn := networkStack.GetOutput(pulumi.String("certificateArn"))
 ```
 
 Migrate in dependency order so downstream stacks can switch from ESC-mediated TF
