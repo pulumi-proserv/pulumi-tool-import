@@ -241,6 +241,9 @@ func TestNonImportableStateInjection(t *testing.T) {
 	t.Run("CorruptDeltaFailsPreview", func(t *testing.T) {
 		testCorruptDeltaFailsPreview(t, ctx, fx)
 	})
+	t.Run("ComposedImportIDsImport", func(t *testing.T) {
+		testComposedImportIDsImport(t, ctx, fx)
+	})
 }
 
 var stackSeq int64
@@ -303,12 +306,15 @@ func provisionStackWith(t *testing.T, ctx context.Context, fx *fixture, secretsP
 	runPulumi(t, ctx, pulumiDir, fx.env, "preview",
 		"--stack", stackName, "--import-file", importSkeletonPath)
 
+	// Every resource is paired through testdata/mappings.yaml, the way the
+	// migration skill has agents work; nothing here relies on resolve's
+	// name-based fallback (#83 removes it).
 	filledImportPath := filepath.Join(t.TempDir(), "filled-import.json")
 	runTool(t, ctx, fx.binPath, fx.repoRoot, fx.env, "resolve", "tf",
 		"--digest", digestPath,
 		"--import-file", importSkeletonPath,
 		"--out", filledImportPath,
-		"--map", "module.certs=certs",
+		"--mapping-file", filepath.Join(fx.repoRoot, "test", "e2e", "testdata", "mappings.yaml"),
 	)
 
 	sidecarPath := nonImportableSidecarPath(filledImportPath)
@@ -679,9 +685,9 @@ func testComponentParent(t *testing.T, ctx context.Context, fx *fixture) {
 	}
 	if parented == nil {
 		t.Fatalf("the sidecar has no %q entry — the module's certificate was not matched. "+
-			"Check that \"resolve tf\" was given --map module.certs=certs: without it the "+
-			"module's resources and the component's children are never joined "+
-			"(pkg/import_filler.go:198)", parentedCertName)
+			"Check testdata/mappings.yaml still maps module.certs.aws_iot_certificate.inmodule "+
+			"to %q: without that line the module's certificate is never paired",
+			parentedCertName, parentedCertName)
 	}
 	urn := sidecarURN(p.stackName, *parented)
 
@@ -1621,6 +1627,114 @@ func testCorruptDeltaFailsPreview(t *testing.T, ctx context.Context, fx *fixture
 	t.Logf("confirmed the delta is load-bearing: preview failed against a corrupt delta on %s "+
 		"(%v). Every other delta assertion in this file is therefore sensitive to delta "+
 		"correctness, not merely consistent with it.", corruptedURN, previewErr)
+}
+
+// composedImportIDCases pairs the Pulumi type and logical name of each
+// resource added solely to prove that "resolve tf"'s COMPOSED import IDs
+// (not just its passthrough ones) actually import. See the comment block
+// above these resources in testdata/tf/main.tf and testdata/pulumi-ts/index.ts.
+var composedImportIDCases = []struct {
+	typ, name string
+}{
+	{"aws:ec2/route:Route", "igw_route"},
+	{"aws:ec2/securityGroupRule:SecurityGroupRule", "sgrule"},
+	{"aws:ec2/routeTableAssociation:RouteTableAssociation", "assoc"},
+	{"aws:kinesis/stream:Stream", "stream"},
+	{"aws:cloudwatch/logStream:LogStream", "ls"},
+	{"aws:iam/rolePolicyAttachment:RolePolicyAttachment", "rpa"},
+}
+
+// logComposedImportDiff re-runs the preview with --diff and logs the block
+// for the given resource's URN, so a CI run that shows a composed import ID
+// previewing as something other than "same" also shows which property
+// differs, rather than leaving the controller to guess.
+func logComposedImportDiff(t *testing.T, ctx context.Context, p *provisioned, fx *fixture, typ, name string) {
+	t.Helper()
+
+	out, _ := runPulumiAllowFail(t, ctx, p.pulumiDir, fx.env,
+		"preview", "--diff", "--stack", p.stackName)
+
+	lines := strings.Split(out, "\n")
+	start := -1
+	for i, line := range lines {
+		if strings.Contains(line, typ) && strings.Contains(line, name) {
+			start = i
+			break
+		}
+	}
+	if start == -1 {
+		t.Logf("could not find a diff block for %s %s in \"pulumi preview --diff\" output:\n%s", typ, name, out)
+		return
+	}
+	end := start
+	for end < len(lines) && strings.TrimSpace(lines[end]) != "" {
+		end++
+	}
+	t.Logf("diff for %s %s:\n%s", typ, name, strings.Join(lines[start:end], "\n"))
+}
+
+func testComposedImportIDsImport(t *testing.T, ctx context.Context, fx *fixture) {
+	p := provisionStack(t, ctx, fx)
+
+	ops := runPreviewJSON(t, ctx, p.pulumiDir, fx.env, p.stackName).OpsByURN()
+	for _, c := range composedImportIDCases {
+		urn := expectedURN(pulumiProject, p.stackName, c.typ, c.name)
+		op, ok := ops[urn]
+		if !ok || op == "create" {
+			t.Fatalf("%s has no step in the preview (ok=%v) or previews as %q — a composed import "+
+				"ID that failed to import, or was left unresolved, previews as \"create\"", urn, ok, op)
+		}
+		t.Logf("%s previews as %q after import", urn, op)
+		if op != "same" {
+			logComposedImportDiff(t, ctx, p, fx, c.typ, c.name)
+			t.Errorf("%s previews as %q, not \"same\" — a wrong-but-accepted composed import ID "+
+				"still imports (pulumi import does not validate the ID against reality), but the "+
+				"resource then disagrees with the account; run \"pulumi preview --diff\" to see "+
+				"which attribute differs", urn, op)
+		}
+	}
+
+	digest, err := pkg.LoadDigest(p.digestPath)
+	if err != nil {
+		t.Fatalf("loading digest %s: %v", p.digestPath, err)
+	}
+	var rtbID string
+	for _, r := range digest.RootResources {
+		if r.TerraformAddress == "aws_route_table.rt[0]" {
+			rtbID = r.ImportID
+		}
+	}
+	if rtbID == "" {
+		t.Fatalf("digest has no ImportID for aws_route_table.rt[0] — cannot pin the composed route ID")
+	}
+	wantRouteID := rtbID + "_0.0.0.0/0"
+
+	data, err := os.ReadFile(p.filledImportPath)
+	if err != nil {
+		t.Fatalf("reading filled import file %s: %v", p.filledImportPath, err)
+	}
+	var importFile pkg.ImportFile
+	if err := json.Unmarshal(data, &importFile); err != nil {
+		t.Fatalf("parsing filled import file %s: %v", p.filledImportPath, err)
+	}
+	var gotRouteID string
+	found := false
+	for _, r := range importFile.Resources {
+		if r.Name == "igw_route" && r.Type == "aws:ec2/route:Route" {
+			gotRouteID = r.ID
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("filled import file has no entry named %q", "igw_route")
+	}
+	if gotRouteID != wantRouteID {
+		t.Errorf("the \"igw_route\" import entry has ID %q, want %q — this pins that composeTFRoute "+
+			"actually ran (joining the route table ID onto the destination CIDR), not merely that "+
+			"the subsequent import happened to succeed", gotRouteID, wantRouteID)
+	} else {
+		t.Logf("confirmed the composed route import ID is %q", gotRouteID)
+	}
 }
 
 var deltasAttachedRe = regexp.MustCompile(`Deltas attached \(injected\):\s+(\d+) of (\d+)`)
