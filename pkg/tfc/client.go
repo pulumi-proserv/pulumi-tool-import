@@ -17,6 +17,7 @@ package tfc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -226,8 +227,7 @@ func (c *Client) discoverAll(ctx context.Context, httpClient *http.Client, baseU
 
 	for _, key := range []string{"tfe.v2", "state.v2"} {
 		if prefix, ok := discovery[key]; ok {
-			prefix = strings.TrimRight(prefix, "/")
-			result.apiPrefix = baseURL + "/" + strings.TrimLeft(prefix, "/")
+			result.apiPrefix = resolveServicePrefix(baseURL, prefix)
 			break
 		}
 	}
@@ -238,11 +238,104 @@ func (c *Client) discoverAll(ctx context.Context, httpClient *http.Client, baseU
 
 	// Check for Scalr-native IACP v3 API.
 	if prefix, ok := discovery["iacp.v3"]; ok {
-		prefix = strings.TrimRight(prefix, "/")
-		result.iacpPrefix = baseURL + "/" + strings.TrimLeft(prefix, "/")
+		result.iacpPrefix = resolveServicePrefix(baseURL, prefix)
 	}
 
 	return result, nil
+}
+
+// resolveServicePrefix turns a service-discovery value into an absolute API
+// prefix without a trailing slash. The remote service discovery protocol
+// allows either form: Terraform Cloud and Scalr publish host-relative paths
+// ("/api/v2/"), Pulumi Cloud publishes absolute URLs
+// ("https://tf.pulumi.com/api/v2"). Joining an absolute URL onto the base
+// produced "https://host/https://host/api/v2", which the server redirected
+// and then answered 404 — reported to the user as "workspace not found".
+func resolveServicePrefix(baseURL, prefix string) string {
+	prefix = strings.TrimRight(prefix, "/")
+	if strings.HasPrefix(prefix, "http://") || strings.HasPrefix(prefix, "https://") {
+		return prefix
+	}
+	return baseURL + "/" + strings.TrimLeft(prefix, "/")
+}
+
+// HTTPError is a non-200 response from the backend. Its message names the
+// request and the status so a 401, a 404, and an unimplemented route are
+// distinguishable, and carries the server's own message when the body has
+// one (Pulumi Cloud answers {"code","message"}, TFC answers JSON:API errors).
+type HTTPError struct {
+	Method     string
+	URL        string
+	StatusCode int
+	Status     string
+	Message    string
+}
+
+func (e *HTTPError) Error() string {
+	msg := fmt.Sprintf("%s %s → %s", e.Method, e.URL, e.Status)
+	if e.Message != "" {
+		msg += ": " + e.Message
+	}
+	return msg
+}
+
+// newHTTPError reads (and consumes) the response body looking for a server
+// message. Bodies larger than a few KB are not error messages and are dropped.
+func newHTTPError(req *http.Request, resp *http.Response) *HTTPError {
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	return &HTTPError{
+		Method:     req.Method,
+		URL:        req.URL.String(),
+		StatusCode: resp.StatusCode,
+		Status:     resp.Status,
+		Message:    serverMessage(body),
+	}
+}
+
+// serverMessage extracts a human-readable message from an error body.
+func serverMessage(body []byte) string {
+	var pulumiShape struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(body, &pulumiShape); err == nil && pulumiShape.Message != "" {
+		return pulumiShape.Message
+	}
+	var jsonAPIShape struct {
+		Errors []struct {
+			Title  string `json:"title"`
+			Detail string `json:"detail"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(body, &jsonAPIShape); err == nil && len(jsonAPIShape.Errors) > 0 {
+		e := jsonAPIShape.Errors[0]
+		if e.Detail != "" {
+			return e.Detail
+		}
+		return e.Title
+	}
+	text := strings.TrimSpace(string(body))
+	if text == "" || strings.HasPrefix(text, "<") {
+		return ""
+	}
+	if i := strings.IndexByte(text, '\n'); i >= 0 {
+		text = text[:i]
+	}
+	return text
+}
+
+// workspaceNameHint explains Pulumi Cloud's workspace naming rule when a
+// lookup on tf.pulumi.com used a name the server would never accept. The
+// backend stores each workspace as a Pulumi stack and rejects any other form
+// at creation time with `workspace name must be of the form "project_stack"`,
+// so a slash or dash in the name is a sure sign of the wrong spelling.
+func workspaceNameHint(hostname, workspace string) string {
+	if !strings.Contains(hostname, "tf.pulumi.com") {
+		return ""
+	}
+	if strings.Contains(workspace, "_") && !strings.ContainsAny(workspace, "/") {
+		return ""
+	}
+	return "Pulumi Cloud workspace names take the form <project>_<stack> (the cloud { workspaces { name } } value), not <project>/<stack>"
 }
 
 func (c *Client) doJSON(ctx context.Context, httpClient *http.Client, url string, target interface{}) (*http.Response, error) {
@@ -255,17 +348,16 @@ func (c *Client) doJSON(ctx context.Context, httpClient *http.Client, url string
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s %s: %w", req.Method, url, err)
 	}
+	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
-		return resp, fmt.Errorf("unexpected response from %s: %d", url, resp.StatusCode)
+		return resp, newHTTPError(req, resp)
 	}
 
-	defer resp.Body.Close()
 	if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
-		return resp, fmt.Errorf("unexpected response from %s: invalid JSON", url)
+		return resp, fmt.Errorf("%s %s → %s: response is not valid JSON", req.Method, url, resp.Status)
 	}
 	return resp, nil
 }
@@ -282,10 +374,14 @@ func (c *Client) getWorkspaceID(ctx context.Context, httpClient *http.Client, ap
 	resp, err := c.doJSON(ctx, httpClient, url, &result)
 	if err != nil {
 		if resp != nil && resp.StatusCode == http.StatusUnauthorized {
-			return "", fmt.Errorf("authentication failed for %s", c.Hostname)
+			return "", fmt.Errorf("authentication failed for %s (%w)", c.Hostname, err)
 		}
 		if resp != nil && resp.StatusCode == http.StatusNotFound {
-			return "", fmt.Errorf("workspace %s/%s not found on %s", org, workspace, c.Hostname)
+			msg := fmt.Sprintf("workspace %s/%s not found on %s (%v)", org, workspace, c.Hostname, err)
+			if hint := workspaceNameHint(c.Hostname, workspace); hint != "" {
+				msg += "; " + hint
+			}
+			return "", errors.New(msg)
 		}
 		return "", fmt.Errorf("looking up workspace %s/%s: %w", org, workspace, err)
 	}
@@ -311,7 +407,7 @@ func (c *Client) getStateDownloadURL(ctx context.Context, httpClient *http.Clien
 	resp, err := c.doJSON(ctx, httpClient, url, &result)
 	if err != nil {
 		if resp != nil && resp.StatusCode == http.StatusNotFound {
-			return "", fmt.Errorf("no state found for workspace %s", workspaceID)
+			return "", fmt.Errorf("no state found for workspace %s (%w)", workspaceID, err)
 		}
 		return "", fmt.Errorf("getting state version for workspace %s: %w", workspaceID, err)
 	}
@@ -338,7 +434,7 @@ func (c *Client) downloadState(ctx context.Context, httpClient *http.Client, dow
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("downloading state: status %d", resp.StatusCode)
+		return nil, fmt.Errorf("downloading state: %w", newHTTPError(req, resp))
 	}
 
 	return io.ReadAll(resp.Body)

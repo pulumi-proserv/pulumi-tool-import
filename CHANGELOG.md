@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`digest tf` could not pull state from Pulumi Cloud's Terraform backend.**
+  `tf.pulumi.com` publishes absolute URLs in its service-discovery document;
+  the client joined them onto the hostname, producing a mangled path whose
+  redirect surfaced as `workspace not found` while `terraform state pull`
+  succeeded with the same token. Discovery now accepts absolute or relative
+  prefixes. HTTP failures name the request, status, and server message
+  (`GET https://… → 401 Unauthorized: …`) instead of one identical error for
+  a 401, a 404, and an unimplemented route, and a lookup on `tf.pulumi.com`
+  with a `project/stack` or `project-stack` name explains the `project_stack`
+  form the backend requires. Both Pulumi Cloud and Terraform Cloud are now
+  verified live, and fake servers matching each host's observed response
+  shapes cover the exchange in tests (#65).
 - **`patch-state` silently ignored the digest for most fields.** The
   Pulumi→Terraform field-name mapping came only from a small hand-curated
   table; any fields-file entry outside it skipped the digest lookup and fell

@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -248,4 +249,280 @@ func TestStatePull_WorkspaceNotFound(t *testing.T) {
 	_, err := client.StatePull(context.Background(), "myorg", "nonexistent")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
+}
+
+// newMockPulumiCloudServer mimics Pulumi Cloud's Terraform backend
+// (tf.pulumi.com) as observed live on 2026-09-15: the discovery document
+// carries absolute URLs, the hosted-state download URL lives under the API
+// prefix, workspace names must be project_stack, error bodies are
+// {"code","message"} rather than JSON:API errors, and the variables route
+// is not implemented (plain-text 404).
+func newMockPulumiCloudServer(t *testing.T, org, workspace, workspaceID string, stateBody []byte) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	mux.HandleFunc("/.well-known/terraform.json", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"modules.v1": server.URL + "/v1/modules/",
+			"state.v2":   server.URL + "/api/v2",
+			"tfe.v2":     server.URL + "/api/v2",
+			"tfe.v2.1":   server.URL + "/api/v2",
+			"tfe.v2.2":   server.URL + "/api/v2",
+		})
+	})
+
+	authorized := func(w http.ResponseWriter, r *http.Request) bool {
+		if r.Header.Get("Authorization") != "Bearer test-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			fmt.Fprint(w, `{"code":401,"message":"Unauthorized: No credentials provided or are invalid."}`)
+			return false
+		}
+		return true
+	}
+
+	mux.HandleFunc("/api/v2/organizations/"+org+"/workspaces/", func(w http.ResponseWriter, r *http.Request) {
+		if !authorized(w, r) {
+			return
+		}
+		name := strings.TrimPrefix(r.URL.Path, "/api/v2/organizations/"+org+"/workspaces/")
+		if name != workspace {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprintf(w, `{"code":404,"message":"Not Found: workspace '%s' not found"}`, name)
+			return
+		}
+		w.Header().Set("Content-Type", "application/vnd.api+json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": map[string]interface{}{
+				"id":         workspaceID,
+				"type":       "workspaces",
+				"attributes": map[string]interface{}{"name": workspace},
+			},
+		})
+	})
+
+	mux.HandleFunc("/api/v2/workspaces/"+workspaceID+"/current-state-version", func(w http.ResponseWriter, r *http.Request) {
+		if !authorized(w, r) {
+			return
+		}
+		w.Header().Set("Content-Type", "application/vnd.api+json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": map[string]interface{}{
+				"type": "state-versions",
+				"id":   "sv-1",
+				"attributes": map[string]interface{}{
+					"hosted-state-download-url":      server.URL + "/api/v2/workspaces/" + workspaceID + "/state-versions/sv-1",
+					"hosted-json-state-download-url": "",
+				},
+			},
+		})
+	})
+
+	mux.HandleFunc("/api/v2/workspaces/"+workspaceID+"/state-versions/sv-1", func(w http.ResponseWriter, r *http.Request) {
+		if !authorized(w, r) {
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(stateBody)
+	})
+
+	mux.HandleFunc("/api/v2/workspaces/"+workspaceID+"/vars", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "404 page not found", http.StatusNotFound)
+	})
+
+	return server
+}
+
+func TestStatePull_PulumiCloud_AbsoluteDiscoveryURLs(t *testing.T) {
+	t.Parallel()
+
+	fakeState := []byte(`{"version":4,"terraform_version":"1.11.14","serial":1,"lineage":"abc","outputs":{},"resources":[]}`)
+	server := newMockPulumiCloudServer(t, "myorg", "myproject_dev", "0d6a4f6e-1111-4222-8333-444455556666", fakeState)
+
+	client := &Client{Hostname: server.URL, Token: "test-token"}
+	data, err := client.StatePull(context.Background(), "myorg", "myproject_dev")
+	require.NoError(t, err)
+	assert.Equal(t, fakeState, data)
+}
+
+func TestListVariables_PulumiCloud_RouteNotImplemented(t *testing.T) {
+	t.Parallel()
+
+	server := newMockPulumiCloudServer(t, "myorg", "myproject_dev", "ws-1", nil)
+
+	client := &Client{Hostname: server.URL, Token: "test-token"}
+	_, err := client.ListVariables(context.Background(), "myorg", "myproject_dev")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "GET "+server.URL+"/api/v2/workspaces/ws-1/vars")
+	assert.Contains(t, err.Error(), "404 Not Found")
+}
+
+func TestStatePull_WorkspaceNotFound_NamesRequestAndStatus(t *testing.T) {
+	t.Parallel()
+
+	server := newMockPulumiCloudServer(t, "myorg", "myproject_dev", "ws-1", nil)
+
+	client := &Client{Hostname: server.URL, Token: "test-token"}
+	_, err := client.StatePull(context.Background(), "myorg", "myproject-dev")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "workspace myorg/myproject-dev not found")
+	assert.Contains(t, err.Error(), "GET "+server.URL+"/api/v2/organizations/myorg/workspaces/myproject-dev")
+	assert.Contains(t, err.Error(), "404 Not Found")
+	assert.Contains(t, err.Error(), "workspace 'myproject-dev' not found", "server message is surfaced")
+}
+
+func TestStatePull_Unauthorized_NamesRequestAndStatus(t *testing.T) {
+	t.Parallel()
+
+	server := newMockPulumiCloudServer(t, "myorg", "myproject_dev", "ws-1", nil)
+
+	client := &Client{Hostname: server.URL, Token: "wrong-token"}
+	_, err := client.StatePull(context.Background(), "myorg", "myproject_dev")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "authentication failed")
+	assert.Contains(t, err.Error(), "401 Unauthorized")
+	assert.Contains(t, err.Error(), "GET "+server.URL+"/api/v2/organizations/myorg/workspaces/myproject_dev")
+}
+
+func TestWorkspaceNameHint(t *testing.T) {
+	t.Parallel()
+
+	assert.Contains(t, workspaceNameHint("tf.pulumi.com", "myproject/dev"), "<project>_<stack>")
+	assert.Contains(t, workspaceNameHint("https://tf.pulumi.com", "myproject-dev"), "<project>_<stack>")
+	assert.Empty(t, workspaceNameHint("tf.pulumi.com", "myproject_dev"), "already in the required form")
+	assert.Empty(t, workspaceNameHint("app.terraform.io", "myproject/dev"))
+}
+
+// newMockTerraformCloudServer mimics Terraform Cloud (app.terraform.io) as
+// observed live on 2026-09-15: host-relative discovery paths, a hosted-state
+// download URL outside the tfe.v2 prefix (/api/state-versions/{id}/hosted_state),
+// JSON:API error bodies with only status and title, and a paginated vars route.
+func newMockTerraformCloudServer(t *testing.T, org, workspace, workspaceID string, stateBody []byte) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	mux.HandleFunc("/.well-known/terraform.json", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"modules.v1":   "/api/registry/v1/modules/",
+			"providers.v1": "/api/registry/v1/providers/",
+			"state.v2":     "/api/v2/",
+			"tfe.v2":       "/api/v2/",
+			"tfe.v2.1":     "/api/v2/",
+			"tfe.v2.2":     "/api/v2/",
+			"versions.v1":  "https://checkpoint-api.hashicorp.com/v1/versions/",
+		})
+	})
+
+	jsonAPIError := func(w http.ResponseWriter, status int, title string) {
+		w.Header().Set("Content-Type", "application/vnd.api+json")
+		w.WriteHeader(status)
+		fmt.Fprintf(w, `{"errors":[{"status":"%d","title":"%s"}]}`, status, title)
+	}
+	authorized := func(w http.ResponseWriter, r *http.Request) bool {
+		if r.Header.Get("Authorization") != "Bearer test-token" {
+			jsonAPIError(w, http.StatusUnauthorized, "unauthorized")
+			return false
+		}
+		return true
+	}
+
+	mux.HandleFunc("/api/v2/organizations/"+org+"/workspaces/", func(w http.ResponseWriter, r *http.Request) {
+		if !authorized(w, r) {
+			return
+		}
+		if strings.TrimPrefix(r.URL.Path, "/api/v2/organizations/"+org+"/workspaces/") != workspace {
+			jsonAPIError(w, http.StatusNotFound, "not found")
+			return
+		}
+		w.Header().Set("Content-Type", "application/vnd.api+json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": map[string]interface{}{"id": workspaceID, "type": "workspaces"},
+		})
+	})
+
+	mux.HandleFunc("/api/v2/workspaces/"+workspaceID+"/current-state-version", func(w http.ResponseWriter, r *http.Request) {
+		if !authorized(w, r) {
+			return
+		}
+		w.Header().Set("Content-Type", "application/vnd.api+json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": map[string]interface{}{
+				"type": "state-versions",
+				"id":   "sv-1",
+				"attributes": map[string]interface{}{
+					"hosted-state-download-url":      server.URL + "/api/state-versions/sv-1/hosted_state",
+					"hosted-json-state-download-url": server.URL + "/api/state-versions/sv-1/hosted_json_state",
+					"serial":                         1,
+					"status":                         "finalized",
+				},
+			},
+		})
+	})
+
+	mux.HandleFunc("/api/state-versions/sv-1/hosted_state", func(w http.ResponseWriter, r *http.Request) {
+		if !authorized(w, r) {
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(stateBody)
+	})
+
+	mux.HandleFunc("/api/v2/workspaces/"+workspaceID+"/vars", func(w http.ResponseWriter, r *http.Request) {
+		if !authorized(w, r) {
+			return
+		}
+		w.Header().Set("Content-Type", "application/vnd.api+json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": []map[string]interface{}{{
+				"id":   "var-1",
+				"type": "vars",
+				"attributes": map[string]interface{}{
+					"key": "greeting", "value": "from-tfc", "sensitive": false, "category": "terraform", "hcl": false,
+				},
+			}},
+			"meta": map[string]interface{}{"pagination": map[string]interface{}{
+				"current-page": 1, "next-page": nil, "prev-page": nil, "total-pages": 1, "total-count": 1,
+			}},
+		})
+	})
+
+	return server
+}
+
+func TestStatePull_TerraformCloud(t *testing.T) {
+	t.Parallel()
+
+	fakeState := []byte(`{"version":4,"terraform_version":"1.14.3","serial":1,"lineage":"abc","outputs":{},"resources":[]}`)
+	server := newMockTerraformCloudServer(t, "myorg", "myworkspace", "ws-abc123", fakeState)
+
+	client := &Client{Hostname: server.URL, Token: "test-token"}
+	data, err := client.StatePull(context.Background(), "myorg", "myworkspace")
+	require.NoError(t, err)
+	assert.Equal(t, fakeState, data)
+
+	vars, err := client.ListVariables(context.Background(), "myorg", "myworkspace")
+	require.NoError(t, err)
+	assert.Equal(t, []WorkspaceVariable{{Key: "greeting", Value: "from-tfc", Category: "terraform"}}, vars)
+}
+
+func TestStatePull_TerraformCloud_JSONAPIErrorTitle(t *testing.T) {
+	t.Parallel()
+
+	server := newMockTerraformCloudServer(t, "myorg", "myworkspace", "ws-1", nil)
+
+	client := &Client{Hostname: server.URL, Token: "test-token"}
+	_, err := client.StatePull(context.Background(), "myorg", "nope")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "→ 404 Not Found: not found")
+	assert.NotContains(t, err.Error(), "<project>_<stack>", "naming hint is Pulumi Cloud only")
+
+	client = &Client{Hostname: server.URL, Token: "bad"}
+	_, err = client.StatePull(context.Background(), "myorg", "myworkspace")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "→ 401 Unauthorized: unauthorized")
 }
