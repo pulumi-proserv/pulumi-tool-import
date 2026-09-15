@@ -51,6 +51,12 @@ test:
 # The test skips cleanly when credentials are absent, always destroys what it
 # creates, and logs the account it is using. Choosing the right account is
 # yours to get right.
+#
+# The same target also runs TestRemoteStateTerraformCloud, which reads (never
+# writes) a fixture workspace on Terraform Cloud and needs TFC_TOKEN set to a
+# token that can read it; it skips itself otherwise. To run only that test:
+#
+#   TFC_TOKEN=... go test -count=1 -tags e2e ./test/e2e/ -run TestRemoteStateTerraformCloud -v
 test-e2e:
 	# -count=1 defeats the test cache. Without it, a second invocation with an
 	# unchanged tree replays the previous run's stored output and prints

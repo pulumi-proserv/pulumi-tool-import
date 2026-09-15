@@ -117,6 +117,10 @@ jobs:
         # which would skip t.Cleanup's tofu destroy.
         env:
           E2E_TIMEOUT: 30m
+          # Read-only token for the Terraform Cloud fixture workspace that
+          # TestRemoteStateTerraformCloud pulls state from (see
+          # test/e2e/testdata/tfc-remote/main.tf). The test skips when unset.
+          TFC_TOKEN: ${{ secrets.TFC_TOKEN }}
         run: make test-e2e
 
       # A failed or cancelled run can leave real AWS resources behind with
