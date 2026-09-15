@@ -379,7 +379,7 @@ func TestEveryFixtureResourceIsAccountedForByTheOrphanSweep(t *testing.T) {
 		"aws_kms_alias.secrets":                         "deleted with its key, which is itself unobservable per above",
 
 		"aws_internet_gateway.igw":          "attached to the VPC; the tag scan reports the VPC, and an IGW cannot outlive it",
-		"aws_route.route":                   "a route on a route table inside the VPC, checked via the VPC tag scan",
+		"aws_route.igw_route":               "a route on a route table inside the VPC, checked via the VPC tag scan",
 		"aws_security_group.sg":             "inside the VPC; the tag scan reports the VPC, and a security group cannot outlive it",
 		"aws_security_group_rule.sgrule":    "a rule on the security group, which is covered by the VPC tag scan",
 		"aws_subnet.subnet":                 "inside the VPC; the tag scan reports the VPC, and a subnet cannot outlive it",
