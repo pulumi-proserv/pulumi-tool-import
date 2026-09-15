@@ -270,8 +270,13 @@ const igwRoute = new aws.ec2.Route("igw_route", {
     gatewayId: igw.id,
 });
 
+// description is ForceNew and the two toolchains default it differently
+// ("Managed by Terraform" vs "Managed by Pulumi"). Left unset, the imported
+// group previews as a replacement, and the rule below is replaced with it —
+// which reads as a wrong import ID when it is only a mismatched default.
 const sg = new aws.ec2.SecurityGroup("sg", {
     name: `${name}-sg`,
+    description: "Managed by Terraform",
     vpcId: main.id,
     tags: tags,
 });
