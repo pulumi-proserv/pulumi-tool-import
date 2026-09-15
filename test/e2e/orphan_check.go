@@ -18,9 +18,11 @@ package e2e
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -43,6 +45,49 @@ const fixtureManagedByTag = "pulumi-tool-import-e2e"
 var terraformDoneStates = map[string]bool{
 	"deleted":  true,
 	"deleting": true,
+}
+
+// orphanPollInterval and orphanPollDeadline control eventuallyGone's polling.
+// They are vars, not consts, so a test can shorten them.
+var (
+	orphanPollInterval = 5 * time.Second
+	orphanPollDeadline = 2 * time.Minute
+)
+
+// eventuallyGone polls probe until it reports the resource gone, or until the
+// deadline. AWS describe calls lag deletions by seconds to a minute; a
+// single read right after "tofu destroy" is not evidence of a leak.
+func eventuallyGone(t *testing.T, what string, probe func() (gone bool, detail string, err error)) {
+	t.Helper()
+
+	deadline := time.Now().Add(orphanPollDeadline)
+	logged := false
+	var lastDetail string
+	for {
+		gone, detail, err := probe()
+		if err != nil {
+			t.Errorf("verifying %s is gone: %v", what, err)
+			return
+		}
+		if gone {
+			return
+		}
+		lastDetail = detail
+		if !logged {
+			t.Logf("%s not gone yet (%s); polling up to %s", what, detail, orphanPollDeadline)
+			logged = true
+		}
+		if time.Now().After(deadline) {
+			t.Errorf("%s", orphanedMessage(what, lastDetail))
+			return
+		}
+		time.Sleep(orphanPollInterval)
+	}
+}
+
+// orphanedMessage formats eventuallyGone's terminal failure message.
+func orphanedMessage(what, detail string) string {
+	return fmt.Sprintf("ORPHANED: %s still exists in AWS after teardown (%s) — delete it by hand", what, detail)
 }
 
 func verifyFixtureResourcesGone(t *testing.T, ctx context.Context, ids fixtureResourceIDs, runID string) {
@@ -127,165 +172,177 @@ func loadAWSConfigForRegion(ctx context.Context, region string) (aws.Config, err
 
 func checkVPNConnectionGone(t *testing.T, ctx context.Context, c *ec2.Client, id string) {
 	t.Helper()
-	out, err := c.DescribeVpnConnections(ctx, &ec2.DescribeVpnConnectionsInput{VpnConnectionIds: []string{id}})
-	if err != nil {
-		if isNotFoundErr(err) {
-			return
+	eventuallyGone(t, fmt.Sprintf("VPN connection %s (this resource bills)", id), func() (bool, string, error) {
+		out, err := c.DescribeVpnConnections(ctx, &ec2.DescribeVpnConnectionsInput{VpnConnectionIds: []string{id}})
+		if err != nil {
+			if isNotFoundErr(err) {
+				return true, "", nil
+			}
+			return false, "", err
 		}
-		t.Errorf("verifying VPN connection %s is gone: %v", id, err)
-		return
-	}
-	for _, conn := range out.VpnConnections {
-		state := string(conn.State)
-		if !terraformDoneStates[strings.ToLower(state)] {
-			t.Errorf("ORPHANED: VPN connection %s still exists in AWS (state=%q) after teardown — "+
-				"this resource bills; delete it by hand", id, state)
+		for _, conn := range out.VpnConnections {
+			state := string(conn.State)
+			if !terraformDoneStates[strings.ToLower(state)] {
+				return false, fmt.Sprintf("state=%q", state), nil
+			}
 		}
-	}
+		return true, "", nil
+	})
 }
 
 func checkVPNGatewayGone(t *testing.T, ctx context.Context, c *ec2.Client, id string) {
 	t.Helper()
-	out, err := c.DescribeVpnGateways(ctx, &ec2.DescribeVpnGatewaysInput{VpnGatewayIds: []string{id}})
-	if err != nil {
-		if isNotFoundErr(err) {
-			return
+	eventuallyGone(t, fmt.Sprintf("VPN gateway %s", id), func() (bool, string, error) {
+		out, err := c.DescribeVpnGateways(ctx, &ec2.DescribeVpnGatewaysInput{VpnGatewayIds: []string{id}})
+		if err != nil {
+			if isNotFoundErr(err) {
+				return true, "", nil
+			}
+			return false, "", err
 		}
-		t.Errorf("verifying VPN gateway %s is gone: %v", id, err)
-		return
-	}
-	for _, gw := range out.VpnGateways {
-		state := string(gw.State)
-		if !terraformDoneStates[strings.ToLower(state)] {
-			t.Errorf("ORPHANED: VPN gateway %s still exists in AWS (state=%q) after teardown — "+
-				"delete it by hand", id, state)
+		for _, gw := range out.VpnGateways {
+			state := string(gw.State)
+			if !terraformDoneStates[strings.ToLower(state)] {
+				return false, fmt.Sprintf("state=%q", state), nil
+			}
 		}
-	}
+		return true, "", nil
+	})
 }
 
 func checkCustomerGatewayGone(t *testing.T, ctx context.Context, c *ec2.Client, id string) {
 	t.Helper()
-	out, err := c.DescribeCustomerGateways(ctx, &ec2.DescribeCustomerGatewaysInput{CustomerGatewayIds: []string{id}})
-	if err != nil {
-		if isNotFoundErr(err) {
-			return
+	eventuallyGone(t, fmt.Sprintf("customer gateway %s", id), func() (bool, string, error) {
+		out, err := c.DescribeCustomerGateways(ctx, &ec2.DescribeCustomerGatewaysInput{CustomerGatewayIds: []string{id}})
+		if err != nil {
+			if isNotFoundErr(err) {
+				return true, "", nil
+			}
+			return false, "", err
 		}
-		t.Errorf("verifying customer gateway %s is gone: %v", id, err)
-		return
-	}
-	for _, gw := range out.CustomerGateways {
-		state := aws.ToString(gw.State)
-		if !terraformDoneStates[strings.ToLower(state)] {
-			t.Errorf("ORPHANED: customer gateway %s still exists in AWS (state=%q) after teardown — "+
-				"delete it by hand", id, state)
+		for _, gw := range out.CustomerGateways {
+			state := aws.ToString(gw.State)
+			if !terraformDoneStates[strings.ToLower(state)] {
+				return false, fmt.Sprintf("state=%q", state), nil
+			}
 		}
-	}
+		return true, "", nil
+	})
 }
 
 func checkIoTCertificateGone(t *testing.T, ctx context.Context, c *iot.Client, id string) {
 	t.Helper()
-	_, err := c.DescribeCertificate(ctx, &iot.DescribeCertificateInput{CertificateId: aws.String(id)})
-	if err == nil {
-		t.Errorf("ORPHANED: IoT certificate %s still exists in AWS after teardown — delete it by hand", id)
-		return
-	}
-	if !isNotFoundErr(err) {
-		t.Errorf("verifying IoT certificate %s is gone: %v", id, err)
-	}
+	eventuallyGone(t, fmt.Sprintf("IoT certificate %s", id), func() (bool, string, error) {
+		_, err := c.DescribeCertificate(ctx, &iot.DescribeCertificateInput{CertificateId: aws.String(id)})
+		if err == nil {
+			return false, "still describable", nil
+		}
+		if isNotFoundErr(err) {
+			return true, "", nil
+		}
+		return false, "", err
+	})
 }
 
 func checkTargetGroupGone(t *testing.T, ctx context.Context, c *vpclattice.Client, id string) {
 	t.Helper()
-	out, err := c.GetTargetGroup(ctx, &vpclattice.GetTargetGroupInput{TargetGroupIdentifier: aws.String(id)})
-	if err != nil {
-		if isNotFoundErr(err) {
-			return
+	eventuallyGone(t, fmt.Sprintf("VPC Lattice target group %s", id), func() (bool, string, error) {
+		out, err := c.GetTargetGroup(ctx, &vpclattice.GetTargetGroupInput{TargetGroupIdentifier: aws.String(id)})
+		if err != nil {
+			if isNotFoundErr(err) {
+				return true, "", nil
+			}
+			return false, "", err
 		}
-		t.Errorf("verifying VPC Lattice target group %s is gone: %v", id, err)
-		return
-	}
-	status := string(out.Status)
-	if status != "DELETE_IN_PROGRESS" && status != "DELETED" {
-		t.Errorf("ORPHANED: VPC Lattice target group %s still exists in AWS (status=%q) after "+
-			"teardown — delete it by hand", id, status)
-	}
+		status := string(out.Status)
+		if status != "DELETE_IN_PROGRESS" && status != "DELETED" {
+			return false, fmt.Sprintf("status=%q", status), nil
+		}
+		return true, "", nil
+	})
 }
 
 func checkLambdaFunctionGone(t *testing.T, ctx context.Context, c *lambda.Client, name string) {
 	t.Helper()
-	_, err := c.GetFunction(ctx, &lambda.GetFunctionInput{FunctionName: aws.String(name)})
-	if err == nil {
-		t.Errorf("ORPHANED: Lambda function %s still exists in AWS after teardown — delete it by hand", name)
-		return
-	}
-	if !isNotFoundErr(err) {
-		t.Errorf("verifying Lambda function %s is gone: %v", name, err)
-	}
+	eventuallyGone(t, fmt.Sprintf("Lambda function %s", name), func() (bool, string, error) {
+		_, err := c.GetFunction(ctx, &lambda.GetFunctionInput{FunctionName: aws.String(name)})
+		if err == nil {
+			return false, "still describable", nil
+		}
+		if isNotFoundErr(err) {
+			return true, "", nil
+		}
+		return false, "", err
+	})
 }
 
 func checkIAMRoleGone(t *testing.T, ctx context.Context, c *iam.Client, name string) {
 	t.Helper()
-	_, err := c.GetRole(ctx, &iam.GetRoleInput{RoleName: aws.String(name)})
-	if err == nil {
-		t.Errorf("ORPHANED: IAM role %s still exists in AWS after teardown — delete it by hand", name)
-		return
-	}
-	if !isNotFoundErr(err) {
-		t.Errorf("verifying IAM role %s is gone: %v", name, err)
-	}
+	eventuallyGone(t, fmt.Sprintf("IAM role %s", name), func() (bool, string, error) {
+		_, err := c.GetRole(ctx, &iam.GetRoleInput{RoleName: aws.String(name)})
+		if err == nil {
+			return false, "still describable", nil
+		}
+		if isNotFoundErr(err) {
+			return true, "", nil
+		}
+		return false, "", err
+	})
 }
 
 func checkKinesisStreamGone(t *testing.T, ctx context.Context, c *kinesis.Client, name string) {
 	t.Helper()
-	_, err := c.DescribeStreamSummary(ctx, &kinesis.DescribeStreamSummaryInput{StreamName: aws.String(name)})
-	if err == nil {
-		t.Errorf("ORPHANED: Kinesis stream %s still exists in AWS after teardown — delete it by hand", name)
-		return
-	}
-	if !isNotFoundErr(err) {
-		t.Errorf("verifying Kinesis stream %s is gone: %v", name, err)
-	}
+	eventuallyGone(t, fmt.Sprintf("Kinesis stream %s", name), func() (bool, string, error) {
+		_, err := c.DescribeStreamSummary(ctx, &kinesis.DescribeStreamSummaryInput{StreamName: aws.String(name)})
+		if err == nil {
+			return false, "still describable", nil
+		}
+		if isNotFoundErr(err) {
+			return true, "", nil
+		}
+		return false, "", err
+	})
 }
 
 func checkLogGroupGone(t *testing.T, ctx context.Context, c *cloudwatchlogs.Client, name string) {
 	t.Helper()
-	out, err := c.DescribeLogGroups(ctx, &cloudwatchlogs.DescribeLogGroupsInput{
-		LogGroupNamePrefix: aws.String(name),
+	eventuallyGone(t, fmt.Sprintf("CloudWatch log group %s", name), func() (bool, string, error) {
+		out, err := c.DescribeLogGroups(ctx, &cloudwatchlogs.DescribeLogGroupsInput{
+			LogGroupNamePrefix: aws.String(name),
+		})
+		if err != nil {
+			if isNotFoundErr(err) {
+				return true, "", nil
+			}
+			return false, "", err
+		}
+		for _, lg := range out.LogGroups {
+			if aws.ToString(lg.LogGroupName) == name {
+				return false, "still listed", nil
+			}
+		}
+		return true, "", nil
 	})
-	if err != nil {
-		if isNotFoundErr(err) {
-			return
-		}
-		t.Errorf("verifying CloudWatch log group %s is gone: %v", name, err)
-		return
-	}
-	for _, lg := range out.LogGroups {
-		if aws.ToString(lg.LogGroupName) == name {
-			t.Errorf("ORPHANED: CloudWatch log group %s still exists in AWS after teardown — "+
-				"delete it by hand", name)
-			return
-		}
-	}
 }
 
 func checkRolePolicyAttachmentGone(t *testing.T, ctx context.Context, c *iam.Client, role, policyArn string) {
 	t.Helper()
-	out, err := c.ListAttachedRolePolicies(ctx, &iam.ListAttachedRolePoliciesInput{RoleName: aws.String(role)})
-	if err != nil {
-		if isNotFoundErr(err) {
-			// The role itself is gone, so the attachment cannot have survived it.
-			return
+	eventuallyGone(t, fmt.Sprintf("IAM role policy attachment %s/%s", role, policyArn), func() (bool, string, error) {
+		out, err := c.ListAttachedRolePolicies(ctx, &iam.ListAttachedRolePoliciesInput{RoleName: aws.String(role)})
+		if err != nil {
+			if isNotFoundErr(err) {
+				// The role itself is gone, so the attachment cannot have survived it.
+				return true, "", nil
+			}
+			return false, "", err
 		}
-		t.Errorf("verifying IAM role policy attachment %s/%s is gone: %v", role, policyArn, err)
-		return
-	}
-	for _, p := range out.AttachedPolicies {
-		if aws.ToString(p.PolicyArn) == policyArn {
-			t.Errorf("ORPHANED: IAM role policy attachment %s/%s still exists in AWS after "+
-				"teardown — delete it by hand", role, policyArn)
-			return
+		for _, p := range out.AttachedPolicies {
+			if aws.ToString(p.PolicyArn) == policyArn {
+				return false, "still attached", nil
+			}
 		}
-	}
+		return true, "", nil
+	})
 }
 
 // checkNoTaggedVPCsRemain scans by this run's Name tag, not ManagedBy alone:
@@ -293,26 +350,26 @@ func checkRolePolicyAttachmentGone(t *testing.T, ctx context.Context, c *iam.Cli
 func checkNoTaggedVPCsRemain(t *testing.T, ctx context.Context, c *ec2.Client, runID string) {
 	t.Helper()
 	nameTag := "tool-import-e2e-" + runID
-	out, err := c.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{
-		Filters: []ec2types.Filter{
-			{Name: aws.String("tag:ManagedBy"), Values: []string{fixtureManagedByTag}},
-			{Name: aws.String("tag:Name"), Values: []string{nameTag}},
-		},
-	})
-	if err != nil {
-		t.Errorf("scanning for leftover VPCs tagged Name=%s in %s: %v",
-			nameTag, fixtureRegion, err)
-		return
-	}
-	var leftover []string
-	for _, vpc := range out.Vpcs {
-		if string(vpc.State) == "" || strings.ToLower(string(vpc.State)) != "deleted" {
-			leftover = append(leftover, aws.ToString(vpc.VpcId))
-		}
-	}
-	if len(leftover) > 0 {
-		t.Errorf("ORPHANED: %d VPC(s) tagged Name=%s still exist in %s after teardown: %s — "+
-			"delete them by hand (and everything still attached to them)",
-			len(leftover), nameTag, fixtureRegion, strings.Join(leftover, ", "))
-	}
+	eventuallyGone(t, fmt.Sprintf("VPC(s) tagged Name=%s in %s (and everything still attached to them)", nameTag, fixtureRegion),
+		func() (bool, string, error) {
+			out, err := c.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{
+				Filters: []ec2types.Filter{
+					{Name: aws.String("tag:ManagedBy"), Values: []string{fixtureManagedByTag}},
+					{Name: aws.String("tag:Name"), Values: []string{nameTag}},
+				},
+			})
+			if err != nil {
+				return false, "", err
+			}
+			var leftover []string
+			for _, vpc := range out.Vpcs {
+				if string(vpc.State) == "" || strings.ToLower(string(vpc.State)) != "deleted" {
+					leftover = append(leftover, aws.ToString(vpc.VpcId))
+				}
+			}
+			if len(leftover) > 0 {
+				return false, fmt.Sprintf("%d VPC(s) still exist: %s", len(leftover), strings.Join(leftover, ", ")), nil
+			}
+			return true, "", nil
+		})
 }
