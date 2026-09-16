@@ -87,16 +87,22 @@ jobs:
       # registered mask covers, so masking only works if the same credential
       # set is used throughout. Credential-shaped values are masked before
       # anything can print them.
-      - name: Load AWS credentials from ESC (masked)
+      #
+      # team-ce/tfc/tool-import-e2e holds TFC_TOKEN, which
+      # TestRemoteStateTerraformCloud uses to read its fixture workspace on
+      # Terraform Cloud (see test/e2e/testdata/tfc-remote/main.tf).
+      - name: Load AWS and Terraform Cloud credentials from ESC (masked)
         run: |
-          pulumi env open team-ce/aws/pulumi-ce --format json > /tmp/esc-env.json
-          while IFS=$'\t' read -r k v; do
-            case "$k" in
-              *KEY*|*SECRET*|*TOKEN*|*PASSWORD*) echo "::add-mask::$v" ;;
-            esac
-            echo "$k=$v" >> "$GITHUB_ENV"
-          done < <(jq -r '(.environmentVariables // {}) | to_entries[] | "\(.key)\t\(.value)"' /tmp/esc-env.json)
-          rm -f /tmp/esc-env.json
+          for env in team-ce/aws/pulumi-ce team-ce/tfc/tool-import-e2e; do
+            pulumi env open "$env" --format json > /tmp/esc-env.json
+            while IFS=$'\t' read -r k v; do
+              case "$k" in
+                *KEY*|*SECRET*|*TOKEN*|*PASSWORD*) echo "::add-mask::$v" ;;
+              esac
+              echo "$k=$v" >> "$GITHUB_ENV"
+            done < <(jq -r '(.environmentVariables // {}) | to_entries[] | "\(.key)\t\(.value)"' /tmp/esc-env.json)
+            rm -f /tmp/esc-env.json
+          done
 
       # Fails the job when the credentials do not work: the suite itself
       # t.Skips in that case and go test exits 0, which would otherwise leave
@@ -117,10 +123,6 @@ jobs:
         # which would skip t.Cleanup's tofu destroy.
         env:
           E2E_TIMEOUT: 30m
-          # Read-only token for the Terraform Cloud fixture workspace that
-          # TestRemoteStateTerraformCloud pulls state from (see
-          # test/e2e/testdata/tfc-remote/main.tf). The test skips when unset.
-          TFC_TOKEN: ${{ secrets.TFC_TOKEN }}
         run: make test-e2e
 
       # A failed or cancelled run can leave real AWS resources behind with
