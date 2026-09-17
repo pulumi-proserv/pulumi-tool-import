@@ -175,6 +175,10 @@ pulumi plugin run import -- digest tf \
 Pulumi Cloud's backend does not serve workspace variables, so the digest
 warns and continues with local `*.tfvars` only.
 
+On Scalr, `--organization` is the environment ID (`env-…`), and the digest
+fetches environment-scoped variables as well as the workspace's own through
+Scalr's native API.
+
 Key flags: `--from` (Terraform root), `--state-file` or the `--hostname/--organization/--workspace/--token-env`
 remote set, `--out`, `--pulumi-project`/`--pulumi-stack` (for URN generation),
 `--project-dir` and `--skip-secrets` (secret handling, below),

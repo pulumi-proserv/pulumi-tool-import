@@ -53,12 +53,14 @@ test:
 # yours to get right.
 #
 # The same target also runs the TestRemoteState* tests, which read (never
-# write) fixture workspaces on Terraform Cloud and on Pulumi Cloud's Terraform
-# backend. Each skips itself without its token: TFC_TOKEN (CI takes it from the
-# ESC environment team-ce/tfc/tool-import-e2e) and PULUMI_ACCESS_TOKEN (any
-# token that can read the team-ce organization). To run only those:
+# write) fixture workspaces on Terraform Cloud, Pulumi Cloud's Terraform
+# backend, and Scalr. Each skips itself without its token: TFC_TOKEN (ESC
+# environment team-ce/tfc/tool-import-e2e), SCALR_TOKEN (ESC environment
+# team-ce/jdavredbeard/scalr), and PULUMI_ACCESS_TOKEN (any token that can
+# read the team-ce organization). To run only those:
 #
-#   esc run team-ce/tfc/tool-import-e2e -- go test -count=1 -tags e2e ./test/e2e/ -run TestRemoteState -v
+#   esc run team-ce/tfc/tool-import-e2e -- esc run team-ce/jdavredbeard/scalr -- \
+#     go test -count=1 -tags e2e ./test/e2e/ -run TestRemoteState -v
 test-e2e:
 	# -count=1 defeats the test cache. Without it, a second invocation with an
 	# unchanged tree replays the previous run's stored output and prints

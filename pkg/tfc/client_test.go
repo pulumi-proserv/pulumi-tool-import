@@ -526,3 +526,169 @@ func TestStatePull_TerraformCloud_JSONAPIErrorTitle(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "→ 401 Unauthorized: unauthorized")
 }
+
+// newMockScalrServer mimics Scalr as observed live on 2026-09-17: discovery
+// advertises both tfe.v2 and the native iacp.v3 API, the TFE-compatible
+// "organization" is an environment ID, the hosted-state download URL is a
+// signed blob URL, JSON:API 404s carry a descriptive title, and variables
+// carry a workspace relationship that is null for environment-scoped ones.
+//
+// Its vars route honors filter[environment] (returning the environment's
+// own variables and those of every workspace in it) and filter[workspace]
+// (returning only that workspace's), which is the asymmetry listScalrVars
+// exists for.
+func newMockScalrServer(t *testing.T, environmentID, workspace, workspaceID string, stateBody []byte) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	mux.HandleFunc("/.well-known/terraform.json", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"blob.v1":  "/api/tfe/v1/blobs/",
+			"state.v2": "/api/tfe/v2/",
+			"tfe.v2":   "/api/tfe/v2/",
+			"tfe.v2.1": "/api/tfe/v2/",
+			"iacp.v3":  "/api/iacp/v3/",
+		})
+	})
+
+	jsonAPIError := func(w http.ResponseWriter, status int, title string) {
+		w.Header().Set("Content-Type", "application/vnd.api+json")
+		w.WriteHeader(status)
+		fmt.Fprintf(w, `{"errors":[{"status":"%d","title":"%s"}]}`, status, title)
+	}
+	authorized := func(w http.ResponseWriter, r *http.Request) bool {
+		if r.Header.Get("Authorization") != "Bearer test-token" {
+			jsonAPIError(w, http.StatusUnauthorized, "Unauthorized")
+			return false
+		}
+		return true
+	}
+
+	mux.HandleFunc("/api/tfe/v2/organizations/"+environmentID+"/workspaces/", func(w http.ResponseWriter, r *http.Request) {
+		if !authorized(w, r) {
+			return
+		}
+		name := strings.TrimPrefix(r.URL.Path, "/api/tfe/v2/organizations/"+environmentID+"/workspaces/")
+		if name != workspace {
+			jsonAPIError(w, http.StatusNotFound, "Workspace with name '"+name+"' not found or user unauthorized.")
+			return
+		}
+		w.Header().Set("Content-Type", "application/vnd.api+json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": map[string]interface{}{"id": workspaceID, "type": "workspaces"},
+		})
+	})
+
+	mux.HandleFunc("/api/tfe/v2/workspaces/"+workspaceID+"/current-state-version", func(w http.ResponseWriter, r *http.Request) {
+		if !authorized(w, r) {
+			return
+		}
+		w.Header().Set("Content-Type", "application/vnd.api+json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": map[string]interface{}{
+				"type": "state-versions",
+				"id":   "sv-1",
+				"attributes": map[string]interface{}{
+					"hosted-state-download-url": server.URL + "/api/tfe/v1/blobs/signed-blob-token",
+					"serial":                    1,
+					"status":                    "finalized",
+				},
+			},
+		})
+	})
+
+	mux.HandleFunc("/api/tfe/v1/blobs/signed-blob-token", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(stateBody)
+	})
+
+	scopedVar := func(id, key, value, wsID string) map[string]interface{} {
+		var wsRel interface{}
+		if wsID != "" {
+			wsRel = map[string]interface{}{"data": map[string]interface{}{"id": wsID, "type": "workspaces"}}
+		}
+		return map[string]interface{}{
+			"id":   id,
+			"type": "vars",
+			"attributes": map[string]interface{}{
+				"key": key, "value": value, "category": "terraform", "hcl": false, "sensitive": false,
+			},
+			"relationships": map[string]interface{}{
+				"environment": map[string]interface{}{"data": map[string]interface{}{"id": environmentID, "type": "environments"}},
+				"workspace":   wsRel,
+			},
+		}
+	}
+	// The environment holds the target workspace and a sibling; both define
+	// "greeting", the environment defines "env_scoped" and its own "greeting".
+	allVars := []map[string]interface{}{
+		scopedVar("var-env-greeting", "greeting", "from-environment", ""),
+		scopedVar("var-env-scoped", "env_scoped", "from-environment", ""),
+		scopedVar("var-ws-greeting", "greeting", "from-workspace", workspaceID),
+		scopedVar("var-sibling-greeting", "greeting", "from-sibling", "ws-sibling"),
+		scopedVar("var-sibling-only", "sibling_only", "from-sibling", "ws-sibling"),
+	}
+	mux.HandleFunc("/api/iacp/v3/vars", func(w http.ResponseWriter, r *http.Request) {
+		if !authorized(w, r) {
+			return
+		}
+		q := r.URL.Query()
+		var data []map[string]interface{}
+		for _, v := range allVars {
+			wsRel := v["relationships"].(map[string]interface{})["workspace"]
+			wsID := ""
+			if wsRel != nil {
+				wsID = wsRel.(map[string]interface{})["data"].(map[string]interface{})["id"].(string)
+			}
+			if f := q.Get("filter[workspace]"); f != "" && wsID != f {
+				continue
+			}
+			if f := q.Get("filter[environment]"); f != "" && f != environmentID {
+				continue
+			}
+			data = append(data, v)
+		}
+		w.Header().Set("Content-Type", "application/vnd.api+json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": data,
+			"meta": map[string]interface{}{"pagination": map[string]interface{}{
+				"current-page": 1, "next-page": nil, "prev-page": nil, "total-pages": 1, "total-count": len(data),
+			}},
+		})
+	})
+
+	return server
+}
+
+func TestStatePull_Scalr(t *testing.T) {
+	t.Parallel()
+
+	fakeState := []byte(`{"version":4,"terraform_version":"1.5.7","serial":1,"lineage":"abc","outputs":{},"resources":[]}`)
+	server := newMockScalrServer(t, "env-abc", "myworkspace", "ws-abc", fakeState)
+
+	client := &Client{Hostname: server.URL, Token: "test-token"}
+	data, err := client.StatePull(context.Background(), "env-abc", "myworkspace")
+	require.NoError(t, err)
+	assert.Equal(t, fakeState, data)
+
+	_, err = client.StatePull(context.Background(), "env-abc", "nope")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "→ 404 Not Found: Workspace with name 'nope' not found or user unauthorized.")
+}
+
+func TestListVariables_Scalr_IncludesEnvironmentScope(t *testing.T) {
+	t.Parallel()
+
+	server := newMockScalrServer(t, "env-abc", "myworkspace", "ws-abc", nil)
+
+	client := &Client{Hostname: server.URL, Token: "test-token"}
+	vars, err := client.ListVariables(context.Background(), "env-abc", "myworkspace")
+	require.NoError(t, err)
+	assert.Equal(t, []WorkspaceVariable{
+		{Key: "greeting", Value: "from-workspace", Category: "terraform"},
+		{Key: "env_scoped", Value: "from-environment", Category: "terraform"},
+	}, vars, "workspace-scoped wins the key clash, environment-scoped is included, the sibling workspace's are not")
+}

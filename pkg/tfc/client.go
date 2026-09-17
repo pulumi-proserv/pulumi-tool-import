@@ -61,10 +61,10 @@ func (c *Client) ListVariables(ctx context.Context, org, workspace string) ([]Wo
 		return nil, err
 	}
 
-	// Prefer IACP v3 when available (Scalr) — it includes environment-scope vars.
+	// Prefer IACP v3 when available (Scalr): environment-scope variables apply
+	// to the workspace too, and only this API can return them.
 	if disc.iacpPrefix != "" {
-		varsURL := fmt.Sprintf("%s/vars?filter%%5Bworkspace%%5D=%s", disc.iacpPrefix, wsID)
-		vars, err := c.listVarsPaginated(ctx, httpClient, varsURL)
+		vars, err := c.listScalrVars(ctx, httpClient, disc.iacpPrefix, org, wsID)
 		if err == nil {
 			return vars, nil
 		}
@@ -76,11 +76,73 @@ func (c *Client) ListVariables(ctx context.Context, org, workspace string) ([]Wo
 	return c.listVarsPaginated(ctx, httpClient, varsURL)
 }
 
-// listVarsPaginated fetches workspace variables from the given base URL with pagination.
-func (c *Client) listVarsPaginated(ctx context.Context, httpClient *http.Client, baseVarsURL string) ([]WorkspaceVariable, error) {
-	var allVars []WorkspaceVariable
-	seen := make(map[string]bool)
+// listScalrVars returns the variables in effect for a workspace on Scalr.
+//
+// On Scalr the TFE-compatible "organization" is the environment ID, and a
+// variable is scoped to a workspace, to an environment (workspace null), or
+// to the account. Filtering IACP v3 by workspace returns only the first kind
+// (observed 2026-09-17), so this filters by environment — which returns the
+// environment's own variables and every workspace's — and keeps those whose
+// workspace is the target or unset. Workspace-scoped variables are listed
+// first so they win the key dedupe, matching Scalr's precedence.
+func (c *Client) listScalrVars(ctx context.Context, httpClient *http.Client, iacpPrefix, environmentID, wsID string) ([]WorkspaceVariable, error) {
+	varsURL := fmt.Sprintf("%s/vars?filter%%5Benvironment%%5D=%s", iacpPrefix, environmentID)
+	entries, err := c.fetchVarsPages(ctx, httpClient, varsURL)
+	if err != nil {
+		return nil, err
+	}
+	var ordered []WorkspaceVariable
+	for _, e := range entries {
+		if e.scopeWorkspace == wsID {
+			ordered = append(ordered, e.WorkspaceVariable)
+		}
+	}
+	for _, e := range entries {
+		if e.scopeWorkspace == "" {
+			ordered = append(ordered, e.WorkspaceVariable)
+		}
+	}
+	return dedupeByKey(ordered), nil
+}
 
+// listVarsPaginated fetches the variables at the given base URL, following
+// pagination and deduplicating by key in response order.
+func (c *Client) listVarsPaginated(ctx context.Context, httpClient *http.Client, baseVarsURL string) ([]WorkspaceVariable, error) {
+	entries, err := c.fetchVarsPages(ctx, httpClient, baseVarsURL)
+	if err != nil {
+		return nil, err
+	}
+	vars := make([]WorkspaceVariable, 0, len(entries))
+	for _, e := range entries {
+		vars = append(vars, e.WorkspaceVariable)
+	}
+	return dedupeByKey(vars), nil
+}
+
+func dedupeByKey(vars []WorkspaceVariable) []WorkspaceVariable {
+	seen := make(map[string]bool, len(vars))
+	var out []WorkspaceVariable
+	for _, v := range vars {
+		if seen[v.Key] {
+			continue
+		}
+		seen[v.Key] = true
+		out = append(out, v)
+	}
+	return out
+}
+
+// varEntry is a terraform-category variable plus the workspace its scope
+// names ("" when the variable is environment- or account-scoped).
+type varEntry struct {
+	WorkspaceVariable
+	scopeWorkspace string
+}
+
+// fetchVarsPages walks every page of a JSON:API variables listing and returns
+// the terraform-category variables in response order.
+func (c *Client) fetchVarsPages(ctx context.Context, httpClient *http.Client, baseVarsURL string) ([]varEntry, error) {
+	var entries []varEntry
 	for pageNum := 1; ; pageNum++ {
 		sep := "?"
 		if strings.Contains(baseVarsURL, "?") {
@@ -98,16 +160,15 @@ func (c *Client) listVarsPaginated(ctx context.Context, httpClient *http.Client,
 			if d.Attributes.Category != "terraform" {
 				continue
 			}
-			if seen[d.Attributes.Key] {
-				continue
-			}
-			seen[d.Attributes.Key] = true
-			allVars = append(allVars, WorkspaceVariable{
-				Key:       d.Attributes.Key,
-				Value:     d.Attributes.Value,
-				Category:  d.Attributes.Category,
-				HCL:       d.Attributes.HCL,
-				Sensitive: d.Attributes.Sensitive,
+			entries = append(entries, varEntry{
+				WorkspaceVariable: WorkspaceVariable{
+					Key:       d.Attributes.Key,
+					Value:     d.Attributes.Value,
+					Category:  d.Attributes.Category,
+					HCL:       d.Attributes.HCL,
+					Sensitive: d.Attributes.Sensitive,
+				},
+				scopeWorkspace: d.Relationships.Workspace.ID(),
 			})
 		}
 
@@ -115,8 +176,21 @@ func (c *Client) listVarsPaginated(ctx context.Context, httpClient *http.Client,
 			break
 		}
 	}
+	return entries, nil
+}
 
-	return allVars, nil
+// relationship is a JSON:API to-one relationship; Data is null when unset.
+type relationship struct {
+	Data *struct {
+		ID string `json:"id"`
+	} `json:"data"`
+}
+
+func (r relationship) ID() string {
+	if r.Data == nil {
+		return ""
+	}
+	return r.Data.ID
 }
 
 // varsPage represents one page of the JSON:API list-variables response.
@@ -129,6 +203,9 @@ type varsPage struct {
 			HCL       bool   `json:"hcl"`
 			Sensitive bool   `json:"sensitive"`
 		} `json:"attributes"`
+		Relationships struct {
+			Workspace relationship `json:"workspace"`
+		} `json:"relationships"`
 	} `json:"data"`
 	Meta struct {
 		Pagination struct {

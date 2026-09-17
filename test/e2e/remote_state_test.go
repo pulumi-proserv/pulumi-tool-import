@@ -60,6 +60,17 @@ var pulumiCloud = remoteHost{
 	fixtureDir:   "pulumi-cloud-remote",
 }
 
+// On Scalr the TFE-compatible organization is the environment ID. The
+// workspace has a workspace-scoped variable and the environment an
+// environment-scoped one; both must reach the digest.
+var scalr = remoteHost{
+	hostname:     "pulumi-proserv.scalr.io",
+	organization: "env-v0pdr54u1htkjaue6",
+	workspace:    "tool-import-e2e",
+	tokenEnv:     "SCALR_TOKEN",
+	fixtureDir:   "scalr-remote",
+}
+
 // TestRemoteStateTerraformCloud proves `digest tf` pulls state and workspace
 // variables from a real Terraform Cloud workspace, and that a wrong workspace
 // or token fails with the request and status in the message. The unit tests
@@ -124,6 +135,41 @@ func TestRemoteStatePulumiCloud(t *testing.T) {
 			"workspace " + h.organization + "/toolimport/e2e not found",
 			"404 Not Found",
 			"<project>_<stack>",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("error should contain %q; output:\n%s", want, out)
+			}
+		}
+	})
+
+	t.Run("BadTokenNamesRequestAndStatus", func(t *testing.T) {
+		fx.assertBadTokenFails(t)
+	})
+}
+
+// TestRemoteStateScalr is the same proof against Scalr, the host the remote
+// path was originally built for. Scalr advertises its native iacp.v3 API,
+// which the client uses to pick up environment-scoped variables that the
+// TFE-compatible vars route omits.
+func TestRemoteStateScalr(t *testing.T) {
+	h := scalr
+	fx := newRemoteFixture(t, h)
+
+	t.Run("PullsStateAndBothVariableScopes", func(t *testing.T) {
+		out, digestPath := fx.digest(t, h.workspace, h.tokenEnv, nil)
+		if !strings.Contains(out, "Fetched 2 workspace variables") {
+			t.Errorf("expected the workspace-scoped greeting and the environment-scoped env_scoped to be fetched; output:\n%s", out)
+		}
+		assertFixtureDigest(t, digestPath)
+	})
+
+	t.Run("WrongWorkspaceNamesRequestAndStatus", func(t *testing.T) {
+		out := fx.digestFails(t, "no-such-workspace", h.tokenEnv, nil)
+		for _, want := range []string{
+			"workspace " + h.organization + "/no-such-workspace not found",
+			"GET https://" + h.hostname + "/api/tfe/v2/organizations/" + h.organization + "/workspaces/no-such-workspace",
+			"404 Not Found",
+			"Workspace with name 'no-such-workspace' not found",
 		} {
 			if !strings.Contains(out, want) {
 				t.Errorf("error should contain %q; output:\n%s", want, out)

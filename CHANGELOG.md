@@ -18,9 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`GET https://… → 401 Unauthorized: …`) instead of one identical error for
   a 401, a 404, and an unimplemented route, and a lookup on `tf.pulumi.com`
   with a `project/stack` or `project-stack` name explains the `project_stack`
-  form the backend requires. Both Pulumi Cloud and Terraform Cloud are now
-  verified live, and fake servers matching each host's observed response
+  form the backend requires. Pulumi Cloud, Terraform Cloud, and Scalr are
+  now verified live, and fake servers matching each host's observed response
   shapes cover the exchange in tests (#65).
+- **`digest tf` dropped Scalr environment-scoped variables.** The client
+  asked Scalr's native API for variables filtered by workspace, which returns
+  only workspace-scoped ones despite the code's claim otherwise. It now
+  filters by environment and keeps the variables scoped to the target
+  workspace or to the environment, workspace-scoped winning a key clash.
 - **`patch-state` silently ignored the digest for most fields.** The
   Pulumi→Terraform field-name mapping came only from a small hand-curated
   table; any fields-file entry outside it skipped the digest lookup and fell
