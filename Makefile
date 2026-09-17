@@ -52,12 +52,13 @@ test:
 # creates, and logs the account it is using. Choosing the right account is
 # yours to get right.
 #
-# The same target also runs TestRemoteStateTerraformCloud, which reads (never
-# writes) a fixture workspace on Terraform Cloud and needs TFC_TOKEN set to a
-# token that can read it; it skips itself otherwise. CI takes the token from
-# the ESC environment team-ce/tfc/tool-import-e2e, which also works locally:
+# The same target also runs the TestRemoteState* tests, which read (never
+# write) fixture workspaces on Terraform Cloud and on Pulumi Cloud's Terraform
+# backend. Each skips itself without its token: TFC_TOKEN (CI takes it from the
+# ESC environment team-ce/tfc/tool-import-e2e) and PULUMI_ACCESS_TOKEN (any
+# token that can read the team-ce organization). To run only those:
 #
-#   esc run team-ce/tfc/tool-import-e2e -- go test -count=1 -tags e2e ./test/e2e/ -run TestRemoteStateTerraformCloud -v
+#   esc run team-ce/tfc/tool-import-e2e -- go test -count=1 -tags e2e ./test/e2e/ -run TestRemoteState -v
 test-e2e:
 	# -count=1 defeats the test cache. Without it, a second invocation with an
 	# unchanged tree replays the previous run's stored output and prints
