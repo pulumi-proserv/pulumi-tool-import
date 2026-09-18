@@ -88,20 +88,18 @@ jobs:
       # set is used throughout. Credential-shaped values are masked before
       # anything can print them.
       #
-      # The tfc and scalr environments hold the tokens the TestRemoteState*
-      # tests read their fixture workspaces with.
-      - name: Load AWS, Terraform Cloud, and Scalr credentials from ESC (masked)
+      # team-ce/pulumi-tool-import/e2e imports the AWS environment and holds
+      # the tokens the TestRemoteState* tests read their fixture workspaces with.
+      - name: Load credentials from ESC (masked)
         run: |
-          for env in team-ce/aws/pulumi-ce team-ce/tfc/tool-import-e2e team-ce/jdavredbeard/scalr; do
-            pulumi env open "$env" --format json > /tmp/esc-env.json
-            while IFS=$'\t' read -r k v; do
-              case "$k" in
-                *KEY*|*SECRET*|*TOKEN*|*PASSWORD*) echo "::add-mask::$v" ;;
-              esac
-              echo "$k=$v" >> "$GITHUB_ENV"
-            done < <(jq -r '(.environmentVariables // {}) | to_entries[] | "\(.key)\t\(.value)"' /tmp/esc-env.json)
-            rm -f /tmp/esc-env.json
-          done
+          pulumi env open team-ce/pulumi-tool-import/e2e --format json > /tmp/esc-env.json
+          while IFS=$'\t' read -r k v; do
+            case "$k" in
+              *KEY*|*SECRET*|*TOKEN*|*PASSWORD*) echo "::add-mask::$v" ;;
+            esac
+            echo "$k=$v" >> "$GITHUB_ENV"
+          done < <(jq -r '(.environmentVariables // {}) | to_entries[] | "\(.key)\t\(.value)"' /tmp/esc-env.json)
+          rm -f /tmp/esc-env.json
 
       # Fails the job when the credentials do not work: the suite itself
       # t.Skips in that case and go test exits 0, which would otherwise leave
