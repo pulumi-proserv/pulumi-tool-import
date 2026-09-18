@@ -94,6 +94,13 @@ jobs:
         run: |
           pulumi env open team-ce/pulumi-tool-import/e2e --format json > /tmp/esc-env.json
           while IFS=$'\t' read -r k v; do
+            # The OIDC step above already set PULUMI_ACCESS_TOKEN; letting the
+            # environment replace it (or anything else already set) would
+            # silently change which principal the rest of the job runs as.
+            if [ -n "${!k:-}" ]; then
+              echo "::error::ESC environment defines $k, which the job already sets"
+              exit 1
+            fi
             case "$k" in
               *KEY*|*SECRET*|*TOKEN*|*PASSWORD*) echo "::add-mask::$v" ;;
             esac
@@ -113,6 +120,29 @@ jobs:
           echo "::add-mask::$acct"
           echo "::add-mask::$arn"
 
+      # Same reasoning for the remote-state tokens: TestRemoteState* skip when
+      # a token is missing, so a dead or renamed credential would otherwise
+      # leave the gate green having tested nothing. Skipped when the suite is
+      # switched off, since the tokens are then deliberately unused.
+      - name: Verify remote-state credentials
+        if: vars.REMOTE_STATE_E2E != 'off'
+        run: |
+          check() {
+            local name=$1 url=$2
+            if [ -z "${!name:-}" ]; then
+              echo "::error::$name is empty; the ESC environment did not supply it"
+              exit 1
+            fi
+            code=$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${!name}" "$url")
+            if [ "$code" != "200" ]; then
+              echo "::error::$name does not read its fixture workspace: GET $url -> $code"
+              exit 1
+            fi
+          }
+          check TFC_TOKEN https://app.terraform.io/api/v2/organizations/import-tool-test/workspaces/tool-import-e2e
+          check PULUMI_ACCESS_TOKEN https://tf.pulumi.com/api/v2/organizations/team-ce/workspaces/toolimport_e2e
+          check SCALR_TOKEN https://pulumi-proserv.scalr.io/api/tfe/v2/organizations/env-v0pdr54u1htkjaue6/workspaces/tool-import-e2e
+
       - name: Run e2e tests
         id: e2e
         # E2E_TIMEOUT well under timeout-minutes: the Go-level timeout prints
@@ -120,6 +150,10 @@ jobs:
         # which would skip t.Cleanup's tofu destroy.
         env:
           E2E_TIMEOUT: 30m
+          # Repository variable; set it to "off" to skip the tests that hit
+          # Terraform Cloud, Pulumi Cloud, and Scalr without a workflow change,
+          # e.g. during a vendor outage. Unset means on.
+          REMOTE_STATE_E2E: ${{ vars.REMOTE_STATE_E2E }}
         run: make test-e2e
 
       # A failed or cancelled run can leave real AWS resources behind with

@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 )
@@ -32,6 +31,14 @@ type Client struct {
 	HTTP     *http.Client
 }
 
+// Variable scopes. The TFE-compatible route only knows workspace scope; Scalr
+// also applies environment-scoped variables to every workspace in the
+// environment.
+const (
+	ScopeWorkspace   = "workspace"
+	ScopeEnvironment = "environment"
+)
+
 // WorkspaceVariable represents a single variable from the TFC/Scalr workspace.
 type WorkspaceVariable struct {
 	Key       string `json:"key"`
@@ -39,14 +46,20 @@ type WorkspaceVariable struct {
 	Category  string `json:"category"` // "terraform" or "env"
 	HCL       bool   `json:"hcl"`
 	Sensitive bool   `json:"sensitive"`
+	Scope     string `json:"scope"` // ScopeWorkspace or ScopeEnvironment
 }
 
-// ListVariables fetches all Terraform variables from the workspace,
-// following JSON:API pagination.
+// ListVariables returns the terraform-category variables in effect for the
+// workspace, following JSON:API pagination.
 //
-// When the backend advertises the Scalr-native IACP v3 API, that endpoint is
-// used because it returns all variables (including environment-scope vars).
-// The TFE-compatible endpoint only returns workspace-scope variables.
+// On a backend that advertises Scalr's native iacp.v3 API, the variables are
+// fetched for the environment (which is what Scalr exposes as the
+// TFE-compatible organization) and narrowed to those scoped to this workspace
+// or to the environment, a workspace-scoped variable winning a key clash.
+// There is no fallback to the TFE-compatible route on Scalr: that route omits
+// environment-scoped variables, so a fallback would report success on an
+// incomplete set. Every other backend uses the TFE-compatible route, which
+// returns workspace scope only.
 func (c *Client) ListVariables(ctx context.Context, org, workspace string) ([]WorkspaceVariable, error) {
 	httpClient := c.httpClient()
 	baseURL := c.baseURL()
@@ -62,14 +75,9 @@ func (c *Client) ListVariables(ctx context.Context, org, workspace string) ([]Wo
 	}
 
 	if disc.iacpPrefix != "" {
-		vars, err := c.listScalrVars(ctx, httpClient, disc.iacpPrefix, org, wsID)
-		if err == nil {
-			return vars, nil
-		}
-		fmt.Fprintf(os.Stderr, "Warning: IACP vars endpoint failed, falling back to TFE: %v\n", err)
+		return c.listScalrVars(ctx, httpClient, disc.iacpPrefix, org, wsID)
 	}
 
-	// Fall back to TFE-compatible path.
 	varsURL := fmt.Sprintf("%s/workspaces/%s/vars", disc.apiPrefix, wsID)
 	return c.listVarsPaginated(ctx, httpClient, varsURL)
 }
@@ -78,7 +86,14 @@ func (c *Client) ListVariables(ctx context.Context, org, workspace string) ([]Wo
 // (observed 2026-09-17), so filter by environment — Scalr's TFE-compatible
 // organization — and keep what applies to this workspace. Workspace-scoped
 // entries go first so they win the dedupe, matching Scalr's precedence.
+//
+// The filter matches only on an environment ID, and an unmatched value answers
+// 200 with no data, so a name in --organization is refused up front rather
+// than reported as a workspace with no variables.
 func (c *Client) listScalrVars(ctx context.Context, httpClient *http.Client, iacpPrefix, environmentID, wsID string) ([]WorkspaceVariable, error) {
+	if !strings.HasPrefix(environmentID, "env-") {
+		return nil, fmt.Errorf("on Scalr the organization must be the environment ID (env-…), got %q", environmentID)
+	}
 	varsURL := fmt.Sprintf("%s/vars?filter%%5Benvironment%%5D=%s", iacpPrefix, environmentID)
 	entries, err := c.fetchVarsPages(ctx, httpClient, varsURL)
 	if err != nil {
@@ -86,12 +101,14 @@ func (c *Client) listScalrVars(ctx context.Context, httpClient *http.Client, iac
 	}
 	var ordered []WorkspaceVariable
 	for _, e := range entries {
-		if e.scopeWorkspace == wsID {
+		if e.scopeWorkspaceID == wsID {
+			e.Scope = ScopeWorkspace
 			ordered = append(ordered, e.WorkspaceVariable)
 		}
 	}
 	for _, e := range entries {
-		if e.scopeWorkspace == "" {
+		if e.scopeWorkspaceID == "" {
+			e.Scope = ScopeEnvironment
 			ordered = append(ordered, e.WorkspaceVariable)
 		}
 	}
@@ -105,6 +122,7 @@ func (c *Client) listVarsPaginated(ctx context.Context, httpClient *http.Client,
 	}
 	vars := make([]WorkspaceVariable, 0, len(entries))
 	for _, e := range entries {
+		e.Scope = ScopeWorkspace
 		vars = append(vars, e.WorkspaceVariable)
 	}
 	return dedupeByKey(vars), nil
@@ -125,7 +143,7 @@ func dedupeByKey(vars []WorkspaceVariable) []WorkspaceVariable {
 
 type varEntry struct {
 	WorkspaceVariable
-	scopeWorkspace string
+	scopeWorkspaceID string
 }
 
 func (c *Client) fetchVarsPages(ctx context.Context, httpClient *http.Client, baseVarsURL string) ([]varEntry, error) {
@@ -155,7 +173,7 @@ func (c *Client) fetchVarsPages(ctx context.Context, httpClient *http.Client, ba
 					HCL:       d.Attributes.HCL,
 					Sensitive: d.Attributes.Sensitive,
 				},
-				scopeWorkspace: d.Relationships.Workspace.ID(),
+				scopeWorkspaceID: d.Relationships.Workspace.ID(),
 			})
 		}
 
@@ -486,7 +504,11 @@ func (c *Client) downloadState(ctx context.Context, httpClient *http.Client, dow
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("downloading state: %w", newHTTPError(req, resp))
+		// The download URL is server-issued and may embed its own credential
+		// (Scalr signs a token into the path), so the error names only the host.
+		httpErr := newHTTPError(req, resp)
+		httpErr.URL = req.URL.Scheme + "://" + req.URL.Host + "/…"
+		return nil, fmt.Errorf("downloading state: %w", httpErr)
 	}
 
 	return io.ReadAll(resp.Body)

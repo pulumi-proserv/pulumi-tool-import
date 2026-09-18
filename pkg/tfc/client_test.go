@@ -499,7 +499,7 @@ func TestStatePull_TerraformCloud(t *testing.T) {
 
 	vars, err := client.ListVariables(context.Background(), "myorg", "myworkspace")
 	require.NoError(t, err)
-	assert.Equal(t, []WorkspaceVariable{{Key: "greeting", Value: "from-tfc", Category: "terraform"}}, vars)
+	assert.Equal(t, []WorkspaceVariable{{Key: "greeting", Value: "from-tfc", Category: "terraform", Scope: ScopeWorkspace}}, vars)
 }
 
 func TestStatePull_TerraformCloud_JSONAPIErrorTitle(t *testing.T) {
@@ -671,7 +671,43 @@ func TestListVariables_Scalr_IncludesEnvironmentScope(t *testing.T) {
 	vars, err := client.ListVariables(context.Background(), "env-abc", "myworkspace")
 	require.NoError(t, err)
 	assert.Equal(t, []WorkspaceVariable{
-		{Key: "greeting", Value: "from-workspace", Category: "terraform"},
-		{Key: "env_scoped", Value: "from-environment", Category: "terraform"},
+		{Key: "greeting", Value: "from-workspace", Category: "terraform", Scope: ScopeWorkspace},
+		{Key: "env_scoped", Value: "from-environment", Category: "terraform", Scope: ScopeEnvironment},
 	}, vars, "workspace-scoped wins the key clash, environment-scoped is included, the sibling workspace's are not")
+}
+
+func TestListVariables_Scalr_RefusesEnvironmentName(t *testing.T) {
+	t.Parallel()
+
+	server := newMockScalrServer(t, "Environment-A", "myworkspace", "ws-abc", nil)
+
+	client := &Client{Hostname: server.URL, Token: "test-token"}
+	_, err := client.ListVariables(context.Background(), "Environment-A", "myworkspace")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "environment ID (env-…)")
+}
+
+func TestListVariables_Scalr_NoFallbackToTFERoute(t *testing.T) {
+	t.Parallel()
+
+	server := newMockScalrServer(t, "env-abc", "myworkspace", "ws-abc", nil)
+	failing := &Client{Hostname: server.URL, Token: "test-token", HTTP: &http.Client{
+		Transport: &failPath{path: "/api/iacp/v3/vars", rt: http.DefaultTransport},
+	}}
+
+	_, err := failing.ListVariables(context.Background(), "env-abc", "myworkspace")
+	require.Error(t, err, "a failed Scalr vars call must surface, not fall back to the workspace-only TFE route")
+	assert.Contains(t, err.Error(), "/api/iacp/v3/vars")
+}
+
+type failPath struct {
+	path string
+	rt   http.RoundTripper
+}
+
+func (f *failPath) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL.Path == f.path {
+		return nil, fmt.Errorf("injected failure for %s", req.URL.Path)
+	}
+	return f.rt.RoundTrip(req)
 }

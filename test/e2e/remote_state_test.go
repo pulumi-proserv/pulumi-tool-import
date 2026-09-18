@@ -26,7 +26,9 @@ import (
 )
 
 // Each host's fixture workspace holds state for the config in fixtureDir and
-// only public test data; the tests read it and never write.
+// only public test data; the tests read it and never write. The pkg/tfc unit
+// tests pin each host's response shapes as observed on a given day; these
+// tests are what notice when a real API drifts from them.
 type remoteHost struct {
 	hostname     string
 	organization string
@@ -62,31 +64,23 @@ var scalr = remoteHost{
 	fixtureDir:   "scalr-remote",
 }
 
-// The pkg/tfc unit tests pin each host's response shapes as observed on a
-// given day; these tests are what notice when a real API drifts from them.
 func TestRemoteStateTerraformCloud(t *testing.T) {
 	h := terraformCloud
 	fx := newRemoteFixture(t, h)
 
 	t.Run("PullsStateAndVariables", func(t *testing.T) {
 		out, digestPath := fx.digest(t, h.workspace, h.tokenEnv, nil)
-		if !strings.Contains(out, "Fetched 1 workspace variables") {
-			t.Errorf("expected the one workspace variable (greeting) to be fetched; output:\n%s", out)
-		}
+		fx.assertOutput(t, out, "Fetched 1 workspace variables (1 workspace-scoped, 0 environment-scoped)")
 		assertFixtureDigest(t, digestPath)
 	})
 
 	t.Run("WrongWorkspaceNamesRequestAndStatus", func(t *testing.T) {
 		out := fx.digestFails(t, "no-such-workspace", h.tokenEnv, nil)
-		for _, want := range []string{
-			"workspace " + h.organization + "/no-such-workspace not found",
-			"GET https://" + h.hostname + "/api/v2/organizations/" + h.organization + "/workspaces/no-such-workspace",
-			"404 Not Found",
-		} {
-			if !strings.Contains(out, want) {
-				t.Errorf("error should contain %q; output:\n%s", want, out)
-			}
-		}
+		fx.assertOutput(t, out,
+			"workspace "+h.organization+"/no-such-workspace not found",
+			"GET https://"+h.hostname+"/api/v2/organizations/"+h.organization+"/workspaces/no-such-workspace",
+			"→ 404",
+		)
 	})
 
 	t.Run("BadTokenNamesRequestAndStatus", func(t *testing.T) {
@@ -100,29 +94,21 @@ func TestRemoteStatePulumiCloud(t *testing.T) {
 
 	t.Run("PullsStateAndWarnsAboutVariables", func(t *testing.T) {
 		out, digestPath := fx.digest(t, h.workspace, h.tokenEnv, nil)
-		for _, want := range []string{
+		fx.assertOutput(t, out,
 			"Warning: could not fetch workspace variables",
-			"404 Not Found",
+			"→ 404",
 			"Continuing with local tfvars only.",
-		} {
-			if !strings.Contains(out, want) {
-				t.Errorf("Pulumi Cloud has no vars route; digest should warn with %q and continue; output:\n%s", want, out)
-			}
-		}
+		)
 		assertFixtureDigest(t, digestPath)
 	})
 
 	t.Run("SlashNameGetsNamingHint", func(t *testing.T) {
 		out := fx.digestFails(t, "toolimport/e2e", h.tokenEnv, nil)
-		for _, want := range []string{
-			"workspace " + h.organization + "/toolimport/e2e not found",
-			"404 Not Found",
+		fx.assertOutput(t, out,
+			"workspace "+h.organization+"/toolimport/e2e not found",
+			"→ 404",
 			"<project>_<stack>",
-		} {
-			if !strings.Contains(out, want) {
-				t.Errorf("error should contain %q; output:\n%s", want, out)
-			}
-		}
+		)
 	})
 
 	t.Run("BadTokenNamesRequestAndStatus", func(t *testing.T) {
@@ -136,24 +122,17 @@ func TestRemoteStateScalr(t *testing.T) {
 
 	t.Run("PullsStateAndBothVariableScopes", func(t *testing.T) {
 		out, digestPath := fx.digest(t, h.workspace, h.tokenEnv, nil)
-		if !strings.Contains(out, "Fetched 2 workspace variables") {
-			t.Errorf("expected the workspace-scoped greeting and the environment-scoped env_scoped to be fetched; output:\n%s", out)
-		}
+		fx.assertOutput(t, out, "Fetched 2 workspace variables (1 workspace-scoped, 1 environment-scoped)")
 		assertFixtureDigest(t, digestPath)
 	})
 
 	t.Run("WrongWorkspaceNamesRequestAndStatus", func(t *testing.T) {
 		out := fx.digestFails(t, "no-such-workspace", h.tokenEnv, nil)
-		for _, want := range []string{
-			"workspace " + h.organization + "/no-such-workspace not found",
-			"GET https://" + h.hostname + "/api/tfe/v2/organizations/" + h.organization + "/workspaces/no-such-workspace",
-			"404 Not Found",
-			"Workspace with name 'no-such-workspace' not found",
-		} {
-			if !strings.Contains(out, want) {
-				t.Errorf("error should contain %q; output:\n%s", want, out)
-			}
-		}
+		fx.assertOutput(t, out,
+			"workspace "+h.organization+"/no-such-workspace not found",
+			"GET https://"+h.hostname+"/api/tfe/v2/organizations/"+h.organization+"/workspaces/no-such-workspace",
+			"→ 404",
+		)
 	})
 
 	t.Run("BadTokenNamesRequestAndStatus", func(t *testing.T) {
@@ -171,6 +150,9 @@ type remoteFixture struct {
 
 func newRemoteFixture(t *testing.T, h remoteHost) *remoteFixture {
 	t.Helper()
+	if os.Getenv("REMOTE_STATE_E2E") == "off" {
+		t.Skip("REMOTE_STATE_E2E=off: the tests against third-party hosts are switched off")
+	}
 	if os.Getenv(h.tokenEnv) == "" {
 		t.Skipf("%s is not set; set it to a token that can read %s/%s on %s",
 			h.tokenEnv, h.organization, h.workspace, h.hostname)
@@ -226,13 +208,22 @@ func (fx *remoteFixture) assertBadTokenFails(t *testing.T) {
 	t.Helper()
 	const badTokenEnv = "REMOTE_E2E_BAD_TOKEN"
 	out := fx.digestFails(t, fx.host.workspace, badTokenEnv, []string{badTokenEnv + "=not-a-token"})
-	for _, want := range []string{
-		"authentication failed for " + fx.host.hostname,
-		"401 Unauthorized",
-		"check token in env var " + badTokenEnv,
-	} {
+	fx.assertOutput(t, out,
+		"authentication failed for "+fx.host.hostname,
+		"→ 401",
+		"check token in env var "+badTokenEnv,
+	)
+}
+
+// assertOutput checks only what the client itself composes — its own
+// wording, the request it built, the status code — never a vendor's message
+// text, so a reworded error page cannot fail the gate.
+func (fx *remoteFixture) assertOutput(t *testing.T, out string, wants ...string) {
+	t.Helper()
+	for _, want := range wants {
 		if !strings.Contains(out, want) {
-			t.Errorf("error should contain %q; output:\n%s", want, out)
+			t.Errorf("output should contain %q (if only this host fails, check whether %s changed its API); output:\n%s",
+				want, fx.host.hostname, out)
 		}
 	}
 }
