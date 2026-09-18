@@ -141,7 +141,7 @@ agent-safe artifact the rest of the pipeline reads instead of raw state.
 
 State can come from a local file (`--state-file`) or a TFC-compatible remote
 backend (`--hostname`, `--organization`, `--workspace`, `--token-env`) —
-Terraform Cloud/Enterprise or Scalr.
+Pulumi Cloud's Terraform backend, Terraform Cloud/Enterprise, or Scalr.
 
 ```bash
 # From a local state file
@@ -151,14 +151,33 @@ pulumi plugin run import -- digest tf \
   --out /tmp/tf-digest.json \
   --pulumi-project myproject --pulumi-stack dev
 
-# From a TFC-compatible remote
+# From Terraform Cloud (or any TFC-compatible remote). The token can be the
+# one `terraform login` stores; workspace variables are fetched too.
 pulumi plugin run import -- digest tf \
   --from ./terraform \
   --hostname app.terraform.io --organization my-org \
   --workspace my-workspace-dev --token-env TFC_TOKEN \
   --out /tmp/tf-digest.json \
   --pulumi-project myproject --pulumi-stack dev
+
+# From Pulumi Cloud's Terraform backend (tf.pulumi.com). The organization is
+# the Pulumi organization and the workspace is the `<project>_<stack>` name
+# from the `cloud { workspaces { name } }` block; a Pulumi access token works
+# as the API token.
+pulumi plugin run import -- digest tf \
+  --from ./terraform \
+  --hostname tf.pulumi.com --organization my-pulumi-org \
+  --workspace myproject_dev --token-env PULUMI_ACCESS_TOKEN \
+  --out /tmp/tf-digest.json \
+  --pulumi-project myproject --pulumi-stack dev
 ```
+
+Pulumi Cloud's backend does not serve workspace variables, so the digest
+warns and continues with local `*.tfvars` only.
+
+On Scalr, `--organization` is the environment ID (`env-…`), and the digest
+fetches environment-scoped variables as well as the workspace's own through
+Scalr's native API.
 
 Key flags: `--from` (Terraform root), `--state-file` or the `--hostname/--organization/--workspace/--token-env`
 remote set, `--out`, `--pulumi-project`/`--pulumi-stack` (for URN generation),

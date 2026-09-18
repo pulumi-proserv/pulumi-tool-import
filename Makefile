@@ -51,6 +51,14 @@ test:
 # The test skips cleanly when credentials are absent, always destroys what it
 # creates, and logs the account it is using. Choosing the right account is
 # yours to get right.
+#
+# The TestRemoteState* tests in the same package read fixture workspaces on
+# Terraform Cloud, Pulumi Cloud, and Scalr, and skip without TFC_TOKEN,
+# PULUMI_ACCESS_TOKEN (team-ce), or SCALR_TOKEN. CI opens the ESC environment
+# team-ce/pulumi-tool-import/e2e, which also carries the AWS credentials and
+# works locally:
+#
+#   esc run team-ce/pulumi-tool-import/e2e -- env -u AWS_PROFILE make test-e2e
 test-e2e:
 	# -count=1 defeats the test cache. Without it, a second invocation with an
 	# unchanged tree replays the previous run's stored output and prints

@@ -153,7 +153,14 @@ func GenerateModuleMap(ctx context.Context, tfDir, stateFilePath, outputPath, st
 			fmt.Fprintf(os.Stderr, "Warning: could not fetch workspace variables: %v\n", err)
 			fmt.Fprintf(os.Stderr, "Continuing with local tfvars only.\n")
 		} else {
-			fmt.Fprintf(os.Stderr, "  Fetched %d workspace variables\n", len(remoteVars))
+			// Which scopes fed evaluation is the one thing that changes the
+			// digest between hosts, so it is logged rather than left implicit.
+			byScope := map[string]int{}
+			for _, v := range remoteVars {
+				byScope[v.Scope]++
+			}
+			fmt.Fprintf(os.Stderr, "  Fetched %d workspace variables (%d workspace-scoped, %d environment-scoped)\n",
+				len(remoteVars), byScope[tfcpkg.ScopeWorkspace], byScope[tfcpkg.ScopeEnvironment])
 		}
 	}
 
