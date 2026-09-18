@@ -88,10 +88,8 @@ jobs:
       # set is used throughout. Credential-shaped values are masked before
       # anything can print them.
       #
-      # team-ce/tfc/tool-import-e2e holds TFC_TOKEN and
-      # team-ce/jdavredbeard/scalr holds SCALR_TOKEN, which the
-      # TestRemoteState* tests use to read their fixture workspaces (see
-      # test/e2e/testdata/*-remote/main.tf).
+      # The tfc and scalr environments hold the tokens the TestRemoteState*
+      # tests read their fixture workspaces with.
       - name: Load AWS, Terraform Cloud, and Scalr credentials from ESC (masked)
         run: |
           for env in team-ce/aws/pulumi-ce team-ce/tfc/tool-import-e2e team-ce/jdavredbeard/scalr; do

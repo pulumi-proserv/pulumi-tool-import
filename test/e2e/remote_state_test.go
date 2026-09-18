@@ -25,19 +25,14 @@ import (
 	"testing"
 )
 
-// remoteHost describes one TFC-compatible backend holding a fixture
-// workspace that `digest tf` reads and never writes. Each workspace holds
-// state for the config in fixtureDir (one terraform_data resource whose
-// input is "hello"); see that file for how it was created and what it holds.
-// All of it is public test data.
+// Each host's fixture workspace holds state for the config in fixtureDir and
+// only public test data; the tests read it and never write.
 type remoteHost struct {
 	hostname     string
 	organization string
 	workspace    string
-	// tokenEnv names the environment variable holding a token that can read
-	// the workspace; the test skips when it is unset.
-	tokenEnv   string
-	fixtureDir string
+	tokenEnv     string
+	fixtureDir   string
 }
 
 var terraformCloud = remoteHost{
@@ -48,10 +43,8 @@ var terraformCloud = remoteHost{
 	fixtureDir:   "tfc-remote",
 }
 
-// Pulumi Cloud's Terraform backend stores each workspace as a Pulumi stack,
-// so the organization is the Pulumi organization and the workspace name is
-// project_stack. The token is the same one the E2E job already holds for
-// Pulumi Cloud, minted through OIDC.
+// Pulumi Cloud stores a workspace as the stack org/project/stack, hence the
+// Pulumi organization and a project_stack name.
 var pulumiCloud = remoteHost{
 	hostname:     "tf.pulumi.com",
 	organization: "team-ce",
@@ -60,9 +53,7 @@ var pulumiCloud = remoteHost{
 	fixtureDir:   "pulumi-cloud-remote",
 }
 
-// On Scalr the TFE-compatible organization is the environment ID. The
-// workspace has a workspace-scoped variable and the environment an
-// environment-scoped one; both must reach the digest.
+// On Scalr the TFE-compatible organization is the environment ID.
 var scalr = remoteHost{
 	hostname:     "pulumi-proserv.scalr.io",
 	organization: "env-v0pdr54u1htkjaue6",
@@ -71,12 +62,8 @@ var scalr = remoteHost{
 	fixtureDir:   "scalr-remote",
 }
 
-// TestRemoteStateTerraformCloud proves `digest tf` pulls state and workspace
-// variables from a real Terraform Cloud workspace, and that a wrong workspace
-// or token fails with the request and status in the message. The unit tests
-// in pkg/tfc run the same exchange against fake servers shaped like the
-// responses observed on 2026-09-15; this test is what notices when the real
-// API drifts from those shapes.
+// The pkg/tfc unit tests pin each host's response shapes as observed on a
+// given day; these tests are what notice when a real API drifts from them.
 func TestRemoteStateTerraformCloud(t *testing.T) {
 	h := terraformCloud
 	fx := newRemoteFixture(t, h)
@@ -107,10 +94,6 @@ func TestRemoteStateTerraformCloud(t *testing.T) {
 	})
 }
 
-// TestRemoteStatePulumiCloud is the same proof against Pulumi Cloud's
-// Terraform backend, whose discovery document uses absolute URLs (the bug
-// behind #65), which requires project_stack workspace names, and which does
-// not serve workspace variables.
 func TestRemoteStatePulumiCloud(t *testing.T) {
 	h := pulumiCloud
 	fx := newRemoteFixture(t, h)
@@ -147,10 +130,6 @@ func TestRemoteStatePulumiCloud(t *testing.T) {
 	})
 }
 
-// TestRemoteStateScalr is the same proof against Scalr, the host the remote
-// path was originally built for. Scalr advertises its native iacp.v3 API,
-// which the client uses to pick up environment-scoped variables that the
-// TFE-compatible vars route omits.
 func TestRemoteStateScalr(t *testing.T) {
 	h := scalr
 	fx := newRemoteFixture(t, h)
@@ -222,8 +201,6 @@ func (fx *remoteFixture) args(workspace, tokenEnv, out string) []string {
 	}
 }
 
-// digest runs `digest tf` against the host and fails the test if it fails.
-// extraEnv is appended to the sanitized environment.
 func (fx *remoteFixture) digest(t *testing.T, workspace, tokenEnv string, extraEnv []string) (out, digestPath string) {
 	t.Helper()
 	digestPath = filepath.Join(t.TempDir(), "tf-digest.json")
@@ -235,8 +212,6 @@ func (fx *remoteFixture) digest(t *testing.T, workspace, tokenEnv string, extraE
 	return out, digestPath
 }
 
-// digestFails runs `digest tf` and returns its output, failing the test if
-// the command succeeded.
 func (fx *remoteFixture) digestFails(t *testing.T, workspace, tokenEnv string, extraEnv []string) string {
 	t.Helper()
 	out, err := runToolAllowFail(t, fx.ctx, fx.binPath, fx.repoRoot, sanitizedEnv(extraEnv...),
@@ -262,8 +237,6 @@ func (fx *remoteFixture) assertBadTokenFails(t *testing.T) {
 	}
 }
 
-// assertFixtureDigest checks the digest describes the fixture state every
-// remote workspace holds: one terraform_data.fixture whose input is "hello".
 func assertFixtureDigest(t *testing.T, digestPath string) {
 	t.Helper()
 	raw, err := os.ReadFile(digestPath)

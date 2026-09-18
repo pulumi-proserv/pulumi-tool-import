@@ -251,12 +251,7 @@ func TestStatePull_WorkspaceNotFound(t *testing.T) {
 	assert.Contains(t, err.Error(), "not found")
 }
 
-// newMockPulumiCloudServer mimics Pulumi Cloud's Terraform backend
-// (tf.pulumi.com) as observed live on 2026-09-15: the discovery document
-// carries absolute URLs, the hosted-state download URL lives under the API
-// prefix, workspace names must be project_stack, error bodies are
-// {"code","message"} rather than JSON:API errors, and the variables route
-// is not implemented (plain-text 404).
+// Response shapes as observed on tf.pulumi.com, 2026-09-15.
 func newMockPulumiCloudServer(t *testing.T, org, workspace, workspaceID string, stateBody []byte) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -395,10 +390,7 @@ func TestWorkspaceNameHint(t *testing.T) {
 	assert.Empty(t, workspaceNameHint("app.terraform.io", "myproject/dev"))
 }
 
-// newMockTerraformCloudServer mimics Terraform Cloud (app.terraform.io) as
-// observed live on 2026-09-15: host-relative discovery paths, a hosted-state
-// download URL outside the tfe.v2 prefix (/api/state-versions/{id}/hosted_state),
-// JSON:API error bodies with only status and title, and a paginated vars route.
+// Response shapes as observed on app.terraform.io, 2026-09-15.
 func newMockTerraformCloudServer(t *testing.T, org, workspace, workspaceID string, stateBody []byte) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -527,16 +519,9 @@ func TestStatePull_TerraformCloud_JSONAPIErrorTitle(t *testing.T) {
 	assert.Contains(t, err.Error(), "→ 401 Unauthorized: unauthorized")
 }
 
-// newMockScalrServer mimics Scalr as observed live on 2026-09-17: discovery
-// advertises both tfe.v2 and the native iacp.v3 API, the TFE-compatible
-// "organization" is an environment ID, the hosted-state download URL is a
-// signed blob URL, JSON:API 404s carry a descriptive title, and variables
-// carry a workspace relationship that is null for environment-scoped ones.
-//
-// Its vars route honors filter[environment] (returning the environment's
-// own variables and those of every workspace in it) and filter[workspace]
-// (returning only that workspace's), which is the asymmetry listScalrVars
-// exists for.
+// Response shapes as observed on a Scalr account, 2026-09-17. The vars route
+// reproduces the asymmetry listScalrVars exists for: filter[workspace]
+// omits environment-scoped variables, filter[environment] returns them.
 func newMockScalrServer(t *testing.T, environmentID, workspace, workspaceID string, stateBody []byte) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -622,8 +607,6 @@ func newMockScalrServer(t *testing.T, environmentID, workspace, workspaceID stri
 			},
 		}
 	}
-	// The environment holds the target workspace and a sibling; both define
-	// "greeting", the environment defines "env_scoped" and its own "greeting".
 	allVars := []map[string]interface{}{
 		scopedVar("var-env-greeting", "greeting", "from-environment", ""),
 		scopedVar("var-env-scoped", "env_scoped", "from-environment", ""),

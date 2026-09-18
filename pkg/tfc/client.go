@@ -61,8 +61,6 @@ func (c *Client) ListVariables(ctx context.Context, org, workspace string) ([]Wo
 		return nil, err
 	}
 
-	// Prefer IACP v3 when available (Scalr): environment-scope variables apply
-	// to the workspace too, and only this API can return them.
 	if disc.iacpPrefix != "" {
 		vars, err := c.listScalrVars(ctx, httpClient, disc.iacpPrefix, org, wsID)
 		if err == nil {
@@ -76,15 +74,10 @@ func (c *Client) ListVariables(ctx context.Context, org, workspace string) ([]Wo
 	return c.listVarsPaginated(ctx, httpClient, varsURL)
 }
 
-// listScalrVars returns the variables in effect for a workspace on Scalr.
-//
-// On Scalr the TFE-compatible "organization" is the environment ID, and a
-// variable is scoped to a workspace, to an environment (workspace null), or
-// to the account. Filtering IACP v3 by workspace returns only the first kind
-// (observed 2026-09-17), so this filters by environment — which returns the
-// environment's own variables and every workspace's — and keeps those whose
-// workspace is the target or unset. Workspace-scoped variables are listed
-// first so they win the key dedupe, matching Scalr's precedence.
+// Scalr's vars route filtered by workspace omits environment-scoped variables
+// (observed 2026-09-17), so filter by environment — Scalr's TFE-compatible
+// organization — and keep what applies to this workspace. Workspace-scoped
+// entries go first so they win the dedupe, matching Scalr's precedence.
 func (c *Client) listScalrVars(ctx context.Context, httpClient *http.Client, iacpPrefix, environmentID, wsID string) ([]WorkspaceVariable, error) {
 	varsURL := fmt.Sprintf("%s/vars?filter%%5Benvironment%%5D=%s", iacpPrefix, environmentID)
 	entries, err := c.fetchVarsPages(ctx, httpClient, varsURL)
@@ -105,8 +98,6 @@ func (c *Client) listScalrVars(ctx context.Context, httpClient *http.Client, iac
 	return dedupeByKey(ordered), nil
 }
 
-// listVarsPaginated fetches the variables at the given base URL, following
-// pagination and deduplicating by key in response order.
 func (c *Client) listVarsPaginated(ctx context.Context, httpClient *http.Client, baseVarsURL string) ([]WorkspaceVariable, error) {
 	entries, err := c.fetchVarsPages(ctx, httpClient, baseVarsURL)
 	if err != nil {
@@ -132,15 +123,11 @@ func dedupeByKey(vars []WorkspaceVariable) []WorkspaceVariable {
 	return out
 }
 
-// varEntry is a terraform-category variable plus the workspace its scope
-// names ("" when the variable is environment- or account-scoped).
 type varEntry struct {
 	WorkspaceVariable
 	scopeWorkspace string
 }
 
-// fetchVarsPages walks every page of a JSON:API variables listing and returns
-// the terraform-category variables in response order.
 func (c *Client) fetchVarsPages(ctx context.Context, httpClient *http.Client, baseVarsURL string) ([]varEntry, error) {
 	var entries []varEntry
 	for pageNum := 1; ; pageNum++ {
@@ -179,7 +166,6 @@ func (c *Client) fetchVarsPages(ctx context.Context, httpClient *http.Client, ba
 	return entries, nil
 }
 
-// relationship is a JSON:API to-one relationship; Data is null when unset.
 type relationship struct {
 	Data *struct {
 		ID string `json:"id"`
@@ -321,13 +307,10 @@ func (c *Client) discoverAll(ctx context.Context, httpClient *http.Client, baseU
 	return result, nil
 }
 
-// resolveServicePrefix turns a service-discovery value into an absolute API
-// prefix without a trailing slash. The remote service discovery protocol
-// allows either form: Terraform Cloud and Scalr publish host-relative paths
-// ("/api/v2/"), Pulumi Cloud publishes absolute URLs
-// ("https://tf.pulumi.com/api/v2"). Joining an absolute URL onto the base
-// produced "https://host/https://host/api/v2", which the server redirected
-// and then answered 404 — reported to the user as "workspace not found".
+// The discovery protocol allows absolute or relative prefixes: TFC and Scalr
+// publish "/api/v2/", Pulumi Cloud "https://tf.pulumi.com/api/v2". Joining
+// the latter onto the base yielded a redirect and a 404 that surfaced as
+// "workspace not found" (#65).
 func resolveServicePrefix(baseURL, prefix string) string {
 	prefix = strings.TrimRight(prefix, "/")
 	if strings.HasPrefix(prefix, "http://") || strings.HasPrefix(prefix, "https://") {
@@ -336,10 +319,8 @@ func resolveServicePrefix(baseURL, prefix string) string {
 	return baseURL + "/" + strings.TrimLeft(prefix, "/")
 }
 
-// HTTPError is a non-200 response from the backend. Its message names the
-// request and the status so a 401, a 404, and an unimplemented route are
-// distinguishable, and carries the server's own message when the body has
-// one (Pulumi Cloud answers {"code","message"}, TFC answers JSON:API errors).
+// HTTPError names the request and status so a 401, a 404, and an
+// unimplemented route no longer read as the same failure.
 type HTTPError struct {
 	Method     string
 	URL        string
@@ -356,8 +337,6 @@ func (e *HTTPError) Error() string {
 	return msg
 }
 
-// newHTTPError reads (and consumes) the response body looking for a server
-// message. Bodies larger than a few KB are not error messages and are dropped.
 func newHTTPError(req *http.Request, resp *http.Response) *HTTPError {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	return &HTTPError{
@@ -369,7 +348,6 @@ func newHTTPError(req *http.Request, resp *http.Response) *HTTPError {
 	}
 }
 
-// serverMessage extracts a human-readable message from an error body.
 func serverMessage(body []byte) string {
 	var pulumiShape struct {
 		Message string `json:"message"`
@@ -400,11 +378,8 @@ func serverMessage(body []byte) string {
 	return text
 }
 
-// workspaceNameHint explains Pulumi Cloud's workspace naming rule when a
-// lookup on tf.pulumi.com used a name the server would never accept. The
-// backend stores each workspace as a Pulumi stack and rejects any other form
-// at creation time with `workspace name must be of the form "project_stack"`,
-// so a slash or dash in the name is a sure sign of the wrong spelling.
+// Pulumi Cloud refuses to create any workspace not named project_stack, so a
+// slash or dash in a not-found name is a misspelling, not a missing workspace.
 func workspaceNameHint(hostname, workspace string) string {
 	if !strings.Contains(hostname, "tf.pulumi.com") {
 		return ""

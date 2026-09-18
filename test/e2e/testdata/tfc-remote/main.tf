@@ -1,13 +1,6 @@
-# Fixture for the Terraform Cloud remote-state e2e test
-# (test/e2e/remote_state_test.go). The workspace already exists and holds
-# state for exactly this configuration; the test only reads it, never
-# applies. Everything in the workspace is public test data: one
-# terraform_data resource whose input is "hello", and one workspace
-# variable, greeting = "from-tfc".
-#
-# To recreate the workspace: `terraform login`, then `terraform init` and
-# `terraform apply` in this directory, then add the `greeting` variable in
-# the workspace settings.
+# Read-only fixture for TestRemoteStateTerraformCloud; the workspace already
+# holds this state plus a workspace variable greeting = "from-tfc". To
+# recreate: `terraform login`, init and apply here, then add the variable.
 
 terraform {
   cloud {

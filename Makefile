@@ -52,12 +52,10 @@ test:
 # creates, and logs the account it is using. Choosing the right account is
 # yours to get right.
 #
-# The same target also runs the TestRemoteState* tests, which read (never
-# write) fixture workspaces on Terraform Cloud, Pulumi Cloud's Terraform
-# backend, and Scalr. Each skips itself without its token: TFC_TOKEN (ESC
-# environment team-ce/tfc/tool-import-e2e), SCALR_TOKEN (ESC environment
-# team-ce/jdavredbeard/scalr), and PULUMI_ACCESS_TOKEN (any token that can
-# read the team-ce organization). To run only those:
+# The TestRemoteState* tests in the same package read fixture workspaces on
+# Terraform Cloud, Pulumi Cloud, and Scalr, and skip without TFC_TOKEN,
+# PULUMI_ACCESS_TOKEN (team-ce), or SCALR_TOKEN. The ESC environments CI
+# opens work locally too:
 #
 #   esc run team-ce/tfc/tool-import-e2e -- esc run team-ce/jdavredbeard/scalr -- \
 #     go test -count=1 -tags e2e ./test/e2e/ -run TestRemoteState -v
