@@ -31,9 +31,6 @@ type Client struct {
 	HTTP     *http.Client
 }
 
-// Variable scopes. The TFE-compatible route only knows workspace scope; Scalr
-// also applies environment-scoped variables to every workspace in the
-// environment.
 const (
 	ScopeWorkspace   = "workspace"
 	ScopeEnvironment = "environment"
@@ -46,20 +43,9 @@ type WorkspaceVariable struct {
 	Category  string `json:"category"` // "terraform" or "env"
 	HCL       bool   `json:"hcl"`
 	Sensitive bool   `json:"sensitive"`
-	Scope     string `json:"scope"` // ScopeWorkspace or ScopeEnvironment
+	Scope     string `json:"scope"`
 }
 
-// ListVariables returns the terraform-category variables in effect for the
-// workspace, following JSON:API pagination.
-//
-// On a backend that advertises Scalr's native iacp.v3 API, the variables are
-// fetched for the environment (which is what Scalr exposes as the
-// TFE-compatible organization) and narrowed to those scoped to this workspace
-// or to the environment, a workspace-scoped variable winning a key clash.
-// There is no fallback to the TFE-compatible route on Scalr: that route omits
-// environment-scoped variables, so a fallback would report success on an
-// incomplete set. Every other backend uses the TFE-compatible route, which
-// returns workspace scope only.
 func (c *Client) ListVariables(ctx context.Context, org, workspace string) ([]WorkspaceVariable, error) {
 	httpClient := c.httpClient()
 	baseURL := c.baseURL()
@@ -82,17 +68,6 @@ func (c *Client) ListVariables(ctx context.Context, org, workspace string) ([]Wo
 	return c.listVarsPaginated(ctx, httpClient, varsURL)
 }
 
-// Scalr's vars route filtered by workspace omits environment-scoped variables
-// (observed 2026-09-17), so filter by environment — Scalr's TFE-compatible
-// organization — and keep what applies to this workspace. Workspace-scoped
-// entries go first so they win the dedupe, matching Scalr's precedence.
-//
-// The filter matches only on an environment ID, and an unmatched value answers
-// 200 with no data, so a name in --organization is refused up front rather
-// than reported as a workspace with no variables. Each entry's own environment
-// relationship is checked too, so the result does not depend on the server
-// honoring the filter. Account-scoped variables (Scalr's third tier, above
-// environments) are not fetched.
 func (c *Client) listScalrVars(ctx context.Context, httpClient *http.Client, iacpPrefix, environmentID, wsID string) ([]WorkspaceVariable, error) {
 	if !strings.HasPrefix(environmentID, "env-") {
 		return nil, fmt.Errorf("on Scalr the organization must be the environment ID (env-…), got %q", environmentID)
@@ -189,8 +164,6 @@ func (c *Client) fetchVarsPages(ctx context.Context, httpClient *http.Client, ba
 	return entries, nil
 }
 
-// relationship is a JSON:API to-one relationship object, kept only for the
-// ID it references; Data is null when the relationship is unset.
 type relationship struct {
 	Data *struct {
 		ID string `json:"id"`
@@ -339,12 +312,6 @@ func (c *Client) discoverAll(ctx context.Context, httpClient *http.Client, baseU
 	return result, nil
 }
 
-// The discovery protocol allows absolute or relative prefixes: TFC and Scalr
-// publish "/api/v2/", Pulumi Cloud "https://tf.pulumi.com/api/v2". Joining
-// the latter onto the base yielded a redirect and a 404 that surfaced as
-// "workspace not found" (#65). An absolute prefix must stay on the configured
-// host: every later request carries the bearer token, and a discovery document
-// is the one response the client acts on before authenticating anything.
 func resolveServicePrefix(baseURL, prefix string) (string, error) {
 	prefix = strings.TrimRight(prefix, "/")
 	if strings.HasPrefix(prefix, "http://") || strings.HasPrefix(prefix, "https://") {
@@ -364,8 +331,6 @@ func resolveServicePrefix(baseURL, prefix string) (string, error) {
 	return baseURL + "/" + strings.TrimLeft(prefix, "/"), nil
 }
 
-// HTTPError names the request and status so a 401, a 404, and an
-// unimplemented route no longer read as the same failure.
 type HTTPError struct {
 	Method     string
 	URL        string
@@ -382,12 +347,9 @@ func (e *HTTPError) Error() string {
 	return msg
 }
 
-// maxErrorBodyBytes bounds how much of an error response is read for its
-// message; anything longer is a page, not a message.
 const maxErrorBodyBytes = 4096
 
 func newHTTPError(req *http.Request, resp *http.Response) *HTTPError {
-	// A short read still yields a usable message, so the error is ignored.
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 	return &HTTPError{
 		Method:     req.Method,
@@ -398,12 +360,6 @@ func newHTTPError(req *http.Request, resp *http.Response) *HTTPError {
 	}
 }
 
-// serverMessage tries the error-body shapes seen across the hosts, most
-// specific first: Pulumi Cloud's {"code","message"}, then JSON:API errors
-// (TFC, Scalr), then plain text. A JSON:API body also unmarshals into the
-// Pulumi shape with an empty Message, which is why the order matters. HTML
-// bodies are dropped rather than quoting markup into a Go error, and only the
-// first line of plain text is kept since the rest is usually a stack or page.
 func serverMessage(body []byte) string {
 	var pulumiShape struct {
 		Message string `json:"message"`
@@ -434,9 +390,6 @@ func serverMessage(body []byte) string {
 	return text
 }
 
-// Pulumi Cloud refuses to create any workspace not named project_stack, so a
-// not-found name that cannot be of that form (no underscore, or a slash) is a
-// misspelling, not a missing workspace.
 func workspaceNameHint(hostname, workspace string) string {
 	if !strings.Contains(hostname, "tf.pulumi.com") {
 		return ""
@@ -447,8 +400,6 @@ func workspaceNameHint(hostname, workspace string) string {
 	return "Pulumi Cloud workspace names take the form <project>_<stack> (the cloud { workspaces { name } } value), not <project>/<stack>"
 }
 
-// doJSON returns the response only so callers can branch on its status; the
-// body has already been consumed and closed by the time it returns.
 func (c *Client) doJSON(ctx context.Context, httpClient *http.Client, url string, target interface{}) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -545,8 +496,6 @@ func (c *Client) downloadState(ctx context.Context, httpClient *http.Client, dow
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		// The download URL is server-issued and may embed its own credential
-		// (Scalr signs a token into the path), so the error names only the host.
 		httpErr := newHTTPError(req, resp)
 		httpErr.URL = req.URL.Scheme + "://" + req.URL.Host + "/…"
 		return nil, fmt.Errorf("downloading state: %w", httpErr)

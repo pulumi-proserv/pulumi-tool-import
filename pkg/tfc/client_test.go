@@ -251,7 +251,6 @@ func TestStatePull_WorkspaceNotFound(t *testing.T) {
 	assert.Contains(t, err.Error(), "not found")
 }
 
-// Response shapes as observed on tf.pulumi.com, 2026-09-15.
 func newMockPulumiCloudServer(t *testing.T, org, workspace, workspaceID string, stateBody []byte) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -415,7 +414,6 @@ func TestWorkspaceNameHint(t *testing.T) {
 	assert.Empty(t, workspaceNameHint("app.terraform.io", "myproject/dev"))
 }
 
-// Response shapes as observed on app.terraform.io, 2026-09-15.
 func newMockTerraformCloudServer(t *testing.T, org, workspace, workspaceID string, stateBody []byte) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -544,10 +542,6 @@ func TestStatePull_TerraformCloud_JSONAPIErrorTitle(t *testing.T) {
 	assert.Contains(t, err.Error(), "→ 401 Unauthorized: unauthorized")
 }
 
-// Response shapes as observed on a Scalr account, 2026-09-17. The vars route
-// reproduces the asymmetry listScalrVars exists for (filter[workspace] omits
-// environment-scoped variables, filter[environment] returns them), which
-// TestScalrMock_WorkspaceFilterOmitsEnvironmentScope pins.
 func newMockScalrServer(t *testing.T, environmentID, workspace, workspaceID string, stateBody []byte) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -693,8 +687,6 @@ func TestStatePull_Scalr(t *testing.T) {
 	assert.Contains(t, err.Error(), "→ 401 Unauthorized: Unauthorized")
 }
 
-// The live suite no longer sends bad tokens to real hosts (deliberate 401s
-// against shared accounts look like abuse), so the fakes carry that case.
 func TestScalrMock_WorkspaceFilterOmitsEnvironmentScope(t *testing.T) {
 	t.Parallel()
 

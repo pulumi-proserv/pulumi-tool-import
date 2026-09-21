@@ -3,8 +3,8 @@
 # Common targets:
 #   make build     - compile the CLI
 #   make test      - run the Go test suite
-#   make test-e2e  - run the AWS and remote-state end-to-end tests (needs ESC credentials; see below)
-#   make test-e2e-remote - only the remote-state tests (Terraform Cloud, Pulumi Cloud, Scalr)
+#   make test-e2e  - run the end-to-end tests (needs ESC credentials; see below)
+#   make test-e2e-remote - only the remote-state tests
 #   make lint      - run golangci-lint
 #   make fmt       - format the tree (gofmt)
 #   make tidy      - go mod tidy
@@ -52,13 +52,6 @@ test:
 # The test skips cleanly when credentials are absent, always destroys what it
 # creates, and logs the account it is using. Choosing the right account is
 # yours to get right.
-#
-# The TestRemoteState* tests in the same package read fixture workspaces on
-# Terraform Cloud, Pulumi Cloud, and Scalr, and skip without TFC_TOKEN,
-# PULUMI_ACCESS_TOKEN (team-ce), or SCALR_TOKEN. CI takes all credentials from
-# the ESC environment team-ce/pulumi-tool-import/e2e, which works locally too:
-#
-#   esc run team-ce/pulumi-tool-import/e2e -- env -u AWS_PROFILE make test-e2e
 test-e2e:
 	# -count=1 defeats the test cache. Without it, a second invocation with an
 	# unchanged tree replays the previous run's stored output and prints
@@ -67,7 +60,6 @@ test-e2e:
 	# real infrastructure.
 	$(GO) test -count=1 -tags e2e ./test/e2e/ -v -timeout $(E2E_TIMEOUT)
 
-# Only the remote-state tests: no AWS, under a minute, needs the three tokens.
 test-e2e-remote:
 	$(GO) test -count=1 -tags e2e ./test/e2e/ -run TestRemoteState -v -timeout 10m
 

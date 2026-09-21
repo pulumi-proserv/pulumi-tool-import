@@ -87,29 +87,26 @@ jobs:
       # registered mask covers, so masking only works if the same credential
       # set is used throughout. Credential-shaped values are masked before
       # anything can print them.
-      #
-      # team-ce/pulumi-tool-import/e2e imports the AWS environment and holds
-      # the tokens the TestRemoteState* tests read their fixture workspaces with.
       - name: Load credentials from ESC (masked)
         run: |
-          # Streamed straight through jq so the decrypted document never
-          # touches the runner's disk. A plain pipe, not process
-          # substitution: with pipefail a failed `pulumi env open` fails the
-          # step, whereas `< <(...)` would discard its status and export nothing.
+          # Make the pipeline below fail if any stage fails, not just the last.
           set -o pipefail
-          pulumi env open team-ce/pulumi-tool-import/e2e --format json \
-            | jq -r '(.environmentVariables // {}) | to_entries[] | "\(.key)\t\(.value)"' \
-            | while IFS=$'\t' read -r k v; do
-            # The OIDC step above already set PULUMI_ACCESS_TOKEN; letting the
-            # environment replace it (or anything else already set) would
-            # silently change which principal the rest of the job runs as.
+          # Resolve the environment (AWS creds via the imported env, plus the tokens) as JSON.
+          pulumi env open team-ce/pulumi-tool-import/e2e --format json |
+            # Emit one "NAME<tab>value" line per environment variable.
+            jq -r '(.environmentVariables // {}) | to_entries[] | "\(.key)\t\(.value)"' |
+            # Split each line at the tab into name (k) and value (v); -r keeps backslashes literal.
+            while IFS=$'\t' read -r k v; do
+            # ${!k} reads the variable named by k; refuse to overwrite one the job already has.
             if [ -n "${!k:-}" ]; then
               echo "::error::ESC environment defines $k, which the job already sets"
               exit 1
             fi
+            # Register credential-shaped values with the log masker before anything prints them.
             case "$k" in
               *KEY*|*SECRET*|*TOKEN*|*PASSWORD*) echo "::add-mask::$v" ;;
             esac
+            # Export the variable to every later step in the job.
             echo "$k=$v" >> "$GITHUB_ENV"
           done
 
@@ -125,19 +122,18 @@ jobs:
           echo "::add-mask::$acct"
           echo "::add-mask::$arn"
 
-      # Same reasoning for the remote-state tokens: TestRemoteState* skip when
-      # a token is missing, so a dead or renamed credential would otherwise
-      # leave the gate green having tested nothing. Skipped when the suite is
-      # switched off, since the tokens are then deliberately unused.
       - name: Verify remote-state credentials
         if: vars.REMOTE_STATE_E2E != 'off'
         run: |
+          # check NAME URL: fail unless the token in $NAME can GET the URL.
           check() {
             local name=$1 url=$2
+            # ${!name} reads the variable named by $name.
             if [ -z "${!name:-}" ]; then
               echo "::error::$name is empty; the ESC environment did not supply it"
               exit 1
             fi
+            # Discard the body, keep only the HTTP status code.
             code=$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${!name}" "$url")
             if [ "$code" != "200" ]; then
               echo "::error::$name does not read its fixture workspace: GET $url -> $code"
@@ -155,9 +151,7 @@ jobs:
         # which would skip t.Cleanup's tofu destroy.
         env:
           E2E_TIMEOUT: 30m
-          # Repository variable; set it to "off" to skip the tests that hit
-          # Terraform Cloud, Pulumi Cloud, and Scalr without a workflow change,
-          # e.g. during a vendor outage. Unset means on.
+          # Repository variable; "off" skips the Terraform Cloud, Pulumi Cloud, and Scalr tests.
           REMOTE_STATE_E2E: ${{ vars.REMOTE_STATE_E2E }}
         run: make test-e2e
 

@@ -25,10 +25,6 @@ import (
 	"testing"
 )
 
-// Each host's fixture workspace holds state for the config in fixtureDir and
-// only public test data; the tests read it and never write. The pkg/tfc unit
-// tests pin each host's response shapes as observed on a given day; these
-// tests are what notice when a real API drifts from them.
 type remoteHost struct {
 	hostname     string
 	organization string
@@ -45,8 +41,6 @@ var terraformCloud = remoteHost{
 	fixtureDir:   "tfc-remote",
 }
 
-// Pulumi Cloud stores a workspace as the stack org/project/stack, hence the
-// Pulumi organization and a project_stack name.
 var pulumiCloud = remoteHost{
 	hostname:     "tf.pulumi.com",
 	organization: "team-ce",
@@ -55,7 +49,6 @@ var pulumiCloud = remoteHost{
 	fixtureDir:   "pulumi-cloud-remote",
 }
 
-// On Scalr the TFE-compatible organization is the environment ID.
 var scalr = remoteHost{
 	hostname:     "pulumi-proserv.scalr.io",
 	organization: "env-v0pdr54u1htkjaue6",
@@ -114,7 +107,6 @@ func TestRemoteStateScalr(t *testing.T) {
 
 	t.Run("PullsStateAndBothVariableScopes", func(t *testing.T) {
 		out, digestPath := fx.digest(t, h.workspace, h.tokenEnv, nil)
-		// greeting exists at both scopes on the fixture; the workspace one must win.
 		fx.assertOutput(t, out,
 			"Fetched 2 workspace variables (1 workspace-scoped, 1 environment-scoped): env_scoped [environment], greeting [workspace]")
 		assertFixtureDigest(t, digestPath)
@@ -194,9 +186,6 @@ func (fx *remoteFixture) digestFails(t *testing.T, workspace, tokenEnv string, e
 	return out
 }
 
-// assertOutput checks only what the client itself composes — its own
-// wording, the request it built, the status code — never a vendor's message
-// text, so a reworded error page cannot fail the gate.
 func (fx *remoteFixture) assertOutput(t *testing.T, out string, wants ...string) {
 	t.Helper()
 	for _, want := range wants {

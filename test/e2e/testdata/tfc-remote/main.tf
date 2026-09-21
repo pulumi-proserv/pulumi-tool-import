@@ -1,7 +1,3 @@
-# Read-only fixture for TestRemoteStateTerraformCloud; the workspace already
-# holds this state plus a workspace variable greeting = "from-tfc". To
-# recreate: `terraform login`, init and apply here, then add the variable.
-
 terraform {
   cloud {
     hostname     = "app.terraform.io"
