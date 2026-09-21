@@ -93,9 +93,13 @@ jobs:
       - name: Load credentials from ESC (masked)
         run: |
           # Streamed straight through jq so the decrypted document never
-          # touches the runner's disk.
+          # touches the runner's disk. A plain pipe, not process
+          # substitution: with pipefail a failed `pulumi env open` fails the
+          # step, whereas `< <(...)` would discard its status and export nothing.
           set -o pipefail
-          while IFS=$'\t' read -r k v; do
+          pulumi env open team-ce/pulumi-tool-import/e2e --format json \
+            | jq -r '(.environmentVariables // {}) | to_entries[] | "\(.key)\t\(.value)"' \
+            | while IFS=$'\t' read -r k v; do
             # The OIDC step above already set PULUMI_ACCESS_TOKEN; letting the
             # environment replace it (or anything else already set) would
             # silently change which principal the rest of the job runs as.
@@ -107,8 +111,7 @@ jobs:
               *KEY*|*SECRET*|*TOKEN*|*PASSWORD*) echo "::add-mask::$v" ;;
             esac
             echo "$k=$v" >> "$GITHUB_ENV"
-          done < <(pulumi env open team-ce/pulumi-tool-import/e2e --format json \
-                   | jq -r '(.environmentVariables // {}) | to_entries[] | "\(.key)\t\(.value)"')
+          done
 
       # Fails the job when the credentials do not work: the suite itself
       # t.Skips in that case and go test exits 0, which would otherwise leave
