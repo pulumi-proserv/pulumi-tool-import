@@ -3,7 +3,8 @@
 # Common targets:
 #   make build     - compile the CLI
 #   make test      - run the Go test suite
-#   make test-e2e  - run the AWS end-to-end test (needs ESC credentials; see below)
+#   make test-e2e  - run the AWS and remote-state end-to-end tests (needs ESC credentials; see below)
+#   make test-e2e-remote - only the remote-state tests (Terraform Cloud, Pulumi Cloud, Scalr)
 #   make lint      - run golangci-lint
 #   make fmt       - format the tree (gofmt)
 #   make tidy      - go mod tidy

@@ -27,7 +27,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   must be the Scalr environment ID (`env-…`), and a failure of the native
   variables call is reported rather than silently retried through the
   TFE-compatible route, which cannot see environment scope. The
-  `Fetched N workspace variables` line now breaks the count down by scope.
+  `Fetched N workspace variables` line now breaks the count down by scope
+  and lists each variable with the scope it came from.
+- **`digest tf` refuses a service-discovery document that points to another
+  host.** Every request after discovery carries the API token, so an absolute
+  prefix on a host other than `--hostname` is an error rather than a redirect
+  of the token.
 
 ### Fixed
 
