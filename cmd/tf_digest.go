@@ -15,11 +15,14 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg"
+	"github.com/pulumi-proserv/pulumi-tool-import/pkg/tfc"
 	"github.com/spf13/cobra"
 )
 
@@ -63,13 +66,25 @@ Examples:
     --pulumi-stack dev \
     --pulumi-project myproject
 
-  # From a TFC-compatible remote (Scalr, TFC, TFE)
+  # From a TFC-compatible remote (Terraform Cloud/Enterprise, Scalr)
   pulumi plugin run import -- digest tf \
     --from path/to/terraform-sources \
     --hostname app.terraform.io \
     --organization my-org \
     --workspace my-workspace-dev \
     --token-env TFC_TOKEN \
+    --out /tmp/tf-digest.json \
+    --pulumi-stack dev \
+    --pulumi-project myproject
+
+  # From Pulumi Cloud's Terraform backend: the Pulumi organization and the
+  # project_stack workspace name from the cloud { workspaces { name } } block
+  pulumi plugin run import -- digest tf \
+    --from path/to/terraform-sources \
+    --hostname tf.pulumi.com \
+    --organization my-pulumi-org \
+    --workspace myproject_dev \
+    --token-env PULUMI_ACCESS_TOKEN \
     --out /tmp/tf-digest.json \
     --pulumi-stack dev \
     --pulumi-project myproject
@@ -134,8 +149,8 @@ Examples:
 
 			err := pkg.GenerateModuleMap(cmd.Context(), from, stateFile, out, pulumiStack, pulumiProject, remote, secretsOpts, !skipImportCheck)
 			if err != nil {
-				// Enrich authentication errors with the env var name for user guidance.
-				if remote != nil && strings.Contains(err.Error(), "authentication failed") {
+				var httpErr *tfc.HTTPError
+				if remote != nil && errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusUnauthorized {
 					return fmt.Errorf("%w: check token in env var %s", err, tokenEnv)
 				}
 				return fmt.Errorf("failed to generate tf digest: %w", err)
@@ -150,8 +165,8 @@ Examples:
 	cmd.Flags().StringVar(&pulumiStack, "pulumi-stack", "", "Pulumi stack name for URN generation")
 	cmd.Flags().StringVar(&pulumiProject, "pulumi-project", "", "Pulumi project name for URN generation")
 	cmd.Flags().StringVar(&hostname, "hostname", "", "TFC-compatible API hostname (e.g. app.terraform.io)")
-	cmd.Flags().StringVar(&organization, "organization", "", "Organization name on the TFC-compatible host")
-	cmd.Flags().StringVar(&workspace, "workspace", "", "Workspace name on the TFC-compatible host")
+	cmd.Flags().StringVar(&organization, "organization", "", "Organization on the TFC-compatible host (Pulumi Cloud: the Pulumi organization; Scalr: the environment ID, env-…)")
+	cmd.Flags().StringVar(&workspace, "workspace", "", "Workspace name on the TFC-compatible host (Pulumi Cloud: project_stack)")
 	cmd.Flags().StringVar(&tokenEnv, "token-env", "", "Name of environment variable containing the API token")
 	cmd.Flags().StringVar(&projectDir, "project-dir", ".", "Path to the Pulumi project directory (for setting secrets)")
 	cmd.Flags().BoolVar(&skipSecrets, "skip-secrets", false, "Skip setting sensitive attributes as Pulumi config secrets")

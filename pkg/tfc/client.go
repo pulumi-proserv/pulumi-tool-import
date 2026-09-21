@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -31,6 +31,11 @@ type Client struct {
 	HTTP     *http.Client
 }
 
+const (
+	ScopeWorkspace   = "workspace"
+	ScopeEnvironment = "environment"
+)
+
 // WorkspaceVariable represents a single variable from the TFC/Scalr workspace.
 type WorkspaceVariable struct {
 	Key       string `json:"key"`
@@ -38,14 +43,9 @@ type WorkspaceVariable struct {
 	Category  string `json:"category"` // "terraform" or "env"
 	HCL       bool   `json:"hcl"`
 	Sensitive bool   `json:"sensitive"`
+	Scope     string `json:"scope"`
 }
 
-// ListVariables fetches all Terraform variables from the workspace,
-// following JSON:API pagination.
-//
-// When the backend advertises the Scalr-native IACP v3 API, that endpoint is
-// used because it returns all variables (including environment-scope vars).
-// The TFE-compatible endpoint only returns workspace-scope variables.
 func (c *Client) ListVariables(ctx context.Context, org, workspace string) ([]WorkspaceVariable, error) {
 	httpClient := c.httpClient()
 	baseURL := c.baseURL()
@@ -60,26 +60,73 @@ func (c *Client) ListVariables(ctx context.Context, org, workspace string) ([]Wo
 		return nil, err
 	}
 
-	// Prefer IACP v3 when available (Scalr) — it includes environment-scope vars.
 	if disc.iacpPrefix != "" {
-		varsURL := fmt.Sprintf("%s/vars?filter%%5Bworkspace%%5D=%s", disc.iacpPrefix, wsID)
-		vars, err := c.listVarsPaginated(ctx, httpClient, varsURL)
-		if err == nil {
-			return vars, nil
-		}
-		fmt.Fprintf(os.Stderr, "Warning: IACP vars endpoint failed, falling back to TFE: %v\n", err)
+		return c.listScalrVars(ctx, httpClient, disc.iacpPrefix, org, wsID)
 	}
 
-	// Fall back to TFE-compatible path.
 	varsURL := fmt.Sprintf("%s/workspaces/%s/vars", disc.apiPrefix, wsID)
 	return c.listVarsPaginated(ctx, httpClient, varsURL)
 }
 
-// listVarsPaginated fetches workspace variables from the given base URL with pagination.
-func (c *Client) listVarsPaginated(ctx context.Context, httpClient *http.Client, baseVarsURL string) ([]WorkspaceVariable, error) {
-	var allVars []WorkspaceVariable
-	seen := make(map[string]bool)
+func (c *Client) listScalrVars(ctx context.Context, httpClient *http.Client, iacpPrefix, environmentID, wsID string) ([]WorkspaceVariable, error) {
+	if !strings.HasPrefix(environmentID, "env-") {
+		return nil, fmt.Errorf("on Scalr the organization must be the environment ID (env-…), got %q", environmentID)
+	}
+	varsURL := fmt.Sprintf("%s/vars?filter%%5Benvironment%%5D=%s", iacpPrefix, environmentID)
+	entries, err := c.fetchVarsPages(ctx, httpClient, varsURL)
+	if err != nil {
+		return nil, err
+	}
+	var ordered []WorkspaceVariable
+	for _, e := range entries {
+		if e.scopeEnvironmentID == environmentID && e.scopeWorkspaceID == wsID {
+			e.Scope = ScopeWorkspace
+			ordered = append(ordered, e.WorkspaceVariable)
+		}
+	}
+	for _, e := range entries {
+		if e.scopeEnvironmentID == environmentID && e.scopeWorkspaceID == "" {
+			e.Scope = ScopeEnvironment
+			ordered = append(ordered, e.WorkspaceVariable)
+		}
+	}
+	return dedupeByKey(ordered), nil
+}
 
+func (c *Client) listVarsPaginated(ctx context.Context, httpClient *http.Client, baseVarsURL string) ([]WorkspaceVariable, error) {
+	entries, err := c.fetchVarsPages(ctx, httpClient, baseVarsURL)
+	if err != nil {
+		return nil, err
+	}
+	vars := make([]WorkspaceVariable, 0, len(entries))
+	for _, e := range entries {
+		e.Scope = ScopeWorkspace
+		vars = append(vars, e.WorkspaceVariable)
+	}
+	return dedupeByKey(vars), nil
+}
+
+func dedupeByKey(vars []WorkspaceVariable) []WorkspaceVariable {
+	seen := make(map[string]bool, len(vars))
+	var out []WorkspaceVariable
+	for _, v := range vars {
+		if seen[v.Key] {
+			continue
+		}
+		seen[v.Key] = true
+		out = append(out, v)
+	}
+	return out
+}
+
+type varEntry struct {
+	WorkspaceVariable
+	scopeWorkspaceID   string
+	scopeEnvironmentID string
+}
+
+func (c *Client) fetchVarsPages(ctx context.Context, httpClient *http.Client, baseVarsURL string) ([]varEntry, error) {
+	var entries []varEntry
 	for pageNum := 1; ; pageNum++ {
 		sep := "?"
 		if strings.Contains(baseVarsURL, "?") {
@@ -97,16 +144,16 @@ func (c *Client) listVarsPaginated(ctx context.Context, httpClient *http.Client,
 			if d.Attributes.Category != "terraform" {
 				continue
 			}
-			if seen[d.Attributes.Key] {
-				continue
-			}
-			seen[d.Attributes.Key] = true
-			allVars = append(allVars, WorkspaceVariable{
-				Key:       d.Attributes.Key,
-				Value:     d.Attributes.Value,
-				Category:  d.Attributes.Category,
-				HCL:       d.Attributes.HCL,
-				Sensitive: d.Attributes.Sensitive,
+			entries = append(entries, varEntry{
+				WorkspaceVariable: WorkspaceVariable{
+					Key:       d.Attributes.Key,
+					Value:     d.Attributes.Value,
+					Category:  d.Attributes.Category,
+					HCL:       d.Attributes.HCL,
+					Sensitive: d.Attributes.Sensitive,
+				},
+				scopeWorkspaceID:   d.Relationships.Workspace.ID(),
+				scopeEnvironmentID: d.Relationships.Environment.ID(),
 			})
 		}
 
@@ -114,8 +161,20 @@ func (c *Client) listVarsPaginated(ctx context.Context, httpClient *http.Client,
 			break
 		}
 	}
+	return entries, nil
+}
 
-	return allVars, nil
+type relationship struct {
+	Data *struct {
+		ID string `json:"id"`
+	} `json:"data"`
+}
+
+func (r relationship) ID() string {
+	if r.Data == nil {
+		return ""
+	}
+	return r.Data.ID
 }
 
 // varsPage represents one page of the JSON:API list-variables response.
@@ -128,6 +187,10 @@ type varsPage struct {
 			HCL       bool   `json:"hcl"`
 			Sensitive bool   `json:"sensitive"`
 		} `json:"attributes"`
+		Relationships struct {
+			Workspace   relationship `json:"workspace"`
+			Environment relationship `json:"environment"`
+		} `json:"relationships"`
 	} `json:"data"`
 	Meta struct {
 		Pagination struct {
@@ -226,8 +289,10 @@ func (c *Client) discoverAll(ctx context.Context, httpClient *http.Client, baseU
 
 	for _, key := range []string{"tfe.v2", "state.v2"} {
 		if prefix, ok := discovery[key]; ok {
-			prefix = strings.TrimRight(prefix, "/")
-			result.apiPrefix = baseURL + "/" + strings.TrimLeft(prefix, "/")
+			result.apiPrefix, err = resolveServicePrefix(baseURL, prefix)
+			if err != nil {
+				return nil, fmt.Errorf("service discovery failed: %w", err)
+			}
 			break
 		}
 	}
@@ -238,11 +303,101 @@ func (c *Client) discoverAll(ctx context.Context, httpClient *http.Client, baseU
 
 	// Check for Scalr-native IACP v3 API.
 	if prefix, ok := discovery["iacp.v3"]; ok {
-		prefix = strings.TrimRight(prefix, "/")
-		result.iacpPrefix = baseURL + "/" + strings.TrimLeft(prefix, "/")
+		result.iacpPrefix, err = resolveServicePrefix(baseURL, prefix)
+		if err != nil {
+			return nil, fmt.Errorf("service discovery failed: %w", err)
+		}
 	}
 
 	return result, nil
+}
+
+func resolveServicePrefix(baseURL, prefix string) (string, error) {
+	prefix = strings.TrimRight(prefix, "/")
+	if strings.HasPrefix(prefix, "http://") || strings.HasPrefix(prefix, "https://") {
+		base, err := url.Parse(baseURL)
+		if err != nil {
+			return "", err
+		}
+		p, err := url.Parse(prefix)
+		if err != nil {
+			return "", fmt.Errorf("invalid service prefix %q: %w", prefix, err)
+		}
+		if p.Host != base.Host {
+			return "", fmt.Errorf("%s advertises its API on a different host, %s; refusing to send the token there", base.Host, p.Host)
+		}
+		return prefix, nil
+	}
+	return baseURL + "/" + strings.TrimLeft(prefix, "/"), nil
+}
+
+type HTTPError struct {
+	Method     string
+	URL        string
+	StatusCode int
+	Status     string
+	Message    string
+}
+
+func (e *HTTPError) Error() string {
+	msg := fmt.Sprintf("%s %s → %s", e.Method, e.URL, e.Status)
+	if e.Message != "" {
+		msg += ": " + e.Message
+	}
+	return msg
+}
+
+const maxErrorBodyBytes = 4096
+
+func newHTTPError(req *http.Request, resp *http.Response) *HTTPError {
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+	return &HTTPError{
+		Method:     req.Method,
+		URL:        req.URL.String(),
+		StatusCode: resp.StatusCode,
+		Status:     resp.Status,
+		Message:    serverMessage(body),
+	}
+}
+
+func serverMessage(body []byte) string {
+	var pulumiShape struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(body, &pulumiShape); err == nil && pulumiShape.Message != "" {
+		return pulumiShape.Message
+	}
+	var jsonAPIShape struct {
+		Errors []struct {
+			Title  string `json:"title"`
+			Detail string `json:"detail"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(body, &jsonAPIShape); err == nil && len(jsonAPIShape.Errors) > 0 {
+		e := jsonAPIShape.Errors[0]
+		if e.Detail != "" {
+			return e.Detail
+		}
+		return e.Title
+	}
+	text := strings.TrimSpace(string(body))
+	if text == "" || strings.HasPrefix(text, "<") {
+		return ""
+	}
+	if i := strings.IndexByte(text, '\n'); i >= 0 {
+		text = text[:i]
+	}
+	return text
+}
+
+func workspaceNameHint(hostname, workspace string) string {
+	if !strings.Contains(hostname, "tf.pulumi.com") {
+		return ""
+	}
+	if strings.Contains(workspace, "_") && !strings.Contains(workspace, "/") {
+		return ""
+	}
+	return "Pulumi Cloud workspace names take the form <project>_<stack> (the cloud { workspaces { name } } value), not <project>/<stack>"
 }
 
 func (c *Client) doJSON(ctx context.Context, httpClient *http.Client, url string, target interface{}) (*http.Response, error) {
@@ -255,17 +410,16 @@ func (c *Client) doJSON(ctx context.Context, httpClient *http.Client, url string
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s %s: %w", req.Method, url, err)
 	}
+	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
-		return resp, fmt.Errorf("unexpected response from %s: %d", url, resp.StatusCode)
+		return resp, newHTTPError(req, resp)
 	}
 
-	defer resp.Body.Close()
 	if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
-		return resp, fmt.Errorf("unexpected response from %s: invalid JSON", url)
+		return resp, fmt.Errorf("%s %s → %s: response is not valid JSON", req.Method, url, resp.Status)
 	}
 	return resp, nil
 }
@@ -282,10 +436,14 @@ func (c *Client) getWorkspaceID(ctx context.Context, httpClient *http.Client, ap
 	resp, err := c.doJSON(ctx, httpClient, url, &result)
 	if err != nil {
 		if resp != nil && resp.StatusCode == http.StatusUnauthorized {
-			return "", fmt.Errorf("authentication failed for %s", c.Hostname)
+			return "", fmt.Errorf("authentication failed for %s (%w)", c.Hostname, err)
 		}
 		if resp != nil && resp.StatusCode == http.StatusNotFound {
-			return "", fmt.Errorf("workspace %s/%s not found on %s", org, workspace, c.Hostname)
+			hint := workspaceNameHint(c.Hostname, workspace)
+			if hint != "" {
+				hint = "; " + hint
+			}
+			return "", fmt.Errorf("workspace %s/%s not found on %s (%w)%s", org, workspace, c.Hostname, err, hint)
 		}
 		return "", fmt.Errorf("looking up workspace %s/%s: %w", org, workspace, err)
 	}
@@ -311,7 +469,7 @@ func (c *Client) getStateDownloadURL(ctx context.Context, httpClient *http.Clien
 	resp, err := c.doJSON(ctx, httpClient, url, &result)
 	if err != nil {
 		if resp != nil && resp.StatusCode == http.StatusNotFound {
-			return "", fmt.Errorf("no state found for workspace %s", workspaceID)
+			return "", fmt.Errorf("no state found for workspace %s (%w)", workspaceID, err)
 		}
 		return "", fmt.Errorf("getting state version for workspace %s: %w", workspaceID, err)
 	}
@@ -338,7 +496,9 @@ func (c *Client) downloadState(ctx context.Context, httpClient *http.Client, dow
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("downloading state: status %d", resp.StatusCode)
+		httpErr := newHTTPError(req, resp)
+		httpErr.URL = req.URL.Scheme + "://" + req.URL.Host + "/…"
+		return nil, fmt.Errorf("downloading state: %w", httpErr)
 	}
 
 	return io.ReadAll(resp.Body)
