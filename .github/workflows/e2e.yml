@@ -92,7 +92,9 @@ jobs:
       # the tokens the TestRemoteState* tests read their fixture workspaces with.
       - name: Load credentials from ESC (masked)
         run: |
-          pulumi env open team-ce/pulumi-tool-import/e2e --format json > /tmp/esc-env.json
+          # Streamed straight through jq so the decrypted document never
+          # touches the runner's disk.
+          set -o pipefail
           while IFS=$'\t' read -r k v; do
             # The OIDC step above already set PULUMI_ACCESS_TOKEN; letting the
             # environment replace it (or anything else already set) would
@@ -105,8 +107,8 @@ jobs:
               *KEY*|*SECRET*|*TOKEN*|*PASSWORD*) echo "::add-mask::$v" ;;
             esac
             echo "$k=$v" >> "$GITHUB_ENV"
-          done < <(jq -r '(.environmentVariables // {}) | to_entries[] | "\(.key)\t\(.value)"' /tmp/esc-env.json)
-          rm -f /tmp/esc-env.json
+          done < <(pulumi env open team-ce/pulumi-tool-import/e2e --format json \
+                   | jq -r '(.environmentVariables // {}) | to_entries[] | "\(.key)\t\(.value)"')
 
       # Fails the job when the credentials do not work: the suite itself
       # t.Skips in that case and go test exits 0, which would otherwise leave

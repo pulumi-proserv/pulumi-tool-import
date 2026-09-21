@@ -16,7 +16,7 @@ BINARY  ?= pulumi-tool-import
 PKG     ?= ./...
 E2E_TIMEOUT ?= 40m
 
-.PHONY: all build test test-e2e lint lint-e2e fmt fmt-check vet vet-e2e tidy check clean
+.PHONY: all build test test-e2e test-e2e-remote lint lint-e2e fmt fmt-check vet vet-e2e tidy check clean
 
 all: build
 
@@ -54,9 +54,8 @@ test:
 #
 # The TestRemoteState* tests in the same package read fixture workspaces on
 # Terraform Cloud, Pulumi Cloud, and Scalr, and skip without TFC_TOKEN,
-# PULUMI_ACCESS_TOKEN (team-ce), or SCALR_TOKEN. CI opens the ESC environment
-# team-ce/pulumi-tool-import/e2e, which also carries the AWS credentials and
-# works locally:
+# PULUMI_ACCESS_TOKEN (team-ce), or SCALR_TOKEN. CI takes all credentials from
+# the ESC environment team-ce/pulumi-tool-import/e2e, which works locally too:
 #
 #   esc run team-ce/pulumi-tool-import/e2e -- env -u AWS_PROFILE make test-e2e
 test-e2e:
@@ -66,6 +65,10 @@ test-e2e:
 	# exactly like a fresh one, for a test whose entire purpose is to exercise
 	# real infrastructure.
 	$(GO) test -count=1 -tags e2e ./test/e2e/ -v -timeout $(E2E_TIMEOUT)
+
+# Only the remote-state tests: no AWS, under a minute, needs the three tokens.
+test-e2e-remote:
+	$(GO) test -count=1 -tags e2e ./test/e2e/ -run TestRemoteState -v -timeout 10m
 
 lint: lint-e2e
 	golangci-lint run

@@ -354,7 +354,7 @@ func TestListVariables_PulumiCloud_RouteNotImplemented(t *testing.T) {
 	assert.Contains(t, err.Error(), "404 Not Found")
 }
 
-func TestStatePull_WorkspaceNotFound_NamesRequestAndStatus(t *testing.T) {
+func TestStatePull_PulumiCloud_WorkspaceNotFound_NamesRequestAndStatus(t *testing.T) {
 	t.Parallel()
 
 	server := newMockPulumiCloudServer(t, "myorg", "myproject_dev", "ws-1", nil)
@@ -366,6 +366,28 @@ func TestStatePull_WorkspaceNotFound_NamesRequestAndStatus(t *testing.T) {
 	assert.Contains(t, err.Error(), "GET "+server.URL+"/api/v2/organizations/myorg/workspaces/myproject-dev")
 	assert.Contains(t, err.Error(), "404 Not Found")
 	assert.Contains(t, err.Error(), "workspace 'myproject-dev' not found", "server message is surfaced")
+	assert.NotContains(t, err.Error(), "<project>_<stack>", "the hint is keyed on the tf.pulumi.com hostname, which a test server is not")
+
+	var httpErr *HTTPError
+	require.ErrorAs(t, err, &httpErr, "the 404 path must preserve the typed error like the 401 path does")
+	assert.Equal(t, http.StatusNotFound, httpErr.StatusCode)
+}
+
+func TestDiscovery_RefusesForeignHostPrefix(t *testing.T) {
+	t.Parallel()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/terraform.json", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]string{"tfe.v2": "https://elsewhere.example.com/api/v2"})
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	client := &Client{Hostname: server.URL, Token: "test-token"}
+	_, err := client.StatePull(context.Background(), "myorg", "myworkspace")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "elsewhere.example.com")
+	assert.Contains(t, err.Error(), "refusing to send the token")
 }
 
 func TestStatePull_Unauthorized_NamesRequestAndStatus(t *testing.T) {
@@ -386,7 +408,10 @@ func TestWorkspaceNameHint(t *testing.T) {
 
 	assert.Contains(t, workspaceNameHint("tf.pulumi.com", "myproject/dev"), "<project>_<stack>")
 	assert.Contains(t, workspaceNameHint("https://tf.pulumi.com", "myproject-dev"), "<project>_<stack>")
+	assert.Contains(t, workspaceNameHint("tf.pulumi.com", "projdev"), "<project>_<stack>", "no underscore cannot be project_stack")
+	assert.Contains(t, workspaceNameHint("tf.pulumi.com", "proj_a/dev"), "<project>_<stack>", "a slash cannot be project_stack")
 	assert.Empty(t, workspaceNameHint("tf.pulumi.com", "myproject_dev"), "already in the required form")
+	assert.Empty(t, workspaceNameHint("tf.pulumi.com", "proj-a_dev"), "a dash is legal inside project_stack")
 	assert.Empty(t, workspaceNameHint("app.terraform.io", "myproject/dev"))
 }
 
@@ -520,8 +545,9 @@ func TestStatePull_TerraformCloud_JSONAPIErrorTitle(t *testing.T) {
 }
 
 // Response shapes as observed on a Scalr account, 2026-09-17. The vars route
-// reproduces the asymmetry listScalrVars exists for: filter[workspace]
-// omits environment-scoped variables, filter[environment] returns them.
+// reproduces the asymmetry listScalrVars exists for (filter[workspace] omits
+// environment-scoped variables, filter[environment] returns them), which
+// TestScalrMock_WorkspaceFilterOmitsEnvironmentScope pins.
 func newMockScalrServer(t *testing.T, environmentID, workspace, workspaceID string, stateBody []byte) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -660,6 +686,37 @@ func TestStatePull_Scalr(t *testing.T) {
 	_, err = client.StatePull(context.Background(), "env-abc", "nope")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "→ 404 Not Found: Workspace with name 'nope' not found or user unauthorized.")
+
+	_, err = (&Client{Hostname: server.URL, Token: "bad"}).StatePull(context.Background(), "env-abc", "myworkspace")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "authentication failed")
+	assert.Contains(t, err.Error(), "→ 401 Unauthorized: Unauthorized")
+}
+
+// The live suite no longer sends bad tokens to real hosts (deliberate 401s
+// against shared accounts look like abuse), so the fakes carry that case.
+func TestScalrMock_WorkspaceFilterOmitsEnvironmentScope(t *testing.T) {
+	t.Parallel()
+
+	server := newMockScalrServer(t, "env-abc", "myworkspace", "ws-abc", nil)
+	client := &Client{Hostname: server.URL, Token: "test-token"}
+
+	byWorkspace, err := client.fetchVarsPages(context.Background(), client.httpClient(),
+		server.URL+"/api/iacp/v3/vars?filter%5Bworkspace%5D=ws-abc")
+	require.NoError(t, err)
+	byEnvironment, err := client.fetchVarsPages(context.Background(), client.httpClient(),
+		server.URL+"/api/iacp/v3/vars?filter%5Benvironment%5D=env-abc")
+	require.NoError(t, err)
+
+	keys := func(entries []varEntry) []string {
+		var out []string
+		for _, e := range entries {
+			out = append(out, e.Key)
+		}
+		return out
+	}
+	assert.Equal(t, []string{"greeting"}, keys(byWorkspace), "the old workspace filter never sees env_scoped")
+	assert.Contains(t, keys(byEnvironment), "env_scoped")
 }
 
 func TestListVariables_Scalr_IncludesEnvironmentScope(t *testing.T) {

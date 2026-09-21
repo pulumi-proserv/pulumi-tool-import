@@ -1,8 +1,9 @@
 # Read-only fixture for TestRemoteStateScalr; the workspace already holds
-# this state plus a workspace variable greeting and an environment variable
-# env_scoped. To recreate: export TF_TOKEN_pulumi__proserv_scalr_io=<token>
-# (Terraform doubles the underscore for the hyphen), init and apply here,
-# then add both variables.
+# this state plus a workspace variable greeting, and the environment holds
+# variables greeting and env_scoped (the workspace's greeting must win). To
+# recreate: export TF_TOKEN_pulumi__proserv_scalr_io=<token> (Terraform's
+# TF_TOKEN_ name replaces each dot with an underscore and each hyphen with a
+# double underscore), init and apply here, then add the three variables.
 
 terraform {
   cloud {

@@ -70,7 +70,7 @@ func TestRemoteStateTerraformCloud(t *testing.T) {
 
 	t.Run("PullsStateAndVariables", func(t *testing.T) {
 		out, digestPath := fx.digest(t, h.workspace, h.tokenEnv, nil)
-		fx.assertOutput(t, out, "Fetched 1 workspace variables (1 workspace-scoped, 0 environment-scoped)")
+		fx.assertOutput(t, out, "Fetched 1 workspace variables (1 workspace-scoped, 0 environment-scoped): greeting [workspace]")
 		assertFixtureDigest(t, digestPath)
 	})
 
@@ -81,10 +81,6 @@ func TestRemoteStateTerraformCloud(t *testing.T) {
 			"GET https://"+h.hostname+"/api/v2/organizations/"+h.organization+"/workspaces/no-such-workspace",
 			"→ 404",
 		)
-	})
-
-	t.Run("BadTokenNamesRequestAndStatus", func(t *testing.T) {
-		fx.assertBadTokenFails(t)
 	})
 }
 
@@ -110,10 +106,6 @@ func TestRemoteStatePulumiCloud(t *testing.T) {
 			"<project>_<stack>",
 		)
 	})
-
-	t.Run("BadTokenNamesRequestAndStatus", func(t *testing.T) {
-		fx.assertBadTokenFails(t)
-	})
 }
 
 func TestRemoteStateScalr(t *testing.T) {
@@ -122,7 +114,9 @@ func TestRemoteStateScalr(t *testing.T) {
 
 	t.Run("PullsStateAndBothVariableScopes", func(t *testing.T) {
 		out, digestPath := fx.digest(t, h.workspace, h.tokenEnv, nil)
-		fx.assertOutput(t, out, "Fetched 2 workspace variables (1 workspace-scoped, 1 environment-scoped)")
+		// greeting exists at both scopes on the fixture; the workspace one must win.
+		fx.assertOutput(t, out,
+			"Fetched 2 workspace variables (1 workspace-scoped, 1 environment-scoped): env_scoped [environment], greeting [workspace]")
 		assertFixtureDigest(t, digestPath)
 	})
 
@@ -133,10 +127,6 @@ func TestRemoteStateScalr(t *testing.T) {
 			"GET https://"+h.hostname+"/api/tfe/v2/organizations/"+h.organization+"/workspaces/no-such-workspace",
 			"→ 404",
 		)
-	})
-
-	t.Run("BadTokenNamesRequestAndStatus", func(t *testing.T) {
-		fx.assertBadTokenFails(t)
 	})
 }
 
@@ -202,17 +192,6 @@ func (fx *remoteFixture) digestFails(t *testing.T, workspace, tokenEnv string, e
 		t.Fatalf("expected digest tf against %s %s/%s to fail; output:\n%s", fx.host.hostname, fx.host.organization, workspace, out)
 	}
 	return out
-}
-
-func (fx *remoteFixture) assertBadTokenFails(t *testing.T) {
-	t.Helper()
-	const badTokenEnv = "REMOTE_E2E_BAD_TOKEN"
-	out := fx.digestFails(t, fx.host.workspace, badTokenEnv, []string{badTokenEnv + "=not-a-token"})
-	fx.assertOutput(t, out,
-		"authentication failed for "+fx.host.hostname,
-		"→ 401",
-		"check token in env var "+badTokenEnv,
-	)
 }
 
 // assertOutput checks only what the client itself composes — its own

@@ -17,10 +17,10 @@ package tfc
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -89,7 +89,10 @@ func (c *Client) ListVariables(ctx context.Context, org, workspace string) ([]Wo
 //
 // The filter matches only on an environment ID, and an unmatched value answers
 // 200 with no data, so a name in --organization is refused up front rather
-// than reported as a workspace with no variables.
+// than reported as a workspace with no variables. Each entry's own environment
+// relationship is checked too, so the result does not depend on the server
+// honoring the filter. Account-scoped variables (Scalr's third tier, above
+// environments) are not fetched.
 func (c *Client) listScalrVars(ctx context.Context, httpClient *http.Client, iacpPrefix, environmentID, wsID string) ([]WorkspaceVariable, error) {
 	if !strings.HasPrefix(environmentID, "env-") {
 		return nil, fmt.Errorf("on Scalr the organization must be the environment ID (env-…), got %q", environmentID)
@@ -101,13 +104,13 @@ func (c *Client) listScalrVars(ctx context.Context, httpClient *http.Client, iac
 	}
 	var ordered []WorkspaceVariable
 	for _, e := range entries {
-		if e.scopeWorkspaceID == wsID {
+		if e.scopeEnvironmentID == environmentID && e.scopeWorkspaceID == wsID {
 			e.Scope = ScopeWorkspace
 			ordered = append(ordered, e.WorkspaceVariable)
 		}
 	}
 	for _, e := range entries {
-		if e.scopeWorkspaceID == "" {
+		if e.scopeEnvironmentID == environmentID && e.scopeWorkspaceID == "" {
 			e.Scope = ScopeEnvironment
 			ordered = append(ordered, e.WorkspaceVariable)
 		}
@@ -143,7 +146,8 @@ func dedupeByKey(vars []WorkspaceVariable) []WorkspaceVariable {
 
 type varEntry struct {
 	WorkspaceVariable
-	scopeWorkspaceID string
+	scopeWorkspaceID   string
+	scopeEnvironmentID string
 }
 
 func (c *Client) fetchVarsPages(ctx context.Context, httpClient *http.Client, baseVarsURL string) ([]varEntry, error) {
@@ -173,7 +177,8 @@ func (c *Client) fetchVarsPages(ctx context.Context, httpClient *http.Client, ba
 					HCL:       d.Attributes.HCL,
 					Sensitive: d.Attributes.Sensitive,
 				},
-				scopeWorkspaceID: d.Relationships.Workspace.ID(),
+				scopeWorkspaceID:   d.Relationships.Workspace.ID(),
+				scopeEnvironmentID: d.Relationships.Environment.ID(),
 			})
 		}
 
@@ -184,6 +189,8 @@ func (c *Client) fetchVarsPages(ctx context.Context, httpClient *http.Client, ba
 	return entries, nil
 }
 
+// relationship is a JSON:API to-one relationship object, kept only for the
+// ID it references; Data is null when the relationship is unset.
 type relationship struct {
 	Data *struct {
 		ID string `json:"id"`
@@ -208,7 +215,8 @@ type varsPage struct {
 			Sensitive bool   `json:"sensitive"`
 		} `json:"attributes"`
 		Relationships struct {
-			Workspace relationship `json:"workspace"`
+			Workspace   relationship `json:"workspace"`
+			Environment relationship `json:"environment"`
 		} `json:"relationships"`
 	} `json:"data"`
 	Meta struct {
@@ -308,7 +316,10 @@ func (c *Client) discoverAll(ctx context.Context, httpClient *http.Client, baseU
 
 	for _, key := range []string{"tfe.v2", "state.v2"} {
 		if prefix, ok := discovery[key]; ok {
-			result.apiPrefix = resolveServicePrefix(baseURL, prefix)
+			result.apiPrefix, err = resolveServicePrefix(baseURL, prefix)
+			if err != nil {
+				return nil, fmt.Errorf("service discovery failed: %w", err)
+			}
 			break
 		}
 	}
@@ -319,7 +330,10 @@ func (c *Client) discoverAll(ctx context.Context, httpClient *http.Client, baseU
 
 	// Check for Scalr-native IACP v3 API.
 	if prefix, ok := discovery["iacp.v3"]; ok {
-		result.iacpPrefix = resolveServicePrefix(baseURL, prefix)
+		result.iacpPrefix, err = resolveServicePrefix(baseURL, prefix)
+		if err != nil {
+			return nil, fmt.Errorf("service discovery failed: %w", err)
+		}
 	}
 
 	return result, nil
@@ -328,13 +342,26 @@ func (c *Client) discoverAll(ctx context.Context, httpClient *http.Client, baseU
 // The discovery protocol allows absolute or relative prefixes: TFC and Scalr
 // publish "/api/v2/", Pulumi Cloud "https://tf.pulumi.com/api/v2". Joining
 // the latter onto the base yielded a redirect and a 404 that surfaced as
-// "workspace not found" (#65).
-func resolveServicePrefix(baseURL, prefix string) string {
+// "workspace not found" (#65). An absolute prefix must stay on the configured
+// host: every later request carries the bearer token, and a discovery document
+// is the one response the client acts on before authenticating anything.
+func resolveServicePrefix(baseURL, prefix string) (string, error) {
 	prefix = strings.TrimRight(prefix, "/")
 	if strings.HasPrefix(prefix, "http://") || strings.HasPrefix(prefix, "https://") {
-		return prefix
+		base, err := url.Parse(baseURL)
+		if err != nil {
+			return "", err
+		}
+		p, err := url.Parse(prefix)
+		if err != nil {
+			return "", fmt.Errorf("invalid service prefix %q: %w", prefix, err)
+		}
+		if p.Host != base.Host {
+			return "", fmt.Errorf("%s advertises its API on a different host, %s; refusing to send the token there", base.Host, p.Host)
+		}
+		return prefix, nil
 	}
-	return baseURL + "/" + strings.TrimLeft(prefix, "/")
+	return baseURL + "/" + strings.TrimLeft(prefix, "/"), nil
 }
 
 // HTTPError names the request and status so a 401, a 404, and an
@@ -355,8 +382,13 @@ func (e *HTTPError) Error() string {
 	return msg
 }
 
+// maxErrorBodyBytes bounds how much of an error response is read for its
+// message; anything longer is a page, not a message.
+const maxErrorBodyBytes = 4096
+
 func newHTTPError(req *http.Request, resp *http.Response) *HTTPError {
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	// A short read still yields a usable message, so the error is ignored.
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 	return &HTTPError{
 		Method:     req.Method,
 		URL:        req.URL.String(),
@@ -366,6 +398,12 @@ func newHTTPError(req *http.Request, resp *http.Response) *HTTPError {
 	}
 }
 
+// serverMessage tries the error-body shapes seen across the hosts, most
+// specific first: Pulumi Cloud's {"code","message"}, then JSON:API errors
+// (TFC, Scalr), then plain text. A JSON:API body also unmarshals into the
+// Pulumi shape with an empty Message, which is why the order matters. HTML
+// bodies are dropped rather than quoting markup into a Go error, and only the
+// first line of plain text is kept since the rest is usually a stack or page.
 func serverMessage(body []byte) string {
 	var pulumiShape struct {
 		Message string `json:"message"`
@@ -397,17 +435,20 @@ func serverMessage(body []byte) string {
 }
 
 // Pulumi Cloud refuses to create any workspace not named project_stack, so a
-// slash or dash in a not-found name is a misspelling, not a missing workspace.
+// not-found name that cannot be of that form (no underscore, or a slash) is a
+// misspelling, not a missing workspace.
 func workspaceNameHint(hostname, workspace string) string {
 	if !strings.Contains(hostname, "tf.pulumi.com") {
 		return ""
 	}
-	if strings.Contains(workspace, "_") && !strings.ContainsAny(workspace, "/") {
+	if strings.Contains(workspace, "_") && !strings.Contains(workspace, "/") {
 		return ""
 	}
 	return "Pulumi Cloud workspace names take the form <project>_<stack> (the cloud { workspaces { name } } value), not <project>/<stack>"
 }
 
+// doJSON returns the response only so callers can branch on its status; the
+// body has already been consumed and closed by the time it returns.
 func (c *Client) doJSON(ctx context.Context, httpClient *http.Client, url string, target interface{}) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -447,11 +488,11 @@ func (c *Client) getWorkspaceID(ctx context.Context, httpClient *http.Client, ap
 			return "", fmt.Errorf("authentication failed for %s (%w)", c.Hostname, err)
 		}
 		if resp != nil && resp.StatusCode == http.StatusNotFound {
-			msg := fmt.Sprintf("workspace %s/%s not found on %s (%v)", org, workspace, c.Hostname, err)
-			if hint := workspaceNameHint(c.Hostname, workspace); hint != "" {
-				msg += "; " + hint
+			hint := workspaceNameHint(c.Hostname, workspace)
+			if hint != "" {
+				hint = "; " + hint
 			}
-			return "", errors.New(msg)
+			return "", fmt.Errorf("workspace %s/%s not found on %s (%w)%s", org, workspace, c.Hostname, err, hint)
 		}
 		return "", fmt.Errorf("looking up workspace %s/%s: %w", org, workspace, err)
 	}

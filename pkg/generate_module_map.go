@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 
 	tfjson "github.com/hashicorp/terraform-json"
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/importsupport"
@@ -156,11 +157,14 @@ func GenerateModuleMap(ctx context.Context, tfDir, stateFilePath, outputPath, st
 			// Which scopes fed evaluation is the one thing that changes the
 			// digest between hosts, so it is logged rather than left implicit.
 			byScope := map[string]int{}
+			keys := make([]string, 0, len(remoteVars))
 			for _, v := range remoteVars {
 				byScope[v.Scope]++
+				keys = append(keys, v.Key+" ["+v.Scope+"]")
 			}
-			fmt.Fprintf(os.Stderr, "  Fetched %d workspace variables (%d workspace-scoped, %d environment-scoped)\n",
-				len(remoteVars), byScope[tfcpkg.ScopeWorkspace], byScope[tfcpkg.ScopeEnvironment])
+			sort.Strings(keys)
+			fmt.Fprintf(os.Stderr, "  Fetched %d workspace variables (%d workspace-scoped, %d environment-scoped): %s\n",
+				len(remoteVars), byScope[tfcpkg.ScopeWorkspace], byScope[tfcpkg.ScopeEnvironment], strings.Join(keys, ", "))
 		}
 	}
 

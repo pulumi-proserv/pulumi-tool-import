@@ -15,11 +15,14 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg"
+	"github.com/pulumi-proserv/pulumi-tool-import/pkg/tfc"
 	"github.com/spf13/cobra"
 )
 
@@ -134,8 +137,8 @@ Examples:
 
 			err := pkg.GenerateModuleMap(cmd.Context(), from, stateFile, out, pulumiStack, pulumiProject, remote, secretsOpts, !skipImportCheck)
 			if err != nil {
-				// Enrich authentication errors with the env var name for user guidance.
-				if remote != nil && strings.Contains(err.Error(), "authentication failed") {
+				var httpErr *tfc.HTTPError
+				if remote != nil && errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusUnauthorized {
 					return fmt.Errorf("%w: check token in env var %s", err, tokenEnv)
 				}
 				return fmt.Errorf("failed to generate tf digest: %w", err)
