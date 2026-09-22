@@ -102,6 +102,10 @@ type fixture struct {
 	// runID suffixes every AWS-unique name in the fixture (see main.tf's
 	// var.run_id), so concurrent runs share the account without colliding.
 	runID string
+
+	// cgwAddress is the per-run customer gateway IP both fixtures must agree
+	// on; see customerGatewayAddress.
+	cgwAddress string
 }
 
 // newRunID derives the per-run name suffix: the workflow run and attempt in
@@ -154,12 +158,15 @@ func TestNonImportableStateInjection(t *testing.T) {
 		}
 	}
 	runID := newRunID()
-	t.Logf("run ID %s: fixture resources are named tool-import-e2e-%s-*", runID, runID)
+	cgwAddress := customerGatewayAddress(runID)
+	t.Logf("run ID %s: fixture resources are named tool-import-e2e-%s-*; customer gateway at %s",
+		runID, runID, cgwAddress)
 	env := sanitizedEnv(
 		"PULUMI_BACKEND_URL=file://"+backendDir,
 		"PULUMI_CONFIG_PASSPHRASE=",
 		"PULUMI_HOME="+pulumiHomeDir,
 		"TF_VAR_run_id="+runID,
+		"TF_VAR_cgw_ip="+cgwAddress,
 	)
 
 	pulumiFixtureDir := filepath.Join(repoRoot, "test", "e2e", "testdata", "pulumi-ts")
@@ -200,6 +207,7 @@ func TestNonImportableStateInjection(t *testing.T) {
 		nodeModulesDir:   nodeModulesDir,
 		env:              env,
 		runID:            runID,
+		cgwAddress:       cgwAddress,
 	}
 
 	t.Run("PreviewGoesFromCreateToSame", func(t *testing.T) {
@@ -281,6 +289,7 @@ func provisionStackWith(t *testing.T, ctx context.Context, fx *fixture, secretsP
 	runPulumi(t, ctx, pulumiDir, fx.env, initArgs...)
 	runPulumi(t, ctx, pulumiDir, fx.env, "config", "set", "aws:region", "us-west-2")
 	runPulumi(t, ctx, pulumiDir, fx.env, "config", "set", "e2e:runId", fx.runID)
+	runPulumi(t, ctx, pulumiDir, fx.env, "config", "set", "e2e:cgwIp", fx.cgwAddress)
 
 	runPulumi(t, ctx, pulumiDir, fx.env, "up",
 		"--stack", stackName,
