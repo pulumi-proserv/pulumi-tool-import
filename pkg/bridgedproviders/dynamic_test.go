@@ -46,4 +46,15 @@ func TestGetMappingForTerraformProvider_Integration(t *testing.T) {
 
 	t.Logf("Successfully got mapping for provider '%s' with %d resources",
 		providerInfo.Name, resourcesMap.Len())
+
+	// The terraform-provider plugin starts the real Terraform provider as a
+	// child and is itself killed with SIGKILL when closed, so its own cleanup
+	// never runs (pulumi-terraform-bridge#3349). Without the reaper in
+	// GetMappingForTerraformProvider every run of this test left one
+	// terraform-provider-time process behind for good.
+	dir, err := pluginCacheDir()
+	require.NoError(t, err)
+	procs, err := listProviderProcesses(dir)
+	require.NoError(t, err)
+	assert.Empty(t, orphans(procs), "orphaned Terraform provider processes under %s", dir)
 }

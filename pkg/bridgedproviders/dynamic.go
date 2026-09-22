@@ -17,6 +17,7 @@ package bridgedproviders
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge/info"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
@@ -69,6 +70,16 @@ func GetMappingForTerraformProvider(
 	}
 	defer func() {
 		contract.IgnoreError(provider.Close())
+		// Close kills the plugin with SIGKILL, orphaning the Terraform
+		// provider it started; see reapOrphanedProviders.
+		cacheDir, err := pluginCacheDir()
+		if err != nil {
+			return
+		}
+		if pids, err := reapOrphanedProviders(cacheDir); err == nil && len(pids) > 0 {
+			fmt.Fprintf(os.Stderr, "terminated %d orphaned Terraform provider process(es) left behind by the "+
+				"terraform-provider plugin (pulumi-terraform-bridge#3349): %v\n", len(pids), pids)
+		}
 	}()
 
 	args := []string{tfProviderAddr}
