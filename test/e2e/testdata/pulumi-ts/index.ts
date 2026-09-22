@@ -26,8 +26,13 @@
 import * as pulumi from "@pulumi/pulumi";
 import * as aws from "@pulumi/aws";
 
+// Mirrors main.tf's var.run_id / local.name: the names and tags here must be
+// byte-identical to what Terraform created, or the import is not zero-diff.
+const runId = new pulumi.Config("e2e").require("runId");
+const name = `tool-import-e2e-${runId}`;
+
 const tags = {
-    Name: "tool-import-e2e",
+    Name: name,
     ManagedBy: "pulumi-tool-import-e2e",
     Purpose: "issue-22-non-importable-injection",
 };
@@ -42,7 +47,7 @@ const main = new aws.ec2.Vpc("main", {
 const routeTables = [0, 1, 2].map(i => new aws.ec2.RouteTable(`rt[${i}]`, {
     vpcId: main.id,
     tags: {
-        Name: `tool-import-e2e-rt-${i}`,
+        Name: `${name}-rt-${i}`,
         ManagedBy: "pulumi-tool-import-e2e",
         Purpose: "issue-22-non-importable-injection",
     },
@@ -173,7 +178,7 @@ const eastCert = new aws.iot.Certificate("east", {
 
 // --- Importable; the policy the attachment below refers to.
 const iotPolicy = new aws.iot.Policy("policy", {
-    name: "tool-import-e2e-policy",
+    name: `${name}-policy`,
     policy: `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["iot:Connect"],"Resource":["*"]}]}
 `,
 });

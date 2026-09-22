@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 
 	tfjson "github.com/hashicorp/terraform-json"
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/importsupport"
@@ -153,7 +154,15 @@ func GenerateModuleMap(ctx context.Context, tfDir, stateFilePath, outputPath, st
 			fmt.Fprintf(os.Stderr, "Warning: could not fetch workspace variables: %v\n", err)
 			fmt.Fprintf(os.Stderr, "Continuing with local tfvars only.\n")
 		} else {
-			fmt.Fprintf(os.Stderr, "  Fetched %d workspace variables\n", len(remoteVars))
+			byScope := map[string]int{}
+			keys := make([]string, 0, len(remoteVars))
+			for _, v := range remoteVars {
+				byScope[v.Scope]++
+				keys = append(keys, v.Key+" ["+v.Scope+"]")
+			}
+			sort.Strings(keys)
+			fmt.Fprintf(os.Stderr, "  Fetched %d workspace variables (%d workspace-scoped, %d environment-scoped): %s\n",
+				len(remoteVars), byScope[tfcpkg.ScopeWorkspace], byScope[tfcpkg.ScopeEnvironment], strings.Join(keys, ", "))
 		}
 	}
 

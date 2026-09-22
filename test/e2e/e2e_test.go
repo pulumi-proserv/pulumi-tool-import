@@ -31,6 +31,8 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -96,6 +98,29 @@ type fixture struct {
 	env              []string
 
 	nodeModulesDir string
+
+	// runID suffixes every AWS-unique name in the fixture (see main.tf's
+	// var.run_id), so concurrent runs share the account without colliding.
+	runID string
+}
+
+// newRunID derives the per-run name suffix: the workflow run and attempt in
+// CI (traceable back to the run from the AWS console), a random suffix
+// locally. Kept lowercase alphanumeric-and-hyphen to satisfy every naming
+// rule in the fixture (VPC Lattice target group names are the strictest).
+func newRunID() string {
+	if run := os.Getenv("GITHUB_RUN_ID"); run != "" {
+		attempt := os.Getenv("GITHUB_RUN_ATTEMPT")
+		if attempt == "" {
+			attempt = "1"
+		}
+		return "gh" + run + "-" + attempt
+	}
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("local-%d", time.Now().UnixNano()%1_000_000_000)
+	}
+	return "local-" + hex.EncodeToString(b[:])
 }
 
 func TestNonImportableStateInjection(t *testing.T) {
@@ -128,10 +153,13 @@ func TestNonImportableStateInjection(t *testing.T) {
 			t.Fatalf("creating %s: %v", dir, err)
 		}
 	}
+	runID := newRunID()
+	t.Logf("run ID %s: fixture resources are named tool-import-e2e-%s-*", runID, runID)
 	env := sanitizedEnv(
 		"PULUMI_BACKEND_URL=file://"+backendDir,
 		"PULUMI_CONFIG_PASSPHRASE=",
 		"PULUMI_HOME="+pulumiHomeDir,
+		"TF_VAR_run_id="+runID,
 	)
 
 	pulumiFixtureDir := filepath.Join(repoRoot, "test", "e2e", "testdata", "pulumi-ts")
@@ -159,7 +187,7 @@ func TestNonImportableStateInjection(t *testing.T) {
 			t.Errorf("tofu destroy failed — clean up by hand from %s (terraform state left in place):\n%v\n%s",
 				tfDir, err, out)
 		}
-		verifyFixtureResourcesGone(t, ctx, ids)
+		verifyFixtureResourcesGone(t, ctx, ids, runID)
 	})
 	runTofu(t, ctx, tfDir, env, "apply", "-auto-approve", "-input=false")
 
@@ -171,6 +199,7 @@ func TestNonImportableStateInjection(t *testing.T) {
 		pulumiFixtureDir: pulumiFixtureDir,
 		nodeModulesDir:   nodeModulesDir,
 		env:              env,
+		runID:            runID,
 	}
 
 	t.Run("PreviewGoesFromCreateToSame", func(t *testing.T) {
@@ -251,6 +280,7 @@ func provisionStackWith(t *testing.T, ctx context.Context, fx *fixture, secretsP
 	}
 	runPulumi(t, ctx, pulumiDir, fx.env, initArgs...)
 	runPulumi(t, ctx, pulumiDir, fx.env, "config", "set", "aws:region", "us-west-2")
+	runPulumi(t, ctx, pulumiDir, fx.env, "config", "set", "e2e:runId", fx.runID)
 
 	runPulumi(t, ctx, pulumiDir, fx.env, "up",
 		"--stack", stackName,

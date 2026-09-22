@@ -15,8 +15,20 @@ provider "aws" {
   region = "us-west-2"
 }
 
+# Every name AWS enforces uniqueness on (IAM role, Lambda, target group, IoT
+# policy, KMS alias) carries the run ID so that concurrent runs -- two PRs, or
+# a PR and main -- do not 409 on each other's resources, and an orphan from a
+# failed teardown cannot block later runs. The Pulumi program reads the same
+# value from stack config ("e2e:runId"); the two must agree for the import to
+# be zero-diff. The default exists so a by-hand "tofu destroy" of a preserved
+# state directory needs no variable.
+variable "run_id" {
+  type    = string
+  default = "manual"
+}
+
 locals {
-  name = "tool-import-e2e"
+  name = "tool-import-e2e-${var.run_id}"
   tags = {
     Name      = local.name
     ManagedBy = "pulumi-tool-import-e2e"

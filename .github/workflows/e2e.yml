@@ -16,6 +16,12 @@ permissions:
 # evicting other branches' (or main's) runs from the shared queue. Never
 # cancel a run mid-apply — that orphans AWS resources; a superseded run
 # finishes and tears itself down.
+#
+# Runs from different refs execute concurrently against the same account.
+# That is safe because every AWS-unique name in the fixture carries the run
+# ID (see test/e2e/testdata/tf/main.tf, var.run_id), but the account's
+# default quotas — 5 VPCs and 5 VPN gateways per region — cap it at roughly
+# four simultaneous runs, fewer if an orphan is sitting in the account.
 concurrency:
   group: aws-e2e-${{ github.ref }}
   cancel-in-progress: false
@@ -81,16 +87,28 @@ jobs:
       # registered mask covers, so masking only works if the same credential
       # set is used throughout. Credential-shaped values are masked before
       # anything can print them.
-      - name: Load AWS credentials from ESC (masked)
+      - name: Load credentials from ESC (masked)
         run: |
-          pulumi env open team-ce/aws/pulumi-ce --format json > /tmp/esc-env.json
-          while IFS=$'\t' read -r k v; do
+          # Make the pipeline below fail if any stage fails, not just the last.
+          set -o pipefail
+          # Resolve the environment (AWS creds via the imported env, plus the tokens) as JSON.
+          pulumi env open team-ce/pulumi-tool-import/e2e --format json |
+            # Emit one "NAME<tab>value" line per environment variable.
+            jq -r '(.environmentVariables // {}) | to_entries[] | "\(.key)\t\(.value)"' |
+            # Split each line at the tab into name (k) and value (v); -r keeps backslashes literal.
+            while IFS=$'\t' read -r k v; do
+            # ${!k} reads the variable named by k; refuse to overwrite one the job already has.
+            if [ -n "${!k:-}" ]; then
+              echo "::error::ESC environment defines $k, which the job already sets"
+              exit 1
+            fi
+            # Register credential-shaped values with the log masker before anything prints them.
             case "$k" in
               *KEY*|*SECRET*|*TOKEN*|*PASSWORD*) echo "::add-mask::$v" ;;
             esac
+            # Export the variable to every later step in the job.
             echo "$k=$v" >> "$GITHUB_ENV"
-          done < <(jq -r '(.environmentVariables // {}) | to_entries[] | "\(.key)\t\(.value)"' /tmp/esc-env.json)
-          rm -f /tmp/esc-env.json
+          done
 
       # Fails the job when the credentials do not work: the suite itself
       # t.Skips in that case and go test exits 0, which would otherwise leave
@@ -104,6 +122,28 @@ jobs:
           echo "::add-mask::$acct"
           echo "::add-mask::$arn"
 
+      - name: Verify remote-state credentials
+        if: vars.REMOTE_STATE_E2E != 'off'
+        run: |
+          # check NAME URL: fail unless the token in $NAME can GET the URL.
+          check() {
+            local name=$1 url=$2
+            # ${!name} reads the variable named by $name.
+            if [ -z "${!name:-}" ]; then
+              echo "::error::$name is empty; the ESC environment did not supply it"
+              exit 1
+            fi
+            # Discard the body, keep only the HTTP status code.
+            code=$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${!name}" "$url")
+            if [ "$code" != "200" ]; then
+              echo "::error::$name does not read its fixture workspace: GET $url -> $code"
+              exit 1
+            fi
+          }
+          check TFC_TOKEN https://app.terraform.io/api/v2/organizations/import-tool-test/workspaces/tool-import-e2e
+          check PULUMI_ACCESS_TOKEN https://tf.pulumi.com/api/v2/organizations/team-ce/workspaces/toolimport_e2e
+          check SCALR_TOKEN https://pulumi-proserv.scalr.io/api/tfe/v2/organizations/env-v0pdr54u1htkjaue6/workspaces/tool-import-e2e
+
       - name: Run e2e tests
         id: e2e
         # E2E_TIMEOUT well under timeout-minutes: the Go-level timeout prints
@@ -111,6 +151,8 @@ jobs:
         # which would skip t.Cleanup's tofu destroy.
         env:
           E2E_TIMEOUT: 30m
+          # Repository variable; "off" skips the Terraform Cloud, Pulumi Cloud, and Scalr tests.
+          REMOTE_STATE_E2E: ${{ vars.REMOTE_STATE_E2E }}
         run: make test-e2e
 
       # A failed or cancelled run can leave real AWS resources behind with
