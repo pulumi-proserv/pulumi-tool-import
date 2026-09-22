@@ -12,6 +12,15 @@ permissions:
   contents: read
   id-token: write
 
+env:
+  # "tofu init" asks the registry for each provider's version list and
+  # signing checksums even when the binary is already in the plugin cache,
+  # and registry.opentofu.org has answered those with 500s often enough to
+  # fail runs that had nothing wrong with them. OpenTofu's default is one
+  # retry and a 10-second timeout.
+  TF_REGISTRY_DISCOVERY_RETRY: 5
+  TF_REGISTRY_CLIENT_TIMEOUT: 30
+
 # Per-ref groups: pushes to one branch queue behind each other without
 # evicting other branches' (or main's) runs from the shared queue. Never
 # cancel a run mid-apply — that orphans AWS resources; a superseded run
