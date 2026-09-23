@@ -28,8 +28,11 @@ import * as aws from "@pulumi/aws";
 
 // Mirrors main.tf's var.run_id / local.name: the names and tags here must be
 // byte-identical to what Terraform created, or the import is not zero-diff.
-const runId = new pulumi.Config("e2e").require("runId");
+const e2eConfig = new pulumi.Config("e2e");
+const runId = e2eConfig.require("runId");
 const name = `tool-import-e2e-${runId}`;
+// Per-run customer gateway address, same value as main.tf's var.cgw_ip.
+const cgwIp = e2eConfig.require("cgwIp");
 
 const tags = {
     Name: name,
@@ -75,7 +78,7 @@ const props = routeTables.map((rt, i) => new aws.ec2.VpnGatewayRoutePropagation(
 
 const cgw = new aws.ec2.CustomerGateway("cgw", {
     bgpAsn: "65000",
-    ipAddress: "203.0.113.1",
+    ipAddress: cgwIp,
     type: "ipsec.1",
     tags: tags,
 });

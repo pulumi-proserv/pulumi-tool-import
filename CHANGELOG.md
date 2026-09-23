@@ -36,6 +36,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Every dynamic-bridge mapping lookup left a Terraform provider process
+  running forever.** The `terraform-provider` plugin starts the real
+  Terraform provider as a child and is stopped with SIGKILL when closed, so
+  its own cleanup never runs and the child is orphaned
+  (pulumi-terraform-bridge#3349, unfixed through plugin v1.4.0). `digest tf`
+  hits this for every provider it maps through the dynamic bridge, and the
+  test suite leaked one `terraform-provider-time` per run. After closing the
+  plugin the tool now terminates any Terraform provider under the plugin
+  cache whose parent has died, leaving providers with a live parent alone,
+  and the integration test asserts none remain.
 - **`digest tf` could not pull state from Pulumi Cloud's Terraform backend.**
   `tf.pulumi.com` publishes absolute URLs in its service-discovery document;
   the client joined them onto the hostname, producing a mangled path whose
