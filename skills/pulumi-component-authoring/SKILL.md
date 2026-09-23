@@ -1,6 +1,6 @@
 ---
 name: pulumi-component-authoring
-description: Author, package, publish, and smoke-test Pulumi TypeScript ComponentResource classes. Covers component interface design (create-vs-pass-through supporting resources, Input types vs plain types, array input/output types, discriminated unions, runtime validation), Output lifting, IAM policy documents, package layout (PulumiPlugin.yaml, tsconfig, lockfiles), publishing via `pulumi package add`, local development against a consuming project, and pulumitest smoke tests. Use when writing a new ComponentResource, reviewing or fixing an existing one, deciding a component's argument types, packaging a component repo, or wiring component CI. Also the shared foundation for the pulumi-terraform-module-to-component and cdk-construct-to-component skills.
+description: Author, package, publish, and smoke-test Pulumi TypeScript ComponentResource classes. Covers component interface design (create-vs-pass-through supporting resources, Input types vs plain types, array input/output types, discriminated unions, runtime validation), Output lifting, IAM policy documents, package layout (PulumiPlugin.yaml, tsconfig, lockfiles), publishing via `pulumi package add`, local development against a consuming project, and pulumitest smoke tests. Includes Azure-specific guidance for @pulumi/azure-native (globally unique names, soft-delete name holds, "global" location, module locations, subnet and private endpoint pitfalls, cross-subscription providers). Use when writing a new ComponentResource, reviewing or fixing an existing one, deciding a component's argument types, packaging a component repo, or wiring component CI. Also the shared foundation for the pulumi-terraform-module-to-component and cdk-construct-to-component skills.
 ---
 
 # Authoring Pulumi TypeScript Components
@@ -12,6 +12,16 @@ pleasant to consume, and publishable as a Pulumi package.
 
 Present the interface design for approval before implementing. The decisions
 below are hard to reverse once consumers exist.
+
+The examples are written against `@pulumi/aws`. If the component imports
+`@pulumi/azure-native`, read `references/azure-native.md` first: several of
+its rules are interface decisions — globally unique names must be explicit
+args (and soft delete can hold a name after the resource is gone), the
+resource group is always passed in, a private endpoint needs its own
+`location`, and cross-subscription resources need a provider arg. It also
+covers `"global"` locations, v3 module locations that differ from the obvious
+guess, the inline-vs-standalone subnet trap, and the private endpoint + DNS
+pattern.
 
 ### Create vs pass-through for supporting resources
 
@@ -213,6 +223,25 @@ values: [pulumi.interpolate`${alb.dnsName}.`]
 string keys on Output) and for transformations beyond property access or string
 interpolation.
 
+### Components inherit providers; programs declare them
+
+A component must never rely on the default provider. Pass `{ parent: this }`
+on every child resource and provider function so they inherit whatever
+provider the caller supplied, and accept a `pulumi.ProviderResource` arg only
+for resources that genuinely live elsewhere (another account, region, or
+subscription).
+
+The consuming program, including the smoke-test program, should construct an
+explicit provider and hand it to each component with `{ provider }`. Ambient
+credentials and config still feed the provider, but region, account, and
+subscription are then stated once in code rather than inferred from whatever
+environment happens to be present:
+
+```typescript
+const provider = new aws.Provider("aws", { region: cfg.require("region") });
+const vpc = new Vpc("vpc", { ... }, { provider });
+```
+
 ### Provider functions need `{ parent: this }` too
 
 Provider functions (`aws.getRegion`, `aws.getCallerIdentity`,
@@ -335,6 +364,9 @@ new aws.s3.BucketAcl(`${name}-acl`, {
   local-development loop against a consuming project, and CI workflows.
 - `references/smoke-tests.md` — component-tests project layout, writing test
   instances, and pulumitest assertions.
+- `references/azure-native.md` — Azure-specific rules for `@pulumi/azure-native`:
+  naming, location, module locations, networking, private endpoints, DNS,
+  cross-subscription providers, auth.
 
 ## Troubleshooting
 
@@ -346,3 +378,6 @@ new aws.s3.BucketAcl(`${name}-acl`, {
 | Subpath import fails | Import from the package root, not a subpath. Re-export from `index.ts`. |
 | Deprecated-resource warnings | Use the non-`V2` names (table above). |
 | Idempotency smoke test fails with a plugin-download 403 | Reuse the same `PulumiProgram` instance for the preview — see `references/smoke-tests.md`. |
+| Azure `AnotherOperationInProgress` on subnets, or a VNet that recreates its subnets every update | Standalone `network.Subnet` resources chained with `dependsOn`, and `ignoreChanges: ["subnets"]` on the VNet — see `references/azure-native.md`. |
+| Azure 409 `InvalidResourceLocation` / `AlreadyExists` on a name nothing in state owns | A failed create or soft delete is holding the name — see the burned-names table in `references/azure-native.md`. |
+| Azure resource or input type "does not exist" in `@pulumi/azure-native` | Wrong module guess (`insights` vs `applicationinsights`, `frontdoor` vs `cdn`) or types imported from the module instead of the package root — see `references/azure-native.md`. |

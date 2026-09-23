@@ -107,6 +107,29 @@ func TestExpectedURN(t *testing.T) {
 	}
 }
 
+func TestCustomerGatewayAddressIsPerRunAndInTestNet3(t *testing.T) {
+	t.Parallel()
+
+	a := customerGatewayAddress("gh35742336679-1")
+	b := customerGatewayAddress("gh35742227700-1")
+	if a == b {
+		t.Fatalf("two run IDs derived the same customer gateway address %q; "+
+			"AWS would hand both runs the same gateway", a)
+	}
+	if a != customerGatewayAddress("gh35742336679-1") {
+		t.Errorf("address is not deterministic for one run ID: %q then %q", a, customerGatewayAddress("gh35742336679-1"))
+	}
+	for _, addr := range []string{a, b, customerGatewayAddress("manual")} {
+		var last int
+		if _, err := fmt.Sscanf(addr, "203.0.113.%d", &last); err != nil {
+			t.Fatalf("address %q is not in TEST-NET-3 (203.0.113.0/24): %v", addr, err)
+		}
+		if last < 1 || last > 254 {
+			t.Errorf("address %q uses host part %d; want 1..254 so it is neither the network nor the broadcast address", addr, last)
+		}
+	}
+}
+
 func TestNonImportableSidecarPath(t *testing.T) {
 	t.Parallel()
 

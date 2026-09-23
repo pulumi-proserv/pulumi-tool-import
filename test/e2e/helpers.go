@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"os"
 	"path/filepath"
@@ -29,6 +30,21 @@ import (
 
 func expectedURN(project, stack, typ, name string) string {
 	return fmt.Sprintf("urn:pulumi:%s::%s::%s::%s", stack, project, typ, name)
+}
+
+// customerGatewayAddress derives the fixture's customer gateway IP from the
+// run ID. AWS deduplicates customer gateways by IP address, BGP ASN, and
+// type: CreateCustomerGateway with the same triple returns the existing
+// gateway rather than a new one. With a fixed address every concurrent run
+// shared one gateway, and whichever run tore down first failed with
+// "customer gateway is in use" because another run's VPN connection was
+// still attached. Per-run names (var.run_id) do not help, since the name is
+// only a tag. The address stays inside TEST-NET-3, the documentation range,
+// so nothing is ever reachable at it.
+func customerGatewayAddress(runID string) string {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(runID))
+	return fmt.Sprintf("203.0.113.%d", h.Sum32()%254+1)
 }
 
 func nonImportableSidecarPath(importFilePath string) string {

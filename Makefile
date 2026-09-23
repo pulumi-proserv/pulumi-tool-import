@@ -3,7 +3,8 @@
 # Common targets:
 #   make build     - compile the CLI
 #   make test      - run the Go test suite
-#   make test-e2e  - run the AWS end-to-end test (needs ESC credentials; see below)
+#   make test-e2e  - run the end-to-end tests (needs ESC credentials; see below)
+#   make test-e2e-remote - only the remote-state tests
 #   make lint      - run golangci-lint
 #   make fmt       - format the tree (gofmt)
 #   make tidy      - go mod tidy
@@ -20,7 +21,7 @@ BINARY  ?= pulumi-tool-import
 PKG     ?= ./...
 E2E_TIMEOUT ?= 40m
 
-.PHONY: all build test test-e2e lint lint-e2e fmt fmt-check vet vet-e2e tidy check clean \
+.PHONY: all build test test-e2e test-e2e-remote lint lint-e2e fmt fmt-check vet vet-e2e tidy check clean \
 	update-import-id-formats import-id-formats-check
 
 all: build
@@ -63,6 +64,9 @@ test-e2e:
 	# exactly like a fresh one, for a test whose entire purpose is to exercise
 	# real infrastructure.
 	$(GO) test -count=1 -tags e2e ./test/e2e/ -v -timeout $(E2E_TIMEOUT)
+
+test-e2e-remote:
+	$(GO) test -count=1 -tags e2e ./test/e2e/ -run TestRemoteState -v -timeout 10m
 
 lint: lint-e2e
 	golangci-lint run

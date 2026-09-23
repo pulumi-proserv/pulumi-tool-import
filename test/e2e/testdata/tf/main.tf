@@ -27,6 +27,13 @@ variable "run_id" {
   default = "manual"
 }
 
+# AWS deduplicates customer gateways by IP, ASN, and type, so a fixed address
+# makes concurrent runs share one gateway; the harness derives this per run.
+variable "cgw_ip" {
+  type    = string
+  default = "203.0.113.1" # TEST-NET-3, documentation range
+}
+
 locals {
   name = "tool-import-e2e-${var.run_id}"
   tags = {
@@ -73,7 +80,7 @@ resource "aws_vpn_gateway_route_propagation" "prop" {
 
 resource "aws_customer_gateway" "cgw" {
   bgp_asn    = 65000
-  ip_address = "203.0.113.1" # TEST-NET-3, documentation range
+  ip_address = var.cgw_ip
   type       = "ipsec.1"
   tags       = local.tags
 }

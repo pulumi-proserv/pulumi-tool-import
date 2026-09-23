@@ -19,6 +19,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the digest's pinned AWS provider is newer than the version the table was
   generated from.
 
+### Changed
+
+- **`digest tf` remote-backend errors changed shape.** HTTP failures now
+  name the request, status, and server message
+  (`GET https://… → 401 Unauthorized: …`) instead of one identical
+  `unexpected response from …` for a 401, a 404, and an unimplemented route.
+  A state-download failure names only the host, since that URL is
+  server-issued and may carry a credential. A lookup on `tf.pulumi.com` with
+  a `project/stack` or `project-stack` name explains the `project_stack` form
+  the backend requires. Anything matching the old text needs updating.
+- **`digest tf` on Scalr now includes environment-scoped variables**, which
+  outrank local `*.tfvars` in evaluation, so a digest of the same workspace
+  can evaluate differently than before. The client previously asked Scalr's
+  native API for variables filtered by workspace, which returns only
+  workspace-scoped ones despite the code's claim otherwise; it now filters by
+  environment and keeps the variables scoped to the target workspace or to
+  the environment, workspace-scoped winning a key clash. `--organization`
+  must be the Scalr environment ID (`env-…`), and a failure of the native
+  variables call is reported rather than silently retried through the
+  TFE-compatible route, which cannot see environment scope. The
+  `Fetched N workspace variables` line now breaks the count down by scope
+  and lists each variable with the scope it came from.
+- **`digest tf` refuses a service-discovery document that points to another
+  host.** Every request after discovery carries the API token, so an absolute
+  prefix on a host other than `--hostname` is an error rather than a redirect
+  of the token.
+
 ### Fixed
 
 - **The import-support prober restarts a crashed provider instead of
@@ -44,6 +71,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   treat the type as manual. The scraper now recognizes that exact shape and
   drops the `@region` suffix, the same way it already handles the acctest
   helper.
+- **Every dynamic-bridge mapping lookup left a Terraform provider process
+  running forever.** The `terraform-provider` plugin starts the real
+  Terraform provider as a child and is stopped with SIGKILL when closed, so
+  its own cleanup never runs and the child is orphaned
+  (pulumi-terraform-bridge#3349, unfixed through plugin v1.4.0). `digest tf`
+  hits this for every provider it maps through the dynamic bridge, and the
+  test suite leaked one `terraform-provider-time` per run. After closing the
+  plugin the tool now terminates any Terraform provider under the plugin
+  cache whose parent has died, leaving providers with a live parent alone,
+  and the integration test asserts none remain.
+- **`digest tf` could not pull state from Pulumi Cloud's Terraform backend.**
+  `tf.pulumi.com` publishes absolute URLs in its service-discovery document;
+  the client joined them onto the hostname, producing a mangled path whose
+  redirect surfaced as `workspace not found` while `terraform state pull`
+  succeeded with the same token. Discovery now accepts absolute or relative
+  prefixes. Pulumi Cloud, Terraform Cloud, and Scalr are now verified live,
+  and fake servers matching each host's observed response shapes cover the
+  exchange in tests (#65).
 - **`patch-state` silently ignored the digest for most fields.** The
   Pulumi→Terraform field-name mapping came only from a small hand-curated
   table; any fields-file entry outside it skipped the digest lookup and fell
