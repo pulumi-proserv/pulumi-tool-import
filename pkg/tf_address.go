@@ -14,32 +14,31 @@
 
 package pkg
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/pulumi-proserv/pulumi-tool-import/internal/tfaddr"
+)
 
 // PulumiNameFromTerraformAddress derives a Pulumi resource name from a Terraform
 // resource address, folding module path segments into the name and dropping a
 // trailing "this" when a module already provides a meaningful name.
 func PulumiNameFromTerraformAddress(address, resourceType string) string {
-	parts := strings.Split(address, ".")
-
-	var moduleParts []string
-	var resourceParts []string
-	for i := 0; i < len(parts); i++ {
-		if parts[i] == resourceType {
-			resourceParts = append(resourceParts, parts[i+1:]...)
-			break
-		}
-		if parts[i] == "module" && i+1 < len(parts) {
-			moduleParts = append(moduleParts, parts[i+1])
-			i++
-		}
+	instance, err := tfaddr.ParseResource(address)
+	if err != nil || instance.Resource.Resource.Type != resourceType {
+		return ""
 	}
+	var moduleParts []string
+	for _, step := range instance.Module {
+		moduleParts = append(moduleParts, tfaddr.Name(step.Name, step.InstanceKey))
+	}
+	resourceName := tfaddr.Name(instance.Resource.Resource.Name, instance.Resource.Key)
 
 	// Drop "this" suffix when module context provides a meaningful name.
-	if len(moduleParts) > 0 && len(resourceParts) == 1 && resourceParts[0] == "this" {
+	if len(moduleParts) > 0 && resourceName == "this" {
 		return strings.Join(moduleParts, "_")
 	}
 
-	nameParts := append(moduleParts, resourceParts...)
+	nameParts := append(moduleParts, resourceName)
 	return strings.Join(nameParts, "_")
 }

@@ -8,24 +8,44 @@
 #   make lint      - run golangci-lint
 #   make fmt       - format the tree (gofmt)
 #   make tidy      - go mod tidy
-#   make check     - fmt-check + vet + lint (what CI enforces, minus the integration tests)
-#                    vet and lint each also cover the "e2e"-tagged build, which is
-#                    otherwise invisible to every target and CI job.
+#   make check     - fmt-check + vet + lint + import-id-formats-check (what CI
+#                    enforces, minus the integration tests). vet and lint each
+#                    also cover the "e2e"-tagged build, which is otherwise
+#                    invisible to every target and CI job.
+#   make update-import-id-formats - regenerate the import-ID composition table
+#                    from terraform-provider-aws (needs network)
+#   make import-id-formats-check  - fail if that table is stale (needs network)
 
 GO      ?= go
 BINARY  ?= pulumi-tool-import
 PKG     ?= ./...
 E2E_TIMEOUT ?= 40m
+CATALOG_MODULES := importids/catalog importids/aws/v6 importids/aws/v7
+AWS_CATALOG_MAJORS ?= 6 7
 
-.PHONY: all build test test-e2e test-e2e-remote lint lint-e2e fmt fmt-check vet vet-e2e tidy check clean
+.PHONY: all build test test-e2e test-e2e-remote lint lint-e2e fmt fmt-check vet vet-e2e tidy check clean \
+	update-import-id-formats import-id-formats-check test-catalogs vet-catalogs lint-catalogs lint-module
 
 all: build
 
 build:
 	$(GO) build -o bin/$(BINARY) .
 
-test:
+test: test-catalogs
 	$(GO) test $(PKG)
+
+test-catalogs:
+	@for module in $(CATALOG_MODULES); do GOWORK=off $(GO) -C $$module test ./... || exit $$?; done
+
+vet-catalogs:
+	@for module in $(CATALOG_MODULES); do GOWORK=off $(GO) -C $$module vet ./... || exit $$?; done
+
+lint-catalogs:
+	@for module in $(CATALOG_MODULES); do \
+	    $(MAKE) --no-print-directory -C $$module -f $(CURDIR)/Makefile lint-module || exit $$?; done
+
+lint-module:
+	GOWORK=off golangci-lint run
 
 # test-e2e creates and destroys real AWS infrastructure (a VPN gateway,
 # route tables, a VPN connection) to prove non-importable resources go from
@@ -63,7 +83,7 @@ test-e2e:
 test-e2e-remote:
 	$(GO) test -count=1 -tags e2e ./test/e2e/ -run TestRemoteState -v -timeout 10m
 
-lint: lint-e2e
+lint: lint-e2e lint-catalogs
 	golangci-lint run
 
 # The e2e files are behind "//go:build e2e", so the untagged run above does not
@@ -91,7 +111,7 @@ fmt-check:
 		exit 1; \
 	fi
 
-vet: vet-e2e
+vet: vet-e2e vet-catalogs
 	$(GO) vet $(PKG)
 
 # Type-check and vet the e2e build. "go vet" fully type-checks, so this is what
@@ -104,8 +124,21 @@ vet-e2e:
 
 tidy:
 	$(GO) mod tidy
+	@for module in $(CATALOG_MODULES); do GOWORK=off $(GO) -C $$module mod tidy || exit $$?; done
 
-check: fmt-check vet lint
+# Each Pulumi major pins its upstream revision and verified helper hashes in source.json.
+update-import-id-formats:
+	@for major in $(AWS_CATALOG_MAJORS); do \
+	    $(GO) run ./internal/tools/importidscrape --source importids/aws/v$$major/source.json \
+	        --out importids/aws/v$$major/formats.json || exit $$?; done
+
+# Re-scrape both exact source pins without rewriting the committed artifacts.
+import-id-formats-check:
+	@for major in $(AWS_CATALOG_MAJORS); do \
+	    $(GO) run ./internal/tools/importidscrape --source importids/aws/v$$major/source.json \
+	        --out importids/aws/v$$major/formats.json --check || exit $$?; done
+
+check: fmt-check vet lint import-id-formats-check
 
 clean:
 	rm -rf bin dist

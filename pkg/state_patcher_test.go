@@ -74,6 +74,8 @@ func TestNormalizeTFName(t *testing.T) {
 		{"public[0]", "0"},
 		{"plain_name", "plain_name"},
 		{"this", "this"},
+		{`params["a].b\"\\c"]`, `a].b"\c`},
+		{"params[", "params["},
 	}
 	for _, tc := range tests {
 		assert.Equal(t, tc.expected, normalizeTFName(tc.input), "input: %s", tc.input)

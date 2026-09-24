@@ -20,16 +20,44 @@ make build      # compile the CLI to ./bin
 make test       # run the Go test suite
 make lint       # run golangci-lint
 make fmt        # gofmt the tree
-make check      # fmt-check + vet + lint (fast local gate)
+make check      # fmt-check + vet + lint + import-id-formats-check (local gate)
 ```
+
+`make check` also regenerates both Pulumi-major AWS import-ID catalogs from
+their pinned Terraform source revisions and compares them with
+`importids/aws/v{6,7}/formats.json`. The first run sparse-clones
+terraform-provider-aws (network, one to two minutes); later runs reuse the
+checkout cached under your OS cache directory
+(`~/Library/Caches/pulumi-tool-import/` on macOS). If the table is stale, run
+`make update-import-id-formats` and commit the result. To update just one
+major, use `make update-import-id-formats AWS_CATALOG_MAJORS=7`.
+Generation pins and the release procedure are documented in
+[`importids/README.md`](importids/README.md).
 
 ## Tests
 
 The suite mixes fast unit tests with heavier integration tests that download and
 bridge real Pulumi providers and warm up OpenTofu. Those integration tests need
 network access and a Pulumi access token, and some skip themselves when the
-required infrastructure or credentials are absent. `make lint` and `make check`
-need neither, so run those for a quick local signal.
+required infrastructure or credentials are absent. `make lint` needs neither,
+so run it for a quick local signal; `make check` needs network on its first run
+for the provider clone described above, but no credentials.
+
+The catalogs are nested Go modules, so `go test ./...` alone does not cover
+them. `make test` runs the root suite and each catalog module independently;
+`make check` includes their vet/lint checks. CI runs the nested-module checks
+explicitly too. Local module replacements allow checked-out builds without
+requiring a workspace or publishing new module versions first.
+
+## Terraform addresses
+
+Use `internal/tfaddr` to parse resource addresses, module addresses, and resource
+names with instance keys. It delegates to OpenTofu's address parser; do not split
+addresses on dots or brackets or infer key types from their text. Preserve
+`addrs.InstanceKey` values until rendering a name: `[0]`, `["0"]`, and `[""]`
+identify different instances. Use OpenTofu's address types and `String()` methods
+when reconstructing addresses; Pulumi name/config-key normalization happens
+after parsing.
 
 ## Pull requests
 

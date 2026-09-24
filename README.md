@@ -245,6 +245,27 @@ are applied first. Composite/derived import IDs (e.g. Lambda Permission
 `FunctionName/StatementId`, Route53 records, security-group rules) are composed
 from the digest's attributes via a shared resolver core.
 
+**Import-ID catalogs.** `resolve tf` selects a catalog by the **Pulumi AWS
+provider major**, preferring an import entry's `version` and otherwise using
+the digest's resolved `aws@version` pin. The separate Go modules
+`importids/aws/v6` and `importids/aws/v7` each embed their generated table and
+own their custom composers. They currently target Pulumi AWS **v6.83.4**
+(Terraform AWS v5.100.0) and **v7.48.0** (Terraform AWS v6.66.0).
+
+Missing, dynamic, conflicting, or unsupported destination pins produce a
+diagnostic and leave the affected AWS IDs untouched; there is no cross-major
+fallback. Test-derived manual entries without a composer report the documented
+import form. `--import-id-formats <file>` overrides the table for its declared
+`pulumiVersion` major, retaining that module's composers; tables from a different
+major are rejected for the affected entries. The file must declare `provider`,
+`pulumiVersion`, and upstream `version`.
+
+Each major retains its latest generated snapshot, not every historical minor.
+A newer destination release produces a staleness warning. Same-major selection
+does not prove all historical minor versions share identical import semantics.
+See [catalog maintenance](importids/README.md) for generation, compatibility tests,
+and independent module releases.
+
 **Mappings** may be passed inline (`--map 'module.X=componentName'`, repeatable) or
 via `--mapping-file`:
 

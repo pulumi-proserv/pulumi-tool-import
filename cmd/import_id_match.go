@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg"
+	"github.com/pulumi-proserv/pulumi-tool-import/pkg/importid"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -33,6 +34,7 @@ func buildImportIDMatchCommand(use string, hidden bool) *cobra.Command {
 	var mapFlags []string
 	var mappingFile string
 	var outPath string
+	var formatsPath string
 
 	cmd := &cobra.Command{
 		Use:    use,
@@ -134,7 +136,19 @@ Examples:
 			result := pkg.FillImportFile(&digest, &importFile, moduleMappings, resourceMappings)
 
 			// Translate TF import IDs to Pulumi-expected formats.
-			translated := pkg.TranslateImportIDs(&importFile, &digest)
+			var formats *importid.Formats
+			if formatsPath != "" {
+				var err error
+				formats, err = importid.LoadFormats(formatsPath)
+				if err != nil {
+					return err
+				}
+			}
+			translation := pkg.TranslateImportIDsForProviders(&importFile, &digest, formats)
+			translated := translation.Translated
+			for _, note := range translation.Notes {
+				fmt.Fprintf(os.Stderr, "  import ID: %s\n", note)
+			}
 
 			// Write output.
 			outData, err := json.MarshalIndent(&importFile, "", "    ")
@@ -183,6 +197,8 @@ Examples:
 	cmd.Flags().StringArrayVar(&mapFlags, "map", nil, "TF module to Pulumi component mapping (repeatable, format: module.X=componentName)")
 	cmd.Flags().StringVar(&mappingFile, "mapping-file", "", "Path to YAML mapping file")
 	cmd.Flags().StringVarP(&outPath, "out", "o", "", "Output path for the filled import file")
+	cmd.Flags().StringVar(&formatsPath, "import-id-formats", "",
+		"Override a provider-major catalog table with a file declaring its provider, pulumiVersion, and upstream version")
 
 	cmd.MarkFlagRequired("digest")
 	cmd.MarkFlagRequired("import-file")

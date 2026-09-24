@@ -4,13 +4,15 @@ go 1.26.6
 
 require (
 	github.com/apparentlymart/go-versions v1.0.3
-	github.com/aws/aws-sdk-go-v2 v1.45.1
+	github.com/aws/aws-sdk-go-v2 v1.47.0
 	github.com/aws/aws-sdk-go-v2/config v1.33.1
 	github.com/aws/aws-sdk-go-v2/service/cloudcontrol v1.35.1
 	github.com/aws/aws-sdk-go-v2/service/cloudformation v1.78.1
+	github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs v1.87.0
 	github.com/aws/aws-sdk-go-v2/service/ec2 v1.325.1
 	github.com/aws/aws-sdk-go-v2/service/iam v1.61.1
 	github.com/aws/aws-sdk-go-v2/service/iot v1.80.1
+	github.com/aws/aws-sdk-go-v2/service/kinesis v1.54.0
 	github.com/aws/aws-sdk-go-v2/service/lambda v1.104.1
 	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.46.1
 	github.com/aws/aws-sdk-go-v2/service/vpclattice v1.29.1
@@ -25,6 +27,9 @@ require (
 	github.com/hexops/autogold/v2 v2.3.1
 	github.com/opentofu/svchost v0.0.0-20250610175836-86c9e5e3d8c8
 	github.com/opentracing/opentracing-go v1.2.0
+	github.com/pulumi-proserv/pulumi-tool-import/importids/aws/v6 v6.0.0
+	github.com/pulumi-proserv/pulumi-tool-import/importids/aws/v7 v7.0.0
+	github.com/pulumi-proserv/pulumi-tool-import/importids/catalog v0.1.0
 	github.com/pulumi/opentofu v0.0.0-20260520131844-8a7d20a2ff2d
 	github.com/pulumi/pulumi-terraform-bridge/v3 v3.138.0
 	github.com/pulumi/pulumi/pkg/v3 v3.260.0
@@ -62,8 +67,8 @@ require (
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.20 // indirect
 	github.com/aws/aws-sdk-go-v2/credentials v1.20.1 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.19.1 // indirect
-	github.com/aws/aws-sdk-go-v2/internal/configsources v1.5.1 // indirect
-	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.8.1 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/configsources v1.5.3 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.8.3 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/v4a v1.5.1 // indirect
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.56.2 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.19 // indirect
@@ -281,3 +286,9 @@ require (
 replace github.com/hashicorp/terraform-plugin-sdk/v2 => github.com/pulumi/terraform-plugin-sdk/v2 v2.0.0-20260318212141-5525259d096b
 
 replace github.com/hashicorp/hcl/v2 => github.com/opentofu/hcl/v2 v2.20.2-0.20250121132637-504036cd70e7
+
+replace github.com/pulumi-proserv/pulumi-tool-import/importids/catalog => ./importids/catalog
+
+replace github.com/pulumi-proserv/pulumi-tool-import/importids/aws/v6 => ./importids/aws/v6
+
+replace github.com/pulumi-proserv/pulumi-tool-import/importids/aws/v7 => ./importids/aws/v7

@@ -25,6 +25,7 @@ import (
 func routeDigest(tfID string, attrs map[string]interface{}) *ModuleMap {
 	attrs["route_table_id"] = "rtb-0a1b2c3d4e5f60004"
 	return &ModuleMap{
+		Providers: map[string]string{"hashicorp/aws": "aws@v7.24.0"},
 		RootResources: []ModuleResource{{
 			Mode:             "managed",
 			ImportID:         tfID,

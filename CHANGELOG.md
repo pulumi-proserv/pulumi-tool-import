@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `resolve tf`: generated import-ID catalogs replace the hand-written switch
+  (#70). Separate Go modules for **Pulumi AWS v6 and v7** embed their own JSON
+  and custom composers, generated against Pulumi v6.83.4 / Terraform v5.100.0
+  and Pulumi v7.48.0 / Terraform v6.66.0 respectively. The import entry's version
+  takes precedence over the digest pin. Missing or unsupported pins leave IDs
+  untouched with a diagnostic; newer same-major releases warn. Overrides must
+  declare a compatible `pulumiVersion` and upstream `version`.
+- `make update-import-id-formats` regenerates both catalogs from their
+  `source.json` pins. `make test` and `make check` cover the nested modules;
+  CI verifies both generated tables byte-for-byte.
+
 ### Changed
 
 - **`digest tf` remote-backend errors changed shape.** HTTP failures now
@@ -36,6 +49,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The import-support prober restarts a crashed provider instead of
+  abandoning it for the rest of a digest** (#84, evidence for #68). Live
+  digests reliably crash the AWS provider on `aws_kinesis_stream`'s import
+  probe ("Plugin did not respond"); previously the prober fell back to the
+  curated non-importable list for every type probed afterward, so an
+  uncovered type like `aws_iot_policy_attachment` came back `Unknown` — read
+  as importable — and landed in the import file instead of the injection
+  sidecar. The prober now discards and reloads the provider after a crash,
+  retrying up to 3 times before giving up on it for good. `module_map.go`
+  also now warns once per resource when import support is `Unknown`, since an
+  unresolved verdict silently stays in the import file.
+- **`resolve cfn`: the Application Auto Scaling policy import ID is now
+  `namespace/resource/dimension/name`**, the order the provider imports; it
+  was previously name-first and failed to import.
+- **`resolve tf` printed a "compose by hand" note for `aws_vpc`,
+  `aws_vpc_peering_connection_accepter`, and `aws_appfabric_app_bundle`**
+  even though all three are plain passthrough IDs. A local test helper's
+  `fmt.Sprintf("%s@%s", id, region)` — Terraform's own `<id>@<region>`
+  region-override syntax, applied locally instead of via the provider's
+  `acctest.CrossRegionImportStateIdFunc` — made the scraper's classifier
+  treat the type as manual. The scraper now recognizes that exact shape and
+  drops the `@region` suffix, the same way it already handles the acctest
+  helper.
 - **Every dynamic-bridge mapping lookup left a Terraform provider process
   running forever.** The `terraform-provider` plugin starts the real
   Terraform provider as a child and is stopped with SIGKILL when closed, so

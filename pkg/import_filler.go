@@ -16,7 +16,13 @@ package pkg
 
 import (
 	"fmt"
+	"os"
+	"sort"
 	"strings"
+
+	"github.com/pulumi-proserv/pulumi-tool-import/importids/catalog"
+	"github.com/pulumi-proserv/pulumi-tool-import/internal/tfaddr"
+	"github.com/pulumi-proserv/pulumi-tool-import/pkg/importid"
 )
 
 // ImportEntry represents a single resource in a Pulumi import file.
@@ -430,17 +436,14 @@ func unusedOfType(byType map[string][]ModuleResource, pulumiType string, used ma
 
 // extractResourceName extracts the TF resource name from a terraform address.
 // "module.vpc.aws_vpc.main" → "main"
-// "module.vpc.aws_subnet.public[0]" → "public_0"
+// "module.vpc.aws_subnet.public[0]" → "public[0]"
 // "aws_s3_bucket.my_bucket" → "my_bucket"
 func extractResourceName(address string) string {
-	// Split on dots respecting brackets.
-	parts := splitAddressParts(address)
-	if len(parts) == 0 {
+	instance, err := tfaddr.ParseResource(address)
+	if err != nil {
 		return ""
 	}
-	// The resource name is the last part (e.g., ssm_parameters["/develop/mysvc/cm/api_stage"]).
-	// Kept as-is to match Pulumi resource name suffixes directly.
-	return parts[len(parts)-1]
+	return tfaddr.Name(instance.Resource.Resource.Name, instance.Resource.Key)
 }
 
 // extractImportSuffix extracts the resource name suffix from a Pulumi import
@@ -464,193 +467,178 @@ func extractImportSuffix(name, parent string) string {
 // `params["my_key"]` → "params_my_key"
 // "main" → "main" (no key)
 func normalizeInstanceKey(s string) string {
-	idx := strings.Index(s, "[")
-	if idx < 0 {
+	instance, err := tfaddr.ParseName(s)
+	if err != nil || instance.Key == nil {
 		return s
 	}
-	base := s[:idx]
-	key := s[idx+1 : len(s)-1] // strip [ and ]
-	key = strings.Trim(key, `"`)
-	return base + "_" + key
+	return instance.Resource.Name + "_" + tfaddr.KeyValue(instance.Key)
 }
 
-// TranslateImportIDs translates TF import IDs to Pulumi-expected formats.
-// TF and Pulumi often use different import ID formats for the same resource type.
-// This function looks up digest attributes to construct the correct Pulumi ID.
+// TranslateResult is what composing import IDs from the formats table did.
+type TranslateResult struct {
+	Translated int
+	Notes      []string
+}
+
+// TranslateImportIDs selects catalogs from destination pins and reports unresolved IDs.
 func TranslateImportIDs(importFile *ImportFile, digest *ModuleMap) int {
-	// Build TF resource lookup by importId.
-	tfByID := map[string]*ModuleResource{}
-	for i := range digest.RootResources {
-		r := &digest.RootResources[i]
-		if r.Mode == "managed" && r.ImportID != "" {
-			tfByID[r.ImportID] = r
-		}
+	result := TranslateImportIDsForProviders(importFile, digest, nil)
+	for _, note := range result.Notes {
+		fmt.Fprintln(os.Stderr, note)
 	}
-	for _, entry := range digest.Modules {
-		for i := range entry.Resources {
-			r := &entry.Resources[i]
-			if r.Mode == "managed" && r.ImportID != "" {
-				tfByID[r.ImportID] = r
+	return result.Translated
+}
+
+// TranslateImportIDsForProviders prefers each import entry's explicit version;
+// otherwise it uses the digest's resolved Pulumi AWS pin. Missing/unsupported
+// pins produce a diagnostic and leave IDs untouched, without cross-major fallback.
+func TranslateImportIDsForProviders(importFile *ImportFile, digest *ModuleMap, override *importid.Formats) TranslateResult {
+	catalogs := map[string]*catalog.Catalog{}
+	return translateImportIDs(importFile, digest, func(entry *ImportEntry) (*catalog.Catalog, string, error) {
+		if !strings.HasPrefix(entry.Type, "aws:") {
+			return nil, "", nil
+		}
+		version := entry.Version
+		if version == "" {
+			var err error
+			version, err = importid.AWSVersion(digest.Providers)
+			if err != nil {
+				return nil, "", err
 			}
 		}
-	}
+		c := catalogs[version]
+		if c == nil {
+			var err error
+			c, err = importid.ForAWSVersion(version, override)
+			if err != nil {
+				return nil, "", err
+			}
+			catalogs[version] = c
+		}
+		return c, importid.VersionWarning(version, c), nil
+	})
+}
 
-	translated := 0
+// TranslateImportIDsWith rewrites each import-file entry's ID for Terraform
+// types whose import ID is not their state ID. Template entries expand over
+// the digest resource's attributes; manual entries use the selected catalog's
+// composer, or leave the ID alone with a note quoting the
+// documented form. Types absent from the table keep the state ID.
+func TranslateImportIDsWith(importFile *ImportFile, digest *ModuleMap, c *catalog.Catalog) TranslateResult {
+	return translateImportIDs(importFile, digest, func(*ImportEntry) (*catalog.Catalog, string, error) { return c, "", nil })
+}
+
+func translateImportIDs(importFile *ImportFile, digest *ModuleMap, selectCatalog func(*ImportEntry) (*catalog.Catalog, string, error)) TranslateResult {
+	// A state ID that belongs to more than one managed resource cannot pick
+	// out the attributes to compose from: the import entry names the ID and
+	// nothing else. Whichever resource happened to be indexed last would
+	// otherwise compose a confident, unverifiable import ID, so record the
+	// collisions and leave those entries alone.
+	tfByID := map[string]*ModuleResource{}
+	ambiguous := map[string][]string{}
+	index := func(r *ModuleResource) {
+		if r.Mode != "managed" || r.ImportID == "" {
+			return
+		}
+		if prev, seen := tfByID[r.ImportID]; seen {
+			if len(ambiguous[r.ImportID]) == 0 {
+				ambiguous[r.ImportID] = []string{prev.TerraformAddress}
+			}
+			ambiguous[r.ImportID] = append(ambiguous[r.ImportID], r.TerraformAddress)
+			return
+		}
+		tfByID[r.ImportID] = r
+	}
+	for i := range digest.RootResources {
+		index(&digest.RootResources[i])
+	}
+	var indexModules func(map[string]*ModuleMapEntry)
+	indexModules = func(modules map[string]*ModuleMapEntry) {
+		for _, entry := range modules {
+			for i := range entry.Resources {
+				index(&entry.Resources[i])
+			}
+			indexModules(entry.Modules)
+		}
+	}
+	indexModules(digest.Modules)
+
+	var res TranslateResult
+	noted := map[string]bool{}
+	note := func(message string) {
+		if message != "" && !noted[message] {
+			res.Notes = append(res.Notes, message)
+			noted[message] = true
+		}
+	}
 	for i := range importFile.Resources {
 		entry := &importFile.Resources[i]
 		if entry.Component || entry.ID == "" || entry.ID == "<PLACEHOLDER>" {
 			continue
 		}
-
+		c, warning, err := selectCatalog(entry)
+		if err != nil {
+			note("AWS import IDs not composed: " + err.Error())
+			continue
+		}
+		note(warning)
+		if c == nil {
+			continue
+		}
+		if addrs := ambiguous[entry.ID]; len(addrs) > 0 {
+			if !noted[entry.ID] {
+				noted[entry.ID] = true
+				sorted := append([]string(nil), addrs...)
+				sort.Strings(sorted)
+				res.Notes = append(res.Notes, fmt.Sprintf("%s: share state ID %q; import ID left unresolved — set it by hand",
+					strings.Join(sorted, ", "), entry.ID))
+			}
+			continue
+		}
 		tf := tfByID[entry.ID]
 		if tf == nil {
 			continue
 		}
-		attrs := tf.Attributes
+		typ := tfaddr.ResourceType(tf.TerraformAddress)
+		format, ok := c.Formats.Types[typ]
+		if !ok {
+			continue
+		}
 
 		var newID string
-		switch entry.Type {
-		case "aws:wafv2/ipSet:IpSet", "aws:wafv2/webAcl:WebAcl":
-			// uuid -> id/name/scope
-			if name, _ := attrs["name"].(string); name != "" {
-				scope, _ := attrs["scope"].(string)
-				newID = entry.ID + "/" + name + "/" + scope
+		switch {
+		case format.Template != "":
+			id, err := importid.Expand(format.Template, tf.Attributes, tf.ImportID)
+			if err != nil {
+				res.Notes = append(res.Notes, fmt.Sprintf("%s: cannot compose import ID %q: %v",
+					tf.TerraformAddress, format.Template, err))
+				continue
 			}
-
-		case "aws:ec2/route:Route":
-			// TF state carries an opaque "r-<rtb>…<hash>" id; Pulumi expects
-			// ROUTETABLEID_DESTINATION. Exactly one destination attribute is
-			// set, and it may be an IPv4 CIDR, an IPv6 CIDR, or a prefix list.
-			if rtb, _ := attrs["route_table_id"].(string); rtb != "" {
-				for _, key := range []string{
-					"destination_cidr_block",
-					"destination_ipv6_cidr_block",
-					"destination_prefix_list_id",
-				} {
-					if dest, _ := attrs[key].(string); dest != "" {
-						newID = rtb + "_" + dest
-						break
-					}
-				}
+			newID = id
+		case c.Composers[typ] != nil:
+			id, ok := c.Composers[typ](tf.Attributes, tf.ImportID)
+			if !ok {
+				res.Notes = append(res.Notes, fmt.Sprintf("%s: cannot compose import ID from state attributes; documented form: %s",
+					tf.TerraformAddress, format.Docs))
+				continue
 			}
-
-		case "aws:ec2/routeTableAssociation:RouteTableAssociation":
-			// rtbassoc -> subnet/rtb
-			if sid, _ := attrs["subnet_id"].(string); sid != "" {
-				rtb, _ := attrs["route_table_id"].(string)
-				newID = sid + "/" + rtb
+			newID = id
+		default:
+			// A docs-only entry is a review candidate — the docs show a
+			// composite example and no import test was found — not evidence
+			// that this resource's state ID is wrong. Warning about every one
+			// of them buries the notes that were proven by a test.
+			if !format.DocsOnly() {
+				res.Notes = append(res.Notes, fmt.Sprintf("%s: import ID must be composed by hand; documented form: %s",
+					tf.TerraformAddress, format.Docs))
 			}
-
-		case "aws:ec2/securityGroupRule:SecurityGroupRule":
-			// sgrule -> sg_type_proto_from_to_source
-			sg, _ := attrs["security_group_id"].(string)
-			t, _ := attrs["type"].(string)
-			proto, _ := attrs["protocol"].(string)
-			fp := fmt.Sprintf("%v", attrs["from_port"])
-			tp := fmt.Sprintf("%v", attrs["to_port"])
-			var src string
-			if self, _ := attrs["self"].(bool); self {
-				src = "self"
-			} else if cidrs, ok := attrs["cidr_blocks"].([]interface{}); ok && len(cidrs) > 0 {
-				parts := make([]string, len(cidrs))
-				for i, c := range cidrs {
-					parts[i] = fmt.Sprintf("%v", c)
-				}
-				src = strings.Join(parts, "_")
-			} else {
-				src = sg
-			}
-			newID = sg + "_" + t + "_" + proto + "_" + fp + "_" + tp + "_" + src
-
-		case "aws:appautoscaling/target:Target":
-			ns, _ := attrs["service_namespace"].(string)
-			rid, _ := attrs["resource_id"].(string)
-			dim, _ := attrs["scalable_dimension"].(string)
-			newID = ns + "/" + rid + "/" + dim
-
-		case "aws:appautoscaling/policy:Policy":
-			ns, _ := attrs["service_namespace"].(string)
-			rid, _ := attrs["resource_id"].(string)
-			dim, _ := attrs["scalable_dimension"].(string)
-			name, _ := attrs["name"].(string)
-			newID = ns + "/" + rid + "/" + dim + "/" + name
-
-		case "aws:iam/rolePolicyAttachment:RolePolicyAttachment":
-			role, _ := attrs["role"].(string)
-			if role == "" {
-				if roles, ok := attrs["roles"].([]interface{}); ok && len(roles) > 0 {
-					role, _ = roles[0].(string)
-				}
-			}
-			arn, _ := attrs["policy_arn"].(string)
-			if role != "" && arn != "" {
-				newID = role + "/" + arn
-			}
-
-		case "aws:iam/policyAttachment:PolicyAttachment":
-			if name, _ := attrs["name"].(string); name != "" {
-				newID = name
-			}
-
-		case "aws:opensearch/serverlessAccessPolicy:ServerlessAccessPolicy",
-			"aws:opensearch/serverlessSecurityPolicy:ServerlessSecurityPolicy":
-			name, _ := attrs["name"].(string)
-			typ, _ := attrs["type"].(string)
-			if name != "" && typ != "" {
-				newID = name + "/" + typ
-			}
-
-		case "aws:ecs/cluster:Cluster":
-			if name, _ := attrs["name"].(string); name != "" {
-				newID = name
-			}
-
-		case "aws:ecs/service:Service":
-			cluster, _ := attrs["cluster"].(string)
-			svcName, _ := attrs["name"].(string)
-			if cluster != "" && svcName != "" {
-				if strings.Contains(cluster, "arn:") {
-					parts := strings.Split(cluster, "/")
-					cluster = parts[len(parts)-1]
-				}
-				newID = cluster + "/" + svcName
-			}
-
-		case "aws:ecs/taskDefinition:TaskDefinition":
-			if arn, _ := attrs["arn"].(string); arn != "" {
-				newID = arn
-			}
-
-		case "aws:apigatewayv2/apiMapping:ApiMapping":
-			if domain, _ := attrs["domain_name"].(string); domain != "" {
-				newID = entry.ID + "/" + domain
-			}
-
-		case "aws:kinesis/stream:Stream":
-			if name, _ := attrs["name"].(string); name != "" {
-				newID = name
-			}
-
-		case "aws:lambda/permission:Permission":
-			fn, _ := attrs["function_name"].(string)
-			stmt, _ := attrs["statement_id"].(string)
-			if fn != "" && stmt != "" {
-				newID = fn + "/" + stmt
-			}
-
-		case "aws:s3/bucketObject:BucketObject", "aws:s3/bucketObjectv2:BucketObjectv2":
-			bucket, _ := attrs["bucket"].(string)
-			key, _ := attrs["key"].(string)
-			if bucket != "" && key != "" {
-				newID = "s3://" + bucket + "/" + key
-			}
+			continue
 		}
 
 		if newID != "" && newID != entry.ID {
 			entry.ID = newID
-			translated++
+			res.Translated++
 		}
 	}
-
-	return translated
+	return res
 }
