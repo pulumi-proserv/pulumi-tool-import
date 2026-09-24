@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/pulumi-proserv/pulumi-tool-import/internal/tfaddr"
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/importid"
 )
 
@@ -433,17 +434,14 @@ func unusedOfType(byType map[string][]ModuleResource, pulumiType string, used ma
 
 // extractResourceName extracts the TF resource name from a terraform address.
 // "module.vpc.aws_vpc.main" → "main"
-// "module.vpc.aws_subnet.public[0]" → "public_0"
+// "module.vpc.aws_subnet.public[0]" → "public[0]"
 // "aws_s3_bucket.my_bucket" → "my_bucket"
 func extractResourceName(address string) string {
-	// Split on dots respecting brackets.
-	parts := splitAddressParts(address)
-	if len(parts) == 0 {
+	instance, err := tfaddr.ParseResource(address)
+	if err != nil {
 		return ""
 	}
-	// The resource name is the last part (e.g., ssm_parameters["/develop/mysvc/cm/api_stage"]).
-	// Kept as-is to match Pulumi resource name suffixes directly.
-	return parts[len(parts)-1]
+	return tfaddr.Name(instance.Resource.Resource.Name, instance.Resource.Key)
 }
 
 // extractImportSuffix extracts the resource name suffix from a Pulumi import
@@ -467,14 +465,11 @@ func extractImportSuffix(name, parent string) string {
 // `params["my_key"]` → "params_my_key"
 // "main" → "main" (no key)
 func normalizeInstanceKey(s string) string {
-	idx := strings.Index(s, "[")
-	if idx < 0 {
+	instance, err := tfaddr.ParseName(s)
+	if err != nil || instance.Key == nil {
 		return s
 	}
-	base := s[:idx]
-	key := s[idx+1 : len(s)-1] // strip [ and ]
-	key = strings.Trim(key, `"`)
-	return base + "_" + key
+	return instance.Resource.Name + "_" + tfaddr.KeyValue(instance.Key)
 }
 
 // TranslateResult is what composing import IDs from the formats table did.
@@ -545,7 +540,7 @@ func TranslateImportIDsWith(importFile *ImportFile, digest *ModuleMap, formats *
 		if tf == nil {
 			continue
 		}
-		typ := terraformType(tf.TerraformAddress)
+		typ := tfaddr.ResourceType(tf.TerraformAddress)
 		format, ok := formats.Types[typ]
 		if !ok {
 			continue
@@ -587,17 +582,4 @@ func TranslateImportIDsWith(importFile *ImportFile, digest *ModuleMap, formats *
 		}
 	}
 	return res
-}
-
-// terraformType returns the resource type segment of a Terraform address:
-// "module.a.aws_foo.bar[0]" -> "aws_foo".
-func terraformType(address string) string {
-	if i := strings.Index(address, "["); i >= 0 {
-		address = address[:i]
-	}
-	parts := strings.Split(address, ".")
-	if len(parts) < 2 {
-		return address
-	}
-	return parts[len(parts)-2]
 }

@@ -57,6 +57,24 @@ func TestParseSecretMapping(t *testing.T) {
 		_, err := ParseSecretMapping("key=address_no_colon")
 		assert.Error(t, err)
 	})
+	t.Run("malformed address", func(t *testing.T) {
+		_, err := ParseSecretMapping("key=module.bad[:value")
+		assert.Error(t, err)
+	})
+}
+
+func TestExtractSecretValuesCanonicalAddresses(t *testing.T) {
+	t.Parallel()
+	state := []byte(`{"resources":[{"type":"aws_x","name":"n","module":"module.foo[\"0\"]","mode":"managed","instances":[
+		{"index_key":"a].b\"\\c","attributes":{"password":"test-secret"}},
+		{"index_key":"${literal}","attributes":{"password":"literal-secret"}}]}]}`)
+	cm, err := extractSecretValues(state, []SecretMapping{
+		{TerraformAddress: `module.foo["0"].aws_x.n["a].b\"\\c"]`, Attribute: "password", ConfigKey: "escaped"},
+		{TerraformAddress: `module.foo["0"].aws_x.n["$${literal}"]`, Attribute: "password", ConfigKey: "literal"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "test-secret", cm["escaped"].Value)
+	assert.Equal(t, "literal-secret", cm["literal"].Value)
 }
 
 func TestExtractSecretValues_PreservesLargeIntegers(t *testing.T) {

@@ -23,6 +23,7 @@ import (
 	"github.com/blang/semver/v4"
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg"
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/importid"
+	"github.com/pulumi-proserv/pulumi-tool-import/pkg/provideraddr"
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/providermap"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -32,9 +33,11 @@ import (
 // with the version the embedded table was generated from.
 func formatsVersionWarning(digest *pkg.ModuleMap, formats *importid.Formats) string {
 	const awsAddr = "registry.terraform.io/hashicorp/aws"
-	pin, ok := digest.Providers[awsAddr]
-	if !ok {
-		return ""
+	var pin string
+	for _, addr := range provideraddr.Equivalents(awsAddr) {
+		if pin = digest.Providers[addr]; pin != "" {
+			break
+		}
 	}
 	// digest.Providers[addr] is ResolvedPulumi: "<identifier>@<version>" for a
 	// statically bridged provider, "dynamic" or "dynamic@<tfVersion>"

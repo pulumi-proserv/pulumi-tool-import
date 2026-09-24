@@ -40,6 +40,16 @@ required infrastructure or credentials are absent. `make lint` needs neither,
 so run it for a quick local signal; `make check` needs network on its first run
 for the provider clone described above, but no credentials.
 
+## Terraform addresses
+
+Use `internal/tfaddr` to parse resource addresses, module addresses, and resource
+names with instance keys. It delegates to OpenTofu's address parser; do not split
+addresses on dots or brackets or infer key types from their text. Preserve
+`addrs.InstanceKey` values until rendering a name: `[0]`, `["0"]`, and `[""]`
+identify different instances. Use OpenTofu's address types and `String()` methods
+when reconstructing addresses; Pulumi name/config-key normalization happens
+after parsing.
+
 ## Pull requests
 
 - Branch off `main`; do not commit directly to `main`.

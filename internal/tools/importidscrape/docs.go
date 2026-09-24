@@ -21,6 +21,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/pulumi-proserv/pulumi-tool-import/internal/tfaddr"
 )
 
 type DocEntry struct {
@@ -34,9 +36,9 @@ type DocEntry struct {
 }
 
 var (
-	importLineRe = regexp.MustCompile(`terraform import\s+(aws_[a-z0-9_]+)\.\S+\s+(\S+)`)
+	importLineRe = regexp.MustCompile(`terraform import\s+(\S+)\s+(\S+)`)
 	importIDRe   = regexp.MustCompile(`^\s*id\s*=\s*"([^"]*)"`)
-	importToRe   = regexp.MustCompile(`^\s*to\s*=\s*(aws_[a-z0-9_]+)\.`)
+	importToRe   = regexp.MustCompile(`^\s*to\s*=\s*(\S+)`)
 	usingAttrRe  = regexp.MustCompile("using (?:the|its) `([a-z0-9_]+)`")
 	separatorRe  = regexp.MustCompile(`[^/:,|_]+[/:,|_][^/:,|_]+`)
 )
@@ -85,10 +87,14 @@ func docEntryFromFile(path string) (DocEntry, bool, error) {
 			continue
 		}
 		if m := importLineRe.FindStringSubmatch(line); m != nil && e.Example == "" {
-			e.TFType, e.Example = m[1], m[2]
+			if typ := tfaddr.ResourceType(m[1]); strings.HasPrefix(typ, "aws_") {
+				e.TFType, e.Example = typ, m[2]
+			}
 		}
 		if m := importToRe.FindStringSubmatch(line); m != nil {
-			blockType = m[1]
+			if typ := tfaddr.ResourceType(m[1]); strings.HasPrefix(typ, "aws_") {
+				blockType = typ
+			}
 		}
 		if m := importIDRe.FindStringSubmatch(line); m != nil && blockID == "" {
 			blockID = m[1]

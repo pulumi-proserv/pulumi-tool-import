@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	tfjson "github.com/hashicorp/terraform-json"
+	"github.com/pulumi-proserv/pulumi-tool-import/internal/tfaddr"
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/importsupport"
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/providermap"
 	tfcpkg "github.com/pulumi-proserv/pulumi-tool-import/pkg/tfc"
@@ -131,7 +132,10 @@ func GenerateModuleMap(ctx context.Context, tfDir, stateFilePath, outputPath, st
 			return fmt.Errorf("parsing tofu show JSON state: %w", err)
 		}
 
-		rawState = rawStateFromTfjson(&tfjsonState)
+		rawState, err = rawStateFromTfjson(&tfjsonState)
+		if err != nil {
+			return fmt.Errorf("converting tofu show JSON state: %w", err)
+		}
 
 		pulumiProviders, err = GetPulumiProvidersForTerraformState(&tfjsonState, lockFileVersions(tfDir))
 		if err != nil {
@@ -269,23 +273,13 @@ func GenerateModuleMap(ctx context.Context, tfDir, stateFilePath, outputPath, st
 // rawStateFromTfjson builds a synthetic *states.State from a tfjson.State.
 // This allows the StateFormatTofuShowJSON path to reuse the same BuildModuleMap
 // code that works with raw state.
-func rawStateFromTfjson(tfjsonState *tfjson.State) *states.State {
+func rawStateFromTfjson(tfjsonState *tfjson.State) (*states.State, error) {
 	state := states.NewState()
 
-	tofuutil.VisitResources(tfjsonState, func(r *tfjson.StateResource) error {
-		// Parse module address from the resource address.
-		segments := parseModuleSegments(r.Address)
-		moduleAddr := addrs.RootModuleInstance
-		for _, seg := range segments {
-			if seg.key == "" {
-				moduleAddr = moduleAddr.Child(seg.name, addrs.NoKey)
-			} else if _, err := fmt.Sscanf(seg.key, "%d", new(int)); err == nil {
-				var idx int
-				fmt.Sscanf(seg.key, "%d", &idx)
-				moduleAddr = moduleAddr.Child(seg.name, addrs.IntKey(idx))
-			} else {
-				moduleAddr = moduleAddr.Child(seg.name, addrs.StringKey(seg.key))
-			}
+	err := tofuutil.VisitResources(tfjsonState, func(r *tfjson.StateResource) error {
+		instance, err := tfaddr.ParseResource(r.Address)
+		if err != nil {
+			return fmt.Errorf("parsing resource address %q: %w", r.Address, err)
 		}
 
 		// Parse provider.
@@ -294,24 +288,13 @@ func rawStateFromTfjson(tfjsonState *tfjson.State) *states.State {
 			Provider: provider,
 		}
 
-		// Build resource address.
-		mode := addrs.ManagedResourceMode
-		if r.Mode == tfjson.DataResourceMode {
-			mode = addrs.DataResourceMode
-		}
-		resAddr := addrs.Resource{
-			Mode: mode,
-			Type: r.Type,
-			Name: r.Name,
-		}
-
 		// Serialize attribute values to JSON.
 		attrsJSON, _ := json.Marshal(r.AttributeValues)
 
-		module := state.EnsureModule(moduleAddr)
-		module.SetResourceProvider(resAddr, providerConfig)
+		module := state.EnsureModule(instance.Module)
+		module.SetResourceProvider(instance.Resource.Resource, providerConfig)
 		module.SetResourceInstanceCurrent(
-			addrs.ResourceInstance{Resource: resAddr, Key: addrs.NoKey},
+			instance.Resource,
 			&states.ResourceInstanceObjectSrc{
 				AttrsJSON:          attrsJSON,
 				AttrSensitivePaths: sensitivePathsFromTfjson(r.SensitiveValues),
@@ -323,7 +306,10 @@ func rawStateFromTfjson(tfjsonState *tfjson.State) *states.State {
 		return nil
 	}, &tofuutil.VisitOptions{IncludeDataSources: true})
 
-	return state
+	if err != nil {
+		return nil, err
+	}
+	return state, nil
 }
 
 func sensitivePathsFromTfjson(raw json.RawMessage) []cty.PathValueMarks {

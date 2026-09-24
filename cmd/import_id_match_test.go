@@ -45,3 +45,23 @@ func TestFormatsVersionWarning(t *testing.T) {
 	assert.Contains(t, got, "v6.38.0")
 	assert.Contains(t, got, "make update-import-id-formats")
 }
+
+func TestFormatsVersionWarningEquivalentProviders(t *testing.T) {
+	t.Parallel()
+	formats := &importid.Formats{Provider: "hashicorp/aws", Version: "v6.0.0"}
+	for _, addr := range []string{
+		"registry.terraform.io/hashicorp/aws",
+		"registry.opentofu.org/hashicorp/aws",
+		"hashicorp/aws",
+	} {
+		t.Run(addr, func(t *testing.T) {
+			digest := &pkg.ModuleMap{Providers: map[string]string{addr: "aws@v7.24.0"}}
+			got := formatsVersionWarning(digest, formats)
+			assert.Contains(t, got, "v6.38.0")
+			assert.Contains(t, got, "v6.0.0")
+			assert.Contains(t, got, "make update-import-id-formats")
+		})
+	}
+	foreign := &pkg.ModuleMap{Providers: map[string]string{"example.com/hashicorp/aws": "aws@v7.24.0"}}
+	assert.Empty(t, formatsVersionWarning(foreign, formats))
+}

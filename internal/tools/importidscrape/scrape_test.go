@@ -16,6 +16,10 @@ package main
 
 import (
 	"bytes"
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"testing"
@@ -270,4 +274,39 @@ func TestClassifyRegionOverrideSuffix(t *testing.T) {
 	c = classify2(t, by["aws_ec2_regionthing_hash"])
 	assert.True(t, c.Manual)
 	assert.Empty(t, c.Template)
+}
+
+func TestClassifyRejectsMutatedResourceState(t *testing.T) {
+	for name, mutation := range map[string]string{
+		"receiver reassignment":     `rs = s.RootModule().Resources["aws_other.test"]`,
+		"receiver tuple assignment": `rs, ok = s.RootModule().Resources["aws_other.test"]`,
+		"primary ID write":          `rs.Primary.ID = "different-id"`,
+		"attribute write":           `rs.Primary.Attributes["name"] = "different-name"`,
+		"aliased attribute write":   `attrs := rs.Primary.Attributes; attrs["name"] = "different-name"`,
+		"indirect primary write":    `*rs.Primary = terraform.InstanceState{ID: "different-id"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			src := fmt.Sprintf(`package example
+import "fmt"
+func TestAccExample() {
+ resource.Test(resource.TestCase{Steps: []resource.TestStep{{ResourceName: "aws_example.test", ImportState: true, ImportStateIdFunc: importID}}})
+}
+func importID(s *terraform.State) (string, error) {
+ rs, ok := s.RootModule().Resources["aws_example.test"]
+ if !ok { return "", fmt.Errorf("not found") }
+ %s
+ return fmt.Sprintf("%%s/%%s", rs.Primary.ID, rs.Primary.Attributes["name"]), nil
+}`, mutation)
+			fset := token.NewFileSet()
+			file, err := parser.ParseFile(fset, "example_test.go", src, 0)
+			require.NoError(t, err)
+			pkg := &ast.Package{Name: "example", Files: map[string]*ast.File{"example_test.go": file}}
+			steps := stepsInFile(fset, pkg, file, "example_test.go")
+			require.Len(t, steps, 1)
+			c := classify(steps[0], nil)
+			assert.True(t, c.Manual)
+			assert.Empty(t, c.Template)
+			assert.Contains(t, c.Snippet, "rs.Primary")
+		})
+	}
 }

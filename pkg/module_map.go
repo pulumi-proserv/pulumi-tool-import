@@ -25,6 +25,7 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
+	"github.com/pulumi-proserv/pulumi-tool-import/internal/tfaddr"
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/bridge"
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/importsupport"
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/providermap"
@@ -210,10 +211,7 @@ func buildModuleMapLevel(
 			copy(segments, parentSegments)
 			segments[len(parentSegments)] = moduleSegment{name: name, key: inst.key}
 
-			mapKey := name
-			if inst.key != "" {
-				mapKey = name + "[" + formatKey(inst.key) + "]"
-			}
+			mapKey := tfaddr.Name(name, inst.key)
 
 			fmt.Fprintf(os.Stderr, "      %s: matching resources...\n", mapKey)
 			moduleResources, err := matchResources(ctx, state, segments, pulumiProviders, stackName, projectName, importChecker)
@@ -223,18 +221,17 @@ func buildModuleMapLevel(
 			entry := &ModuleMapEntry{
 				TerraformPath: buildModulePath(segments),
 				Source:        call.SourceAddrRaw,
-				IndexKey:      inst.key,
+				IndexKey:      tfaddr.KeyValue(inst.key),
 				Resources:     moduleResources,
 			}
 			fmt.Fprintf(os.Stderr, "      %s: %d resources\n", mapKey, len(entry.Resources))
 
 			// Determine index type.
-			if inst.key != "" {
-				if _, err := fmt.Sscanf(inst.key, "%d", new(int)); err == nil {
-					entry.IndexType = "int"
-				} else {
-					entry.IndexType = "string"
-				}
+			switch inst.key.(type) {
+			case addrs.IntKey:
+				entry.IndexType = "int"
+			case addrs.StringKey:
+				entry.IndexType = "string"
 			}
 
 			// Build interface from child config.
@@ -274,13 +271,13 @@ func buildModuleMapLevel(
 
 // moduleInstance represents a discovered module instance from state.
 type moduleInstance struct {
-	key string // empty for non-indexed, "0"/"1" for count, "key" for for_each
+	key addrs.InstanceKey
 }
 
 // discoverModuleInstances finds unique module instances from raw state that match
 // the given parent path and module name.
 func discoverModuleInstances(state *states.State, parentSegments []moduleSegment, moduleName string) []moduleInstance {
-	seen := map[string]bool{}
+	seen := map[addrs.InstanceKey]bool{}
 	var instances []moduleInstance
 
 	parentDepth := len(parentSegments)
@@ -320,13 +317,13 @@ func discoverModuleInstances(state *states.State, parentSegments []moduleSegment
 
 	// Sort instances for deterministic output.
 	sort.Slice(instances, func(i, j int) bool {
-		return instances[i].key < instances[j].key
+		return addrs.InstanceKeyLess(instances[i].key, instances[j].key)
 	})
 
 	// If no instances found in state, still emit one entry for non-indexed modules
 	// if they exist in config (they might just have no resources).
 	if len(instances) == 0 {
-		instances = append(instances, moduleInstance{key: ""})
+		instances = append(instances, moduleInstance{key: addrs.NoKey})
 	}
 
 	return instances
@@ -687,19 +684,7 @@ func populateEvaluatedValues(
 	evalScopes *EvalScopes,
 	segments []moduleSegment,
 ) {
-	// Build the module instance address from segments.
-	addr := addrs.RootModuleInstance
-	for _, seg := range segments {
-		if seg.key == "" {
-			addr = addr.Child(seg.name, addrs.NoKey)
-		} else if _, err := fmt.Sscanf(seg.key, "%d", new(int)); err == nil {
-			var idx int
-			fmt.Sscanf(seg.key, "%d", &idx)
-			addr = addr.Child(seg.name, addrs.IntKey(idx))
-		} else {
-			addr = addr.Child(seg.name, addrs.StringKey(seg.key))
-		}
-	}
+	addr := moduleAddrFromSegments(segments)
 
 	scope := evalScopes.Scope(addr)
 	if scope == nil {
@@ -942,11 +927,10 @@ func DiscoverSensitiveSecrets(
 //
 // The result is a human-readable key like "console_secrets_cap_client_oauth_secret_string".
 func flattenAddress(address, attribute string) string {
-	clean := strings.NewReplacer(
-		"\"", "",
-		" ", "_",
-	)
-	address = clean.Replace(address)
+	instance, err := tfaddr.ParseResource(address)
+	if err != nil {
+		return ""
+	}
 
 	// Generic resource names that add no value.
 	genericNames := map[string]bool{
@@ -954,81 +938,18 @@ func flattenAddress(address, attribute string) string {
 		"ssm_parameters": true,
 	}
 
-	// Parse the address into module segments and a resource tail.
-	// Address forms:
-	//   module.A[k1].module.B[k2].resource_type.name[k3]   (nested modules)
-	//   module.A[k1].resource_type.name[k3]                 (single module)
-	//   resource_type.name[k3]                              (root resource)
-	type segment struct {
-		name string
-		key  string
-	}
-	var moduleSegments []segment
-	var resourceName, resourceKey string
-
-	// Split into dot-separated parts, handling brackets.
-	remaining := address
-	var parts []string
-	for remaining != "" {
-		// Find next dot that isn't inside brackets.
-		depth := 0
-		dotIdx := -1
-		for i, c := range remaining {
-			switch c {
-			case '[':
-				depth++
-			case ']':
-				depth--
-			case '.':
-				if depth == 0 {
-					dotIdx = i
-				}
-			}
-			if dotIdx >= 0 {
-				break
-			}
-		}
-		if dotIdx >= 0 {
-			parts = append(parts, remaining[:dotIdx])
-			remaining = remaining[dotIdx+1:]
-		} else {
-			parts = append(parts, remaining)
-			remaining = ""
-		}
-	}
-
-	// Walk parts: "module" keywords indicate module segments; the last two non-module
-	// parts are resource_type and resource_name.
-	i := 0
-	for i < len(parts) {
-		if parts[i] == "module" && i+1 < len(parts) {
-			name, key := splitForEachKey(parts[i+1])
-			moduleSegments = append(moduleSegments, segment{name: name, key: key})
-			i += 2
-		} else {
-			break
-		}
-	}
-
-	// Remaining parts: resource_type[.resource_name[key]]
-	// parts[i] = resource type (discarded), parts[i+1] = resource name + optional key
-	if i+1 < len(parts) {
-		// Skip resource type at parts[i]
-		resourceName, resourceKey = splitForEachKey(parts[i+1])
-	} else if i < len(parts) {
-		// Only resource type, no separate name (rare)
-		resourceName, _ = splitForEachKey(parts[i])
-	}
+	resourceName := instance.Resource.Resource.Name
+	resourceKey := tfaddr.KeyValue(instance.Resource.Key)
 
 	// Build key from meaningful segments.
 	var keyParts []string
 
 	// Collect all sanitized module keys for dedup.
 	var allModuleKeys []string
-	for _, ms := range moduleSegments {
-		keyParts = append(keyParts, ms.name)
-		if ms.key != "" {
-			sanitized := sanitizeSegment(ms.key)
+	for _, ms := range instance.Module {
+		keyParts = append(keyParts, ms.Name)
+		if ms.InstanceKey != addrs.NoKey {
+			sanitized := sanitizeSegment(tfaddr.KeyValue(ms.InstanceKey))
 			keyParts = append(keyParts, sanitized)
 			allModuleKeys = append(allModuleKeys, sanitized)
 		}
@@ -1060,15 +981,6 @@ func flattenAddress(address, attribute string) string {
 
 	keyParts = append(keyParts, attribute)
 	return strings.Join(keyParts, "_")
-}
-
-// splitForEachKey splits "name[key]" into ("name", "key") or ("name", "") if no key.
-func splitForEachKey(s string) (string, string) {
-	if idx := strings.Index(s, "["); idx >= 0 {
-		key := strings.TrimRight(s[idx+1:], "]")
-		return s[:idx], key
-	}
-	return s, ""
 }
 
 // sanitizeSegment replaces non-alphanumeric chars with underscores and collapses runs.

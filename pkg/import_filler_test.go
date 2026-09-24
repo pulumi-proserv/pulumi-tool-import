@@ -442,6 +442,7 @@ func TestExtractResourceName(t *testing.T) {
 		{`module.vpc.aws_ssm_parameter.params["my_key"]`, `params["my_key"]`},
 		{"aws_s3_bucket.my_bucket", "my_bucket"},
 		{`module.console_ui["mysvc"].aws_s3_bucket.ui`, "ui"},
+		{`module.network["prod].eu"].data.aws_subnet.public["key].part\""]`, `public["key].part\""]`},
 	}
 
 	for _, tt := range tests {
@@ -485,6 +486,8 @@ func TestNormalizeInstanceKey(t *testing.T) {
 		{"public[0]", "public_0"},
 		{`params["my_key"]`, "params_my_key"},
 		{"instances[1]", "instances_1"},
+		{`params["a].b\"\\c"]`, `params_a].b"\c`},
+		{"params[", "params["},
 	}
 
 	for _, tt := range tests {
@@ -888,10 +891,30 @@ func TestFormatEntryDocsOnly(t *testing.T) {
 	assert.False(t, importid.FormatEntry{Evidence: "terraform-provider-aws/internal/service/x_test.go:1 f"}.DocsOnly())
 }
 
-func TestTerraformType(t *testing.T) {
-	assert.Equal(t, "aws_foo", terraformType("aws_foo.bar"))
-	assert.Equal(t, "aws_foo", terraformType("module.a.module.b.aws_foo.bar[0]"))
-	assert.Equal(t, "aws_foo", terraformType(`aws_foo.bar["k"]`))
+func TestTranslateImportIDsInIndexedModules(t *testing.T) {
+	t.Parallel()
+	for _, address := range []string{
+		"module.network[0].aws_route.default",
+		`module.network["prod.eu"].module.routes[0].aws_route.default["public"]`,
+	} {
+		t.Run(address, func(t *testing.T) {
+			digest := &ModuleMap{Modules: map[string]*ModuleMapEntry{
+				"network": {Resources: []ModuleResource{{
+					Mode: "managed", TerraformAddress: address, ImportID: "r-opaque",
+					Attributes: map[string]interface{}{
+						"route_table_id": "rtb-123", "destination_cidr_block": "0.0.0.0/0",
+					},
+				}}},
+			}}
+			imports := &ImportFile{Resources: []ImportEntry{{
+				Type: "aws:ec2/route:Route", Name: "default", ID: "r-opaque",
+			}}}
+			result := TranslateImportIDsWith(imports, digest, importid.Embedded())
+			assert.Equal(t, "rtb-123_0.0.0.0/0", imports.Resources[0].ID)
+			assert.Equal(t, 1, result.Translated)
+			assert.Empty(t, result.Notes)
+		})
+	}
 }
 
 func TestProviderAndNameTablePreserved(t *testing.T) {

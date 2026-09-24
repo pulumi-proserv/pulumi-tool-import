@@ -524,6 +524,32 @@ func isNotFoundGuard(s *ast.IfStmt) bool {
 // is simply not proven to be this step's resource, and so yields no receiver.
 // Accepting an unproven one would let a wrong-resource body prove a template.
 func receiverNames(body *ast.BlockStmt, fn *ast.FuncDecl, step ImportStep) map[string]bool {
+	// A resource lookup proves identity only while that binding and its state
+	// remain unchanged. Reject field/index writes even through aliases; without
+	// alias analysis we cannot prove that such a write leaves the state intact.
+	bindings := map[string]int{}
+	stateWrite := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.AssignStmt:
+			for _, lhs := range n.Lhs {
+				if id, ok := lhs.(*ast.Ident); ok {
+					bindings[id.Name]++
+				} else {
+					stateWrite = true
+				}
+			}
+		case *ast.ValueSpec:
+			for _, name := range n.Names {
+				bindings[name.Name]++
+			}
+		}
+		return true
+	})
+	if stateWrite {
+		return nil
+	}
+
 	names := map[string]bool{}
 	for _, st := range body.List {
 		as, ok := st.(*ast.AssignStmt)
@@ -537,7 +563,7 @@ func receiverNames(body *ast.BlockStmt, fn *ast.FuncDecl, step ImportStep) map[s
 		if !indexIsStepAddress(ix.Index, fn, step) {
 			continue
 		}
-		if id, ok := as.Lhs[0].(*ast.Ident); ok {
+		if id, ok := as.Lhs[0].(*ast.Ident); ok && bindings[id.Name] == 1 {
 			names[id.Name] = true
 		}
 		break

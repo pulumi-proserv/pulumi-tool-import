@@ -17,6 +17,7 @@ package pkg
 import (
 	"testing"
 
+	"github.com/pulumi/opentofu/addrs"
 	"github.com/stretchr/testify/require"
 )
 
@@ -166,15 +167,15 @@ func TestParseModuleSegments(t *testing.T) {
 		},
 		{
 			"module.vpc[0].aws_subnet.this",
-			[]moduleSegment{{name: "vpc", key: "0"}},
+			[]moduleSegment{{name: "vpc", key: addrs.IntKey(0)}},
 		},
 		{
 			`module.vpc["us-east-1"].aws_subnet.this`,
-			[]moduleSegment{{name: "vpc", key: "us-east-1"}},
+			[]moduleSegment{{name: "vpc", key: addrs.StringKey("us-east-1")}},
 		},
 		{
 			`module.clusters[0].module.services["api"].aws_lambda_function.handler`,
-			[]moduleSegment{{name: "clusters", key: "0"}, {name: "services", key: "api"}},
+			[]moduleSegment{{name: "clusters", key: addrs.IntKey(0)}, {name: "services", key: addrs.StringKey("api")}},
 		},
 		{
 			"aws_s3_bucket.this",
@@ -185,6 +186,21 @@ func TestParseModuleSegments(t *testing.T) {
 		t.Run(tt.address, func(t *testing.T) {
 			result := parseModuleSegments(tt.address)
 			require.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestModulePathRoundTrip(t *testing.T) {
+	for _, path := range []string{
+		"module.network[0]",
+		`module.network["0"]`,
+		`module.network[""]`,
+		`module.network["0prod"].module.region["a].b\"\\c"]`,
+	} {
+		t.Run(path, func(t *testing.T) {
+			segments := parseModuleSegments(path + ".aws_subnet.this")
+			require.NotEmpty(t, segments)
+			require.Equal(t, path, buildModulePath(segments))
 		})
 	}
 }

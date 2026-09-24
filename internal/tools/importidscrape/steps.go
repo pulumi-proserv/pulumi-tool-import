@@ -25,6 +25,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/pulumi-proserv/pulumi-tool-import/internal/tfaddr"
 )
 
 func sortedKeys[V any](m map[string]V) []string {
@@ -167,7 +169,7 @@ func stepFromLiteral(cl *ast.CompositeLit, names map[string]string) (ImportStep,
 			importState = isTrue(kv.Value)
 		case "ResourceName":
 			step.Address = addrOf(kv.Value, names)
-			step.TFType = tfTypeOf(step.Address)
+			step.TFType = tfaddr.ResourceType(step.Address)
 		case "ImportStateIdFunc":
 			step.IDFuncExpr = kv.Value
 			if call, ok := kv.Value.(*ast.CallExpr); ok {
@@ -205,16 +207,6 @@ func addrOf(e ast.Expr, names map[string]string) string {
 		}
 	case *ast.Ident:
 		return names[v.Name]
-	}
-	return ""
-}
-
-// tfTypeOf reduces an address ("aws_x.name") to its resource type ("aws_x").
-// Element literals such as []resource.TestStep{{...}} name no type, so
-// callers also tolerate an empty address.
-func tfTypeOf(addr string) string {
-	if i := strings.Index(addr, "."); i > 0 {
-		return addr[:i]
 	}
 	return ""
 }

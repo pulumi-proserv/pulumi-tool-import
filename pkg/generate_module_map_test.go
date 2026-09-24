@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	tfjson "github.com/hashicorp/terraform-json"
+	"github.com/pulumi/opentofu/addrs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -43,7 +44,8 @@ func TestTofuShowJSON_LargeIntegerSurvivesDecode(t *testing.T) {
 	withHook.UseJSONNumber(true)
 	require.NoError(t, json.Unmarshal([]byte(tofuShowJSONWithLargeInteger), &withHook))
 
-	state := rawStateFromTfjson(&withHook)
+	state, err := rawStateFromTfjson(&withHook)
+	require.NoError(t, err)
 	res := state.RootModule().Resources
 	require.Len(t, res, 1, "expected the fixture's single resource")
 	var attrs []byte
@@ -60,7 +62,8 @@ func TestTofuShowJSON_LargeIntegerSurvivesDecode(t *testing.T) {
 
 	var withoutHook tfjson.State
 	require.NoError(t, json.Unmarshal([]byte(tofuShowJSONWithLargeInteger), &withoutHook))
-	bad := rawStateFromTfjson(&withoutHook)
+	bad, err := rawStateFromTfjson(&withoutHook)
+	require.NoError(t, err)
 	var badAttrs []byte
 	for _, r := range bad.RootModule().Resources {
 		for _, inst := range r.Instances {
@@ -70,4 +73,63 @@ func TestTofuShowJSON_LargeIntegerSurvivesDecode(t *testing.T) {
 	require.True(t, strings.Contains(string(badAttrs), rounded),
 		"expected a plain decode to round the value, but it did not — "+
 			"terraform-json's behaviour changed and this test needs revisiting")
+}
+
+func TestTofuShowJSONPreservesInstanceAddresses(t *testing.T) {
+	t.Parallel()
+	root := &tfjson.StateModule{}
+	moduleCases := []struct {
+		address string
+		key     addrs.InstanceKey
+	}{
+		{"module.network[0]", addrs.IntKey(0)},
+		{`module.network["0"]`, addrs.StringKey("0")},
+		{`module.network[""]`, addrs.StringKey("")},
+		{`module.network["prod].eu"]`, addrs.StringKey("prod].eu")},
+	}
+	resourceCases := []struct {
+		suffix string
+		key    addrs.InstanceKey
+	}{
+		{"[0]", addrs.IntKey(0)},
+		{"[1]", addrs.IntKey(1)},
+		{`["0"]`, addrs.StringKey("0")},
+		{`[""]`, addrs.StringKey("")},
+	}
+	for _, mod := range moduleCases {
+		child := &tfjson.StateModule{Address: mod.address}
+		for _, res := range resourceCases {
+			address := mod.address + ".aws_subnet.this" + res.suffix
+			child.Resources = append(child.Resources, &tfjson.StateResource{
+				Address: address, Mode: tfjson.ManagedResourceMode, Type: "aws_subnet", Name: "this",
+				ProviderName:    "registry.terraform.io/hashicorp/aws",
+				AttributeValues: map[string]interface{}{"id": address},
+			})
+		}
+		root.ChildModules = append(root.ChildModules, child)
+	}
+	state, err := rawStateFromTfjson(&tfjson.State{Values: &tfjson.StateValues{RootModule: root}})
+	require.NoError(t, err)
+	for _, mod := range moduleCases {
+		module := state.Module(addrs.RootModuleInstance.Child("network", mod.key))
+		require.NotNil(t, module, mod.address)
+		resource := module.Resource(addrs.Resource{Mode: addrs.ManagedResourceMode, Type: "aws_subnet", Name: "this"})
+		require.NotNil(t, resource)
+		require.Len(t, resource.Instances, len(resourceCases))
+		for _, res := range resourceCases {
+			instance := resource.Instances[res.key]
+			require.NotNil(t, instance)
+			var attrs map[string]interface{}
+			require.NoError(t, json.Unmarshal(instance.Current.AttrsJSON, &attrs))
+			assert.Equal(t, mod.address+".aws_subnet.this"+res.suffix, attrs["id"])
+		}
+	}
+}
+
+func TestTofuShowJSONRejectsMalformedAddress(t *testing.T) {
+	state, err := rawStateFromTfjson(&tfjson.State{Values: &tfjson.StateValues{
+		RootModule: &tfjson.StateModule{Resources: []*tfjson.StateResource{{Address: "module.bad["}}},
+	}})
+	require.ErrorContains(t, err, "parsing resource address")
+	assert.Nil(t, state)
 }
