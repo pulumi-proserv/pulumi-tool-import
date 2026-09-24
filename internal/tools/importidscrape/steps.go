@@ -39,6 +39,7 @@ func sortedKeys[V any](m map[string]V) []string {
 }
 
 type ImportStep struct {
+	Helpers    map[string]string // nil for fixture profile; otherwise only these helpers have verified semantics
 	TFType     string
 	Address    string // the step's full ResourceName, e.g. "aws_cloudwatch_event_target.test"
 	File       string

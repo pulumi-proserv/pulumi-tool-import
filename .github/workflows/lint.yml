@@ -37,6 +37,22 @@ jobs:
           version: v2.11.3
           args: --build-tags e2e ./test/e2e/...
 
+  catalog-lint:
+    name: catalog-lint (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        module: [importids/catalog, importids/aws/v6, importids/aws/v7]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.11.3
+          working-directory: ${{ matrix.module }}
+
   vet:
     name: vet
     runs-on: ubuntu-latest
@@ -57,6 +73,9 @@ jobs:
           fi
       - name: go vet
         run: go vet ./...
+
+      - name: go vet (provider catalog modules)
+        run: make vet-catalogs
 
       # "go vet" fully type-checks, so this is what catches a compile error in
       # an e2e-tagged file — otherwise the first thing to notice is a run that
@@ -92,10 +111,7 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # Guards against pkg/importid/aws-import-id-formats.json drifting from
-      # the terraform-provider-aws version providermap pins: without this the
-      # embedded import-ID composition table can silently go stale with
-      # nothing to catch it. Needs network egress — it does a sparse clone of
-      # the provider's acceptance tests (~1-2 min).
+      # Verify both Pulumi-major tables against their exact upstream source pins.
+      # Needs network on a cold cache for the provider's acceptance-test sources.
       - name: import-id-formats-check
         run: make import-id-formats-check

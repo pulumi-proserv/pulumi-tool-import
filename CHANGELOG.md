@@ -9,15 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `resolve tf`: import IDs for composite-keyed and alias-identified AWS types
-  are composed from a table generated from the provider source; new make
-  target `update-import-id-formats` (#70). This replaces the hand-written
-  `TranslateImportIDs` switch: composed IDs for the ~17 types it used to
-  handle can differ (two were corrected outright), and ~316 more types are
-  now covered that previously passed through unchanged. `resolve tf` gains
-  `--import-id-formats <file>` to override the embedded table, and warns when
-  the digest's pinned AWS provider is newer than the version the table was
-  generated from.
+- `resolve tf`: generated import-ID catalogs replace the hand-written switch
+  (#70). Separate Go modules for **Pulumi AWS v6 and v7** embed their own JSON
+  and custom composers, generated against Pulumi v6.83.4 / Terraform v5.100.0
+  and Pulumi v7.48.0 / Terraform v6.66.0 respectively. The import entry's version
+  takes precedence over the digest pin. Missing or unsupported pins leave IDs
+  untouched with a diagnostic; newer same-major releases warn. Overrides must
+  declare a compatible `pulumiVersion` and upstream `version`.
+- `make update-import-id-formats` regenerates both catalogs from their
+  `source.json` pins. `make test` and `make check` cover the nested modules;
+  CI verifies both generated tables byte-for-byte.
 
 ### Changed
 

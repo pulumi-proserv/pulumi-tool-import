@@ -21,7 +21,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/pulumi-proserv/pulumi-tool-import/pkg/importid"
+	"github.com/pulumi-proserv/pulumi-tool-import/importids/catalog"
 )
 
 // Summary tallies buildFormats' output by how each entry's evidence was
@@ -31,8 +31,14 @@ type Summary struct {
 }
 
 // buildFormats runs the four stages against a provider checkout.
-func buildFormats(providerRoot, version string, warn func(string)) (*importid.Formats, Summary, error) {
-	if err := checkAcctestHelpers(providerRoot); err != nil {
+func buildFormats(providerRoot, version string, warn func(string), sources ...catalog.Source) (*catalog.Formats, Summary, error) {
+	var source *catalog.Source
+	if len(sources) > 0 {
+		source = &sources[0]
+		if err := checkPinnedHelpers(providerRoot, source.Helpers); err != nil {
+			return nil, Summary{}, err
+		}
+	} else if err := checkAcctestHelpers(providerRoot); err != nil {
 		return nil, Summary{}, err
 	}
 	steps, err := collectImportSteps(providerRoot)
@@ -48,7 +54,10 @@ func buildFormats(providerRoot, version string, warn func(string)) (*importid.Fo
 		return nil, Summary{}, err
 	}
 
-	f := &importid.Formats{Provider: "hashicorp/aws", Version: version, Types: map[string]importid.FormatEntry{}}
+	f := &catalog.Formats{Provider: "hashicorp/aws", Version: version, Types: map[string]catalog.FormatEntry{}}
+	if source != nil {
+		f.PulumiVersion, f.UpstreamRevision = source.PulumiVersion, source.UpstreamRevision
+	}
 	var sum Summary
 
 	// provenPassthrough holds the types some import test proved to import by
@@ -62,6 +71,9 @@ func buildFormats(providerRoot, version string, warn func(string)) (*importid.Fo
 	// template beats a manual (a passthrough-looking step elsewhere is a
 	// different test's shortcut, not a contradiction).
 	for _, step := range steps {
+		if source != nil {
+			step.Helpers = source.Helpers
+		}
 		c := classify(step, consts)
 		// A step with no ImportStateIdFunc, and a step proving exactly "{id}",
 		// both say the import ID is the state ID. That is not a divergence, so
@@ -88,7 +100,7 @@ func buildFormats(providerRoot, version string, warn func(string)) (*importid.Fo
 		if seen && c.Manual {
 			continue
 		}
-		e := importid.FormatEntry{
+		e := catalog.FormatEntry{
 			Evidence: fmt.Sprintf("terraform-provider-aws/%s:%d %s", evidenceFile(c, step), evidenceLine(c, step), c.Symbol),
 		}
 		if c.Template != "" {
@@ -111,7 +123,7 @@ func buildFormats(providerRoot, version string, warn func(string)) (*importid.Fo
 			continue
 		}
 		if d.Divergent && !provenPassthrough[typ] {
-			f.Types[typ] = importid.FormatEntry{
+			f.Types[typ] = catalog.FormatEntry{
 				Manual:     true,
 				Docs:       "terraform import " + typ + ".example " + d.Example,
 				DocsSource: d.Source,
@@ -154,7 +166,7 @@ func evidenceLine(c Classification, step ImportStep) int {
 
 // writeFormats emits sorted, 2-space-indented JSON with a trailing newline.
 // encoding/json sorts map keys, which is the whole determinism story.
-func writeFormats(path string, f *importid.Formats) error {
+func writeFormats(path string, f *catalog.Formats) error {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)

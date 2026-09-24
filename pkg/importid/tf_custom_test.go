@@ -18,12 +18,13 @@ import (
 	"strings"
 	"testing"
 
+	aws7 "github.com/pulumi-proserv/pulumi-tool-import/importids/aws/v7"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestTFCustomRoute(t *testing.T) {
-	c := TFCustom["aws_route"]
+	c := aws7.Load().Composers["aws_route"]
 	require.NotNil(t, c)
 	id, ok := c(map[string]interface{}{"route_table_id": "rtb-1", "destination_cidr_block": "10.0.0.0/16"}, "r-x")
 	assert.True(t, ok)
@@ -39,7 +40,7 @@ func TestTFCustomRoute(t *testing.T) {
 }
 
 func TestTFCustomSecurityGroupRule(t *testing.T) {
-	c := TFCustom["aws_security_group_rule"]
+	c := aws7.Load().Composers["aws_security_group_rule"]
 	require.NotNil(t, c)
 	id, ok := c(map[string]interface{}{
 		"security_group_id": "sg-1", "type": "ingress", "protocol": "tcp",
@@ -56,7 +57,7 @@ func TestTFCustomSecurityGroupRule(t *testing.T) {
 }
 
 func TestTFCustomEcsService(t *testing.T) {
-	c := TFCustom["aws_ecs_service"]
+	c := aws7.Load().Composers["aws_ecs_service"]
 	require.NotNil(t, c)
 	id, ok := c(map[string]interface{}{"cluster": "arn:aws:ecs:us-east-1:1:cluster/c1", "name": "svc"}, "")
 	assert.True(t, ok)
@@ -67,7 +68,7 @@ func TestTFCustomEcsService(t *testing.T) {
 }
 
 func TestTFCustomRouteTableAssociation(t *testing.T) {
-	c := TFCustom["aws_route_table_association"]
+	c := aws7.Load().Composers["aws_route_table_association"]
 	require.NotNil(t, c)
 	id, ok := c(map[string]interface{}{"subnet_id": "subnet-1", "route_table_id": "rtb-1"}, "rtbassoc-1")
 	assert.True(t, ok)
@@ -82,7 +83,7 @@ func TestTFCustomRouteTableAssociation(t *testing.T) {
 }
 
 func TestTFCustomLambdaPermission(t *testing.T) {
-	c := TFCustom["aws_lambda_permission"]
+	c := aws7.Load().Composers["aws_lambda_permission"]
 	require.NotNil(t, c)
 	id, ok := c(map[string]interface{}{"function_name": "fn", "statement_id": "s1"}, "")
 	assert.True(t, ok)
@@ -95,25 +96,13 @@ func TestTFCustomLambdaPermission(t *testing.T) {
 	assert.False(t, ok)
 }
 
-func TestTFCustomKinesisStream(t *testing.T) {
-	c := TFCustom["aws_kinesis_stream"]
-	require.NotNil(t, c)
-	// The state ID is the stream ARN; the import ID is the bare name.
-	id, ok := c(map[string]interface{}{"name": "my-stream"}, "arn:aws:kinesis:us-east-1:1:stream/my-stream")
-	assert.True(t, ok)
-	assert.Equal(t, "my-stream", id)
-	_, ok = c(map[string]interface{}{}, "arn:aws:kinesis:us-east-1:1:stream/my-stream")
-	assert.False(t, ok)
-	_, ok = c(map[string]interface{}{"name": ""}, "arn")
-	assert.False(t, ok)
-}
-
 // Every custom composer's type must be a manual entry in the table, so the
 // scrape can flag a hand-written composer whose type gains a provable
 // template. Runs against the embedded table.
 func TestTFCustomTypesAreManualInTable(t *testing.T) {
-	f := Embedded()
-	for typ := range TFCustom {
+	c := aws7.Load()
+	f := c.Formats
+	for typ := range c.Composers {
 		e, ok := f.Types[typ]
 		assert.Truef(t, ok, "%s has a custom composer but no table entry", typ)
 		assert.Truef(t, e.Manual, "%s has a custom composer but the table has a template %q — delete the composer or fix the scrape", typ, e.Template)
@@ -182,6 +171,7 @@ var specsAliasTemplate = map[string]string{
 //
 // Every reason below was checked against terraform-provider-aws v6.38.0.
 var specsAgreementExceptions = map[string]string{
+	"aws_api_gateway_method": "v6.66.0's test calls MethodCreateImportID; its implementation in apigateway/method.go joins rest_api_id/resource_id/http_method, as the v7 composer and Specs do",
 	// Specs is Custom only to split CFN's pipe-joined ScalingTargetId
 	// (resourceId|scalableDimension|serviceNamespace); the value it composes,
 	// parts[2]/parts[0]/parts[1], is exactly the scraped template. Not a
@@ -205,11 +195,11 @@ var specsAgreementExceptions = map[string]string{
 
 	// Manual in the table, Classic in Specs. The table is manual because the
 	// composition is a conditional the scraper's whitelist refuses, and
-	// TFCustom carries the conditional composer; Specs' Classic join covers
+	// The selected catalog carries the conditional composer; Specs' Classic join covers
 	// only one branch of it.
-	"aws_route":                   "the import ID picks whichever destination attribute is set; TFCustom[\"aws_route\"] handles the conditional, Specs' [routeTable, cidr] covers only the IPv4 branch",
-	"aws_route_table_association": "the import ID is subnet-or-gateway/routeTable; TFCustom handles the conditional, Specs' [subnet, routeTable] covers only the subnet branch",
-	"aws_lambda_permission":       "the import ID inserts :qualifier only when a qualifier is set; TFCustom handles the conditional, Specs' [function, statement] covers only the unqualified branch",
+	"aws_route":                   "the import ID picks whichever destination attribute is set; the catalog composer handles the conditional, Specs' [routeTable, cidr] covers only the IPv4 branch",
+	"aws_route_table_association": "the import ID is subnet-or-gateway/routeTable; the catalog composer handles the conditional, Specs' [subnet, routeTable] covers only the subnet branch",
+	"aws_lambda_permission":       "the import ID inserts :qualifier only when a qualifier is set; the catalog composer handles the conditional, Specs' [function, statement] covers only the unqualified branch",
 
 	// Manual for a different reason: the import helper is not a pure join.
 	"aws_cognito_user_pool_client": "the import helper calls the Cognito API before composing (cognitoidp/user_pool_client_test.go:1476), so the whitelist refuses it; the value it returns is fmt.Sprintf(\"%s/%s\", user_pool_id, id), which agrees with Specs",
@@ -220,7 +210,7 @@ var specsAgreementExceptions = map[string]string{
 // manual. A disagreement is a real finding about one of the two tables, so it
 // fails unless it is listed in specsAgreementExceptions with a reason.
 func TestSpecsAgreeWithTable(t *testing.T) {
-	f := Embedded()
+	f := aws7.Load().Formats
 	// An exception that no longer suppresses anything is stale: the
 	// disagreement it explains has been fixed, and the entry must go.
 	used := map[string]bool{}

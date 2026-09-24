@@ -12,20 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package importid
+package catalog
 
 import (
-	_ "embed"
 	"encoding/json"
 	"fmt"
 	"os"
 	"regexp"
 	"strings"
-	"sync"
 )
-
-//go:embed aws-import-id-formats.json
-var embeddedFormats []byte
 
 // FormatEntry is one divergent Terraform type: either a template over state
 // attribute names, or manual with the provider's own composition as evidence.
@@ -49,26 +44,11 @@ func (e FormatEntry) DocsOnly() bool {
 // Formats is the import-ID composition table for one upstream provider
 // version. Absence of a type means its state ID is its import ID.
 type Formats struct {
-	Provider string                 `json:"provider"`
-	Version  string                 `json:"version"`
-	Types    map[string]FormatEntry `json:"types"`
-}
-
-var (
-	embeddedOnce   sync.Once
-	embeddedParsed *Formats
-)
-
-// Embedded returns the table compiled into the binary.
-func Embedded() *Formats {
-	embeddedOnce.Do(func() {
-		f, err := parseFormats(embeddedFormats)
-		if err != nil {
-			panic(fmt.Sprintf("embedded aws-import-id-formats.json: %v", err))
-		}
-		embeddedParsed = f
-	})
-	return embeddedParsed
+	Provider         string                 `json:"provider"`
+	Version          string                 `json:"version"`
+	PulumiVersion    string                 `json:"pulumiVersion,omitempty"`
+	UpstreamRevision string                 `json:"upstreamRevision,omitempty"`
+	Types            map[string]FormatEntry `json:"types"`
 }
 
 // LoadFormats reads a table from disk, for testing a regenerated table
@@ -78,10 +58,10 @@ func LoadFormats(path string) (*Formats, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading import-ID formats: %w", err)
 	}
-	return parseFormats(data)
+	return ParseFormats(data)
 }
 
-func parseFormats(data []byte) (*Formats, error) {
+func ParseFormats(data []byte) (*Formats, error) {
 	var f Formats
 	if err := json.Unmarshal(data, &f); err != nil {
 		return nil, fmt.Errorf("parsing import-ID formats: %w", err)
@@ -99,9 +79,6 @@ var placeholderRe = regexp.MustCompile(`\{([^{}]*)\}`)
 
 // Validate enforces the table's invariants.
 func (f *Formats) Validate() error {
-	if f.Provider != "" && f.Provider != "hashicorp/aws" {
-		return fmt.Errorf("unsupported provider %q: only hashicorp/aws import-ID formats are supported", f.Provider)
-	}
 	for typ, e := range f.Types {
 		switch {
 		case e.Template != "" && e.Manual:

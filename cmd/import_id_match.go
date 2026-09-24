@@ -20,45 +20,11 @@ import (
 	"os"
 	"strings"
 
-	"github.com/blang/semver/v4"
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg"
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/importid"
-	"github.com/pulumi-proserv/pulumi-tool-import/pkg/provideraddr"
-	"github.com/pulumi-proserv/pulumi-tool-import/pkg/providermap"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
-
-// formatsVersionWarning compares the digest's pinned upstream aws version
-// with the version the embedded table was generated from.
-func formatsVersionWarning(digest *pkg.ModuleMap, formats *importid.Formats) string {
-	const awsAddr = "registry.terraform.io/hashicorp/aws"
-	var pin string
-	for _, addr := range provideraddr.Equivalents(awsAddr) {
-		if pin = digest.Providers[addr]; pin != "" {
-			break
-		}
-	}
-	// digest.Providers[addr] is ResolvedPulumi: "<identifier>@<version>" for a
-	// statically bridged provider, "dynamic" or "dynamic@<tfVersion>"
-	// otherwise. Only the "aws@<version>" form names a version we can compare
-	// against the embedded table.
-	identifier, version, found := strings.Cut(pin, "@")
-	if !found || identifier != "aws" {
-		return ""
-	}
-	upstream, ok := providermap.GetUpstreamVersion(providermap.TerraformProviderName(awsAddr), version)
-	if !ok {
-		return ""
-	}
-	digestV, err1 := semver.ParseTolerant(upstream)
-	tableV, err2 := semver.ParseTolerant(formats.Version)
-	if err1 != nil || err2 != nil || !digestV.GT(tableV) {
-		return ""
-	}
-	return fmt.Sprintf("WARNING: the digest pins terraform-provider-aws v%s but the import-ID formats table "+
-		"was generated from %s; run \"make update-import-id-formats\" to refresh it", upstream, formats.Version)
-}
 
 // buildImportIDMatchCommand builds the import-id-match (TF resolve) command body.
 // Reused by the hidden `import-id-match` alias and the `resolve tf` subcommand.
@@ -170,7 +136,7 @@ Examples:
 			result := pkg.FillImportFile(&digest, &importFile, moduleMappings, resourceMappings)
 
 			// Translate TF import IDs to Pulumi-expected formats.
-			formats := importid.Embedded()
+			var formats *importid.Formats
 			if formatsPath != "" {
 				var err error
 				formats, err = importid.LoadFormats(formatsPath)
@@ -178,13 +144,10 @@ Examples:
 					return err
 				}
 			}
-			if w := formatsVersionWarning(&digest, formats); w != "" {
-				fmt.Fprintln(os.Stderr, w)
-			}
-			translation := pkg.TranslateImportIDsWith(&importFile, &digest, formats)
+			translation := pkg.TranslateImportIDsForProviders(&importFile, &digest, formats)
 			translated := translation.Translated
 			for _, note := range translation.Notes {
-				fmt.Fprintf(os.Stderr, "  import ID not composed: %s\n", note)
+				fmt.Fprintf(os.Stderr, "  import ID: %s\n", note)
 			}
 
 			// Write output.
@@ -235,7 +198,7 @@ Examples:
 	cmd.Flags().StringVar(&mappingFile, "mapping-file", "", "Path to YAML mapping file")
 	cmd.Flags().StringVarP(&outPath, "out", "o", "", "Output path for the filled import file")
 	cmd.Flags().StringVar(&formatsPath, "import-id-formats", "",
-		"Override the embedded import-ID formats table (pkg/importid/aws-import-id-formats.json) with a file, e.g. a regenerated table under review")
+		"Override a provider-major catalog table with a file declaring its provider, pulumiVersion, and upstream version")
 
 	cmd.MarkFlagRequired("digest")
 	cmd.MarkFlagRequired("import-file")

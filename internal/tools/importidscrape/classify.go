@@ -198,6 +198,9 @@ func acctestTemplate(call *ast.CallExpr, step ImportStep, consts map[string]stri
 		return "", "", false
 	}
 	symbol := "acctest." + sel.Sel.Name
+	if step.Helpers != nil && step.Helpers[sel.Sel.Name] == "" {
+		return "", "", false
+	}
 	args := call.Args
 	switch sel.Sel.Name {
 	case "AttrImportStateIdFunc", "CrossRegionAttrImportStateIdFunc":
@@ -295,6 +298,50 @@ func checkAcctestHelpers(providerRoot string) error {
 			"refresh internal/tools/importidscrape/testdata/provider/internal/acctest/state_id.go, "+
 			"then update acctestHelpersSHA256",
 			filepath.Join(providerRoot, "internal", "acctest", "state_id.go"), acctestHelperNames, got, acctestHelpersSHA256)
+	}
+	return nil
+}
+
+// helperHashes reports only helpers whose semantics the classifier models.
+// Each provider-major source pin verifies its own subset independently.
+func helperHashes(providerRoot string) (map[string]string, error) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, filepath.Join(providerRoot, "internal", "acctest", "state_id.go"), nil, 0)
+	if err != nil {
+		return nil, err
+	}
+	result := map[string]string{}
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Recv != nil {
+			continue
+		}
+		for _, name := range acctestHelperNames {
+			if name != fn.Name.Name {
+				continue
+			}
+			h := sha256.New()
+			if err := printer.Fprint(h, fset, fn); err != nil {
+				return nil, err
+			}
+			result[name] = hex.EncodeToString(h.Sum(nil))
+		}
+	}
+	return result, nil
+}
+
+func checkPinnedHelpers(providerRoot string, expected map[string]string) error {
+	if len(expected) == 0 {
+		return fmt.Errorf("source pin has no verified acctest helpers")
+	}
+	actual, err := helperHashes(providerRoot)
+	if err != nil {
+		return err
+	}
+	for name, hash := range expected {
+		if hash == "" || actual[name] != hash {
+			return fmt.Errorf("acctest helper %s changed: got %q, expected %q; review its semantics before updating the source pin", name, actual[name], hash)
+		}
 	}
 	return nil
 }

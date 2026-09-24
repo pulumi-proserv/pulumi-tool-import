@@ -12,28 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package importid
+package aws
 
 import (
 	"fmt"
 	"strings"
+
+	"github.com/pulumi-proserv/pulumi-tool-import/importids/catalog"
 )
 
-// TFComposer builds an import ID from a resource's Terraform state
-// attributes and state ID. ok=false means the attributes cannot support the
-// format; the caller reports the type's documented shape instead.
-type TFComposer func(attrs map[string]interface{}, stateID string) (id string, ok bool)
-
-// TFCustom holds the Terraform-side composers for types whose import ID is
-// not a pure join of attributes. Each is a manual entry in
-// aws-import-id-formats.json; TestTFCustomTypesAreManualInTable enforces it.
-var TFCustom = map[string]TFComposer{
-	"aws_route":                   composeTFRoute,
-	"aws_security_group_rule":     composeTFSecurityGroupRule,
-	"aws_ecs_service":             composeTFEcsService,
-	"aws_route_table_association": composeTFRouteTableAssociation,
-	"aws_lambda_permission":       composeTFLambdaPermission,
-	"aws_kinesis_stream":          composeTFKinesisStream,
+func composers() map[string]catalog.Composer {
+	return map[string]catalog.Composer{
+		"aws_route":                   composeTFRoute,
+		"aws_security_group_rule":     composeTFSecurityGroupRule,
+		"aws_ecs_service":             composeTFEcsService,
+		"aws_route_table_association": composeTFRouteTableAssociation,
+		"aws_lambda_permission":       composeTFLambdaPermission,
+		"aws_api_gateway_method":      composeAPIGatewayMethod,
+	}
 }
 
 func str(attrs map[string]interface{}, k string) string {
@@ -110,22 +106,14 @@ func composeTFRouteTableAssociation(attrs map[string]interface{}, _ string) (str
 	return target + "/" + rtb, true
 }
 
-// A Kinesis stream's state ID is its ARN — the create sets it from
-// StreamDescription.StreamARN (internal/service/kinesis/stream.go:215) — but
-// it imports by the bare stream name ("import Kinesis Streams using the
-// `name`", website/docs/r/kinesis_stream.html.markdown), which is what the
-// provider's own import steps pass as ImportStateId. Without this composer
-// the ARN would be handed to Pulumi as the import ID.
-//
-// This is a composer rather than a scraped template because the steps spell
-// their ID as a variable (ImportStateId: rName), so the scraper can see that
-// the type diverges but not what it composes.
-func composeTFKinesisStream(attrs map[string]interface{}, _ string) (string, bool) {
-	name := str(attrs, "name")
-	if name == "" {
+// v6.66.0 delegates its import test to MethodCreateImportID. Its implementation
+// in internal/service/apigateway/method.go joins these three attributes.
+func composeAPIGatewayMethod(attrs map[string]interface{}, _ string) (string, bool) {
+	api, resource, method := str(attrs, "rest_api_id"), str(attrs, "resource_id"), str(attrs, "http_method")
+	if api == "" || resource == "" || method == "" {
 		return "", false
 	}
-	return name, true
+	return api + "/" + resource + "/" + method, true
 }
 
 // A permission on an aliased or versioned function imports as

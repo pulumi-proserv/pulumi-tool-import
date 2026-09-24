@@ -1,80 +1,104 @@
 {
   "provider": "hashicorp/aws",
-  "version": "v6.38.0",
+  "version": "v6.66.0",
+  "pulumiVersion": "v7.48.0",
+  "upstreamRevision": "351a07f09bffcde77bddcc35060e3da3e9a591ee",
   "types": {
+    "aws_accountaccess_application": {
+      "template": "{arn}",
+      "docs": "terraform import aws_accountaccess_application.example arn:aws:account-access:us-east-1:123456789012:application/aam-0123456789abcdef",
+      "docsSource": "terraform-provider-aws/website/docs/r/accountaccess_application.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/accountaccess/application_identity_gen_test.go:68 acctest.AttrImportStateIdFunc"
+    },
+    "aws_accountaccess_entitlement": {
+      "template": "{application_arn},{entitlement_id}",
+      "docs": "terraform import aws_accountaccess_entitlement.example arn:aws:account-access:us-east-1:123456789012:application/aam-0123456789abcdef,ent-0123456789abcdef",
+      "docsSource": "terraform-provider-aws/website/docs/r/accountaccess_entitlement.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/accountaccess/entitlement_test.go:26 testAccEntitlementImportStateIDFunc -> acctest.AttrsImportStateIdFunc"
+    },
+    "aws_agentregistry_registry": {
+      "template": "{registry_id}",
+      "docs": "terraform import aws_agentregistry_registry.example registry-id-12345678",
+      "docsSource": "terraform-provider-aws/website/docs/r/agentregistry_registry.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/agentregistry/registry_identity_gen_test.go:59 acctest.AttrImportStateIdFunc"
+    },
     "aws_ami_launch_permission": {
       "manual": true,
       "snippet": "{\n\trs, ok := s.RootModule().Resources[resourceName]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"Not found: %s\", resourceName)\n\t}\n\n\timageID := rs.Primary.Attributes[\"image_id\"]\n\n\tif v := rs.Primary.Attributes[\"group\"]; v != \"\" {\n\t\treturn fmt.Sprintf(\"%s/%s\", v, imageID), nil\n\t} else if v := rs.Primary.Attributes[\"organization_arn\"]; v != \"\" {\n\t\treturn fmt.Sprintf(\"%s/%s\", v, imageID), nil\n\t} else if v := rs.Primary.Attributes[\"organizational_unit_arn\"]; v != \"\" {\n\t\treturn fmt.Sprintf(\"%s/%s\", v, imageID), nil\n\t} else {\n\t\treturn fmt.Sprintf(\"%s/%s\", rs.Primary.Attributes[names.AttrAccountID], imageID), nil\n\t}\n}",
       "docs": "terraform import aws_ami_launch_permission.example 123456789012/ami-12345678",
       "docsSource": "terraform-provider-aws/website/docs/r/ami_launch_permission.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/ec2/ec2_ami_launch_permission_test.go:195 testAccAMILaunchPermissionImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/ec2/ec2_ami_launch_permission_test.go:212 testAccAMILaunchPermissionImportStateIdFunc"
     },
     "aws_api_gateway_authorizer": {
       "template": "{rest_api_id}/{id}",
       "docs": "terraform import aws_api_gateway_authorizer.example 12345abcde/example",
       "docsSource": "terraform-provider-aws/website/docs/r/api_gateway_authorizer.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/apigateway/authorizer_test.go:367 testAccAuthorizerImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/apigateway/authorizer_test.go:376 testAccAuthorizerImportStateIdFunc"
     },
     "aws_api_gateway_deployment": {
       "template": "{rest_api_id}/{id}",
       "docs": "terraform import aws_api_gateway_deployment.example aabbccddee/1122334",
       "docsSource": "terraform-provider-aws/website/docs/r/api_gateway_deployment.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/apigateway/deployment_test.go:367 testAccDeploymentImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/apigateway/deployment_test.go:384 testAccDeploymentImportStateIdFunc"
     },
     "aws_api_gateway_gateway_response": {
       "template": "{rest_api_id}/{response_type}",
       "docs": "terraform import aws_api_gateway_gateway_response.example 12345abcde/UNAUTHORIZED",
       "docsSource": "terraform-provider-aws/website/docs/r/api_gateway_gateway_response.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/apigateway/gateway_response_test.go:133 testAccGatewayResponseImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/apigateway/gateway_response_test.go:142 testAccGatewayResponseImportStateIdFunc"
     },
     "aws_api_gateway_integration": {
-      "template": "{rest_api_id}/{resource_id}/{http_method}",
+      "manual": true,
+      "snippet": "{\n\trs, ok := s.RootModule().Resources[resourceName]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"Not found: %s\", resourceName)\n\t}\n\n\treturn tfapigateway.IntegrationCreateImportID(rs.Primary.Attributes[\"rest_api_id\"], rs.Primary.Attributes[names.AttrResourceID], rs.Primary.Attributes[\"http_method\"]), nil\n}",
       "docs": "terraform import aws_api_gateway_integration.example 12345abcde/67890fghij/GET",
       "docsSource": "terraform-provider-aws/website/docs/r/api_gateway_integration.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/apigateway/integration_test.go:783 testAccIntegrationImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/apigateway/integration_test.go:792 testAccIntegrationImportStateIdFunc"
     },
     "aws_api_gateway_integration_response": {
-      "template": "{rest_api_id}/{resource_id}/{http_method}/{status_code}",
+      "manual": true,
+      "snippet": "{\n\trs, ok := s.RootModule().Resources[resourceName]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"Not found: %s\", resourceName)\n\t}\n\n\treturn tfapigateway.IntegrationResponseCreateImportID(rs.Primary.Attributes[\"rest_api_id\"], rs.Primary.Attributes[names.AttrResourceID], rs.Primary.Attributes[\"http_method\"], rs.Primary.Attributes[names.AttrStatusCode]), nil\n}",
       "docs": "terraform import aws_api_gateway_integration_response.example 12345abcde/67890fghij/GET/200",
       "docsSource": "terraform-provider-aws/website/docs/r/api_gateway_integration_response.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/apigateway/integration_response_test.go:140 testAccIntegrationResponseImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/apigateway/integration_response_test.go:149 testAccIntegrationResponseImportStateIdFunc"
     },
     "aws_api_gateway_method": {
-      "template": "{rest_api_id}/{resource_id}/{http_method}",
+      "manual": true,
+      "snippet": "{\n\trs, ok := s.RootModule().Resources[resourceName]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"Not found: %s\", resourceName)\n\t}\n\n\treturn tfapigateway.MethodCreateImportID(rs.Primary.Attributes[\"rest_api_id\"], rs.Primary.Attributes[names.AttrResourceID], rs.Primary.Attributes[\"http_method\"]), nil\n}",
       "docs": "terraform import aws_api_gateway_method.example 12345abcde/67890fghij/GET",
       "docsSource": "terraform-provider-aws/website/docs/r/api_gateway_method.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/apigateway/method_test.go:295 testAccMethodImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/apigateway/method_test.go:305 testAccMethodImportStateIdFunc"
     },
     "aws_api_gateway_method_response": {
-      "template": "{rest_api_id}/{resource_id}/{http_method}/{status_code}",
+      "manual": true,
+      "snippet": "{\n\trs, ok := s.RootModule().Resources[resourceName]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"Not found: %s\", resourceName)\n\t}\n\n\treturn tfapigateway.MethodResponseCreateImportID(rs.Primary.Attributes[\"rest_api_id\"], rs.Primary.Attributes[names.AttrResourceID], rs.Primary.Attributes[\"http_method\"], rs.Primary.Attributes[names.AttrStatusCode]), nil\n}",
       "docs": "terraform import aws_api_gateway_method_response.example 12345abcde/67890fghij/GET/200",
       "docsSource": "terraform-provider-aws/website/docs/r/api_gateway_method_response.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/apigateway/method_response_test.go:137 testAccMethodResponseImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/apigateway/method_response_test.go:146 testAccMethodResponseImportStateIdFunc"
     },
     "aws_api_gateway_method_settings": {
       "manual": true,
       "snippet": "{\n\trs, ok := s.RootModule().Resources[resourceName]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"not found: %s\", resourceName)\n\t}\n\n\trestApiID := rs.Primary.Attributes[\"rest_api_id\"]\n\tstageName := rs.Primary.Attributes[\"stage_name\"]\n\tmethodPath := rs.Primary.Attributes[\"method_path\"]\n\n\treturn fmt.Sprintf(\"%s/%s/%s\", restApiID, stageName, methodPath), nil\n}",
       "docs": "terraform import aws_api_gateway_method_settings.example 12345abcde/example/test/GET",
       "docsSource": "terraform-provider-aws/website/docs/r/api_gateway_method_settings.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/apigateway/method_settings_test.go:613 testAccMethodSettingsImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/apigateway/method_settings_test.go:622 testAccMethodSettingsImportStateIdFunc"
     },
     "aws_api_gateway_model": {
       "template": "{rest_api_id}/{name}",
       "docs": "terraform import aws_api_gateway_model.example 12345abcde/example",
       "docsSource": "terraform-provider-aws/website/docs/r/api_gateway_model.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/apigateway/model_test.go:125 testAccModelImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/apigateway/model_test.go:134 testAccModelImportStateIdFunc"
     },
     "aws_api_gateway_request_validator": {
       "template": "{rest_api_id}/{id}",
       "docs": "terraform import aws_api_gateway_request_validator.example 12345abcde/67890fghij",
       "docsSource": "terraform-provider-aws/website/docs/r/api_gateway_request_validator.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/apigateway/request_validator_test.go:131 testAccRequestValidatorImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/apigateway/request_validator_test.go:140 testAccRequestValidatorImportStateIdFunc"
     },
     "aws_api_gateway_resource": {
       "template": "{rest_api_id}/{id}",
       "docs": "terraform import aws_api_gateway_resource.example 12345abcde/67890fghij",
       "docsSource": "terraform-provider-aws/website/docs/r/api_gateway_resource.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/apigateway/resource_test.go:237 testAccResourceImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/apigateway/resource_test.go:246 testAccResourceImportStateIdFunc"
     },
     "aws_api_gateway_rest_api_put": {
       "template": "{rest_api_id}",
@@ -86,121 +110,121 @@
       "template": "{rest_api_id}/{stage_name}",
       "docs": "terraform import aws_api_gateway_stage.example 12345abcde/example",
       "docsSource": "terraform-provider-aws/website/docs/r/api_gateway_stage.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/apigateway/stage_test.go:541 testAccStageImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/apigateway/stage_test.go:558 testAccStageImportStateIdFunc"
     },
     "aws_api_gateway_usage_plan_key": {
       "template": "{usage_plan_id}/{id}",
       "docs": "terraform import aws_api_gateway_usage_plan_key.example 12345abcde/zzz",
       "docsSource": "terraform-provider-aws/website/docs/r/api_gateway_usage_plan_key.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/apigateway/usage_plan_key_test.go:156 testAccCheckUsagePlanKeyImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/apigateway/usage_plan_key_test.go:165 testAccCheckUsagePlanKeyImportStateIdFunc"
     },
     "aws_apigatewayv2_api_mapping": {
       "template": "{id}/{domain_name}",
       "docs": "terraform import aws_apigatewayv2_api_mapping.example 1122334/ws-api.example.com",
       "docsSource": "terraform-provider-aws/website/docs/r/apigatewayv2_api_mapping.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/apigatewayv2/api_mapping_test.go:246 testAccAPIMappingImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/apigatewayv2/api_mapping_test.go:255 testAccAPIMappingImportStateIdFunc"
     },
     "aws_apigatewayv2_authorizer": {
       "template": "{api_id}/{id}",
       "docs": "terraform import aws_apigatewayv2_authorizer.example aabbccddee/1122334",
       "docsSource": "terraform-provider-aws/website/docs/r/apigatewayv2_authorizer.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/apigatewayv2/authorizer_test.go:407 testAccAuthorizerImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/apigatewayv2/authorizer_test.go:416 testAccAuthorizerImportStateIdFunc"
     },
     "aws_apigatewayv2_deployment": {
       "template": "{api_id}/{id}",
       "docs": "terraform import aws_apigatewayv2_deployment.example aabbccddee/1122334",
       "docsSource": "terraform-provider-aws/website/docs/r/apigatewayv2_deployment.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/apigatewayv2/deployment_test.go:203 testAccDeploymentImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/apigatewayv2/deployment_test.go:212 testAccDeploymentImportStateIdFunc"
     },
     "aws_apigatewayv2_integration": {
       "template": "{api_id}/{id}",
       "docs": "terraform import aws_apigatewayv2_integration.example aabbccddee/1122334",
       "docsSource": "terraform-provider-aws/website/docs/r/apigatewayv2_integration.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/apigatewayv2/integration_test.go:657 testAccIntegrationImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/apigatewayv2/integration_test.go:655 testAccIntegrationImportStateIdFunc"
     },
     "aws_apigatewayv2_integration_response": {
       "template": "{api_id}/{integration_id}/{id}",
       "docs": "terraform import aws_apigatewayv2_integration_response.example aabbccddee/1122334/998877",
       "docsSource": "terraform-provider-aws/website/docs/r/apigatewayv2_integration_response.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/apigatewayv2/integration_response_test.go:178 testAccIntegrationResponseImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/apigatewayv2/integration_response_test.go:187 testAccIntegrationResponseImportStateIdFunc"
     },
     "aws_apigatewayv2_model": {
       "template": "{api_id}/{id}",
       "docs": "terraform import aws_apigatewayv2_model.example aabbccddee/1122334",
       "docsSource": "terraform-provider-aws/website/docs/r/apigatewayv2_model.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/apigatewayv2/model_test.go:234 testAccModelImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/apigatewayv2/model_test.go:243 testAccModelImportStateIdFunc"
     },
     "aws_apigatewayv2_route": {
       "template": "{api_id}/{id}",
       "docs": "terraform import aws_apigatewayv2_route.example aabbccddee/1122334",
       "docsSource": "terraform-provider-aws/website/docs/r/apigatewayv2_route.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/apigatewayv2/route_test.go:568 testAccRouteImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/apigatewayv2/route_test.go:567 testAccRouteImportStateIdFunc"
     },
     "aws_apigatewayv2_route_response": {
       "template": "{api_id}/{route_id}/{id}",
       "docs": "terraform import aws_apigatewayv2_route_response.example aabbccddee/1122334/998877",
       "docsSource": "terraform-provider-aws/website/docs/r/apigatewayv2_route_response.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/apigatewayv2/route_response_test.go:166 testAccRouteResponseImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/apigatewayv2/route_response_test.go:175 testAccRouteResponseImportStateIdFunc"
     },
     "aws_apigatewayv2_routing_rule": {
       "template": "{routing_rule_arn}",
       "docs": "terraform import aws_apigatewayv2_routing_rule.example arn:aws:apigateway:us-east-1:123456789012:/domainnames/example.com/routingrules/rule1",
       "docsSource": "terraform-provider-aws/website/docs/r/apigatewayv2_routing_rule.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/apigatewayv2/routing_rule_test.go:111 acctest.AttrImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/apigatewayv2/routing_rule_test.go:112 acctest.AttrImportStateIdFunc"
     },
     "aws_apigatewayv2_stage": {
       "template": "{api_id}/{id}",
       "docs": "terraform import aws_apigatewayv2_stage.example aabbccddee/example-stage",
       "docsSource": "terraform-provider-aws/website/docs/r/apigatewayv2_stage.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/apigatewayv2/stage_test.go:1128 testAccStageImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/apigatewayv2/stage_test.go:1137 testAccStageImportStateIdFunc"
     },
     "aws_appautoscaling_policy": {
       "template": "{service_namespace}/{resource_id}/{scalable_dimension}/{name}",
       "docs": "terraform import aws_appautoscaling_policy.example service-namespace/resource-id/scalable-dimension/policy-name",
       "docsSource": "terraform-provider-aws/website/docs/r/appautoscaling_policy.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/appautoscaling/policy_test.go:627 testAccPolicyImportStateIdFunc -> acctest.AttrsImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/appautoscaling/policy_test.go:636 testAccPolicyImportStateIdFunc -> acctest.AttrsImportStateIdFunc"
     },
     "aws_appautoscaling_target": {
       "template": "{service_namespace}/{resource_id}/{scalable_dimension}",
       "docs": "terraform import aws_appautoscaling_target.example service-namespace/resource-id/scalable-dimension",
       "docsSource": "terraform-provider-aws/website/docs/r/appautoscaling_target.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/appautoscaling/target_test.go:866 testAccTargetImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/appautoscaling/target_test.go:875 testAccTargetImportStateIdFunc"
     },
     "aws_appmesh_gateway_route": {
       "template": "{mesh_name}/{virtual_gateway_name}/{name}",
       "docs": "terraform import aws_appmesh_gateway_route.example mesh/gw1/example-gateway-route",
       "docsSource": "terraform-provider-aws/website/docs/r/appmesh_gateway_route.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/appmesh/gateway_route_test.go:1300 testAccGatewayRouteImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/appmesh/gateway_route_test.go:1309 testAccGatewayRouteImportStateIdFunc"
     },
     "aws_appmesh_route": {
       "template": "{mesh_name}/{virtual_router_name}/{name}",
       "docs": "terraform import aws_appmesh_route.example simpleapp/serviceB/serviceB-route",
       "docsSource": "terraform-provider-aws/website/docs/r/appmesh_route.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/appmesh/route_test.go:2041 testAccRouteImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/appmesh/route_test.go:2050 testAccRouteImportStateIdFunc"
     },
     "aws_appmesh_virtual_gateway": {
       "template": "{mesh_name}/{name}",
       "docs": "terraform import aws_appmesh_virtual_gateway.example mesh/gw1",
       "docsSource": "terraform-provider-aws/website/docs/r/appmesh_virtual_gateway.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/appmesh/virtual_gateway_test.go:925 testAccVirtualGatewayImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/appmesh/virtual_gateway_test.go:934 testAccVirtualGatewayImportStateIdFunc"
     },
     "aws_appmesh_virtual_node": {
       "template": "{mesh_name}/{name}",
       "docs": "terraform import aws_appmesh_virtual_node.example simpleapp/serviceBv1",
       "docsSource": "terraform-provider-aws/website/docs/r/appmesh_virtual_node.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/appmesh/virtual_node_test.go:1465 testAccVirtualNodeImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/appmesh/virtual_node_test.go:1474 testAccVirtualNodeImportStateIdFunc"
     },
     "aws_appmesh_virtual_router": {
       "template": "{mesh_name}/{name}",
       "docs": "terraform import aws_appmesh_virtual_router.example simpleapp/serviceB",
       "docsSource": "terraform-provider-aws/website/docs/r/appmesh_virtual_router.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/appmesh/virtual_router_test.go:218 testAccVirtualRouterImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/appmesh/virtual_router_test.go:227 testAccVirtualRouterImportStateIdFunc"
     },
     "aws_appmesh_virtual_service": {
       "template": "{mesh_name}/{name}",
       "docs": "terraform import aws_appmesh_virtual_service.example simpleapp/servicea.simpleapp.local",
       "docsSource": "terraform-provider-aws/website/docs/r/appmesh_virtual_service.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/appmesh/virtual_service_test.go:200 testAccVirtualServiceImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/appmesh/virtual_service_test.go:209 testAccVirtualServiceImportStateIdFunc"
     },
     "aws_appsync_api": {
       "template": "{api_id}",
@@ -221,81 +245,111 @@
       "docsSource": "terraform-provider-aws/website/docs/r/arcregionswitch_plan.html.markdown",
       "evidence": "terraform-provider-aws/internal/service/arcregionswitch/plan_identity_gen_test.go:64 acctest.AttrImportStateIdFunc"
     },
+    "aws_arczonalshift_zonal_autoshift_configuration": {
+      "template": "{resource_arn}",
+      "docs": "terraform import aws_arczonalshift_zonal_autoshift_configuration.example arn:aws:elasticloadbalancing:us-west-2:123456789012:loadbalancer/app/example/50dc6c495c0c9188",
+      "docsSource": "terraform-provider-aws/website/docs/r/arczonalshift_zonal_autoshift_configuration.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/arczonalshift/zonal_autoshift_configuration_identity_gen_test.go:58 acctest.AttrImportStateIdFunc"
+    },
     "aws_athena_capacity_reservation": {
       "template": "{name}",
       "docs": "terraform import aws_athena_capacity_reservation.example example-reservation",
       "docsSource": "terraform-provider-aws/website/docs/r/athena_capacity_reservation.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/athena/capacity_reservation_test.go:239 testAccCapacityReservationImportStateIdFunc"
-    },
-    "aws_autoscaling_group": {
-      "manual": true,
-      "docs": "terraform import aws_autoscaling_group.example web-asg",
-      "docsSource": "terraform-provider-aws/website/docs/r/autoscaling_group.html.markdown",
-      "evidence": "docs-only: multi-segment or attribute-based example in terraform-provider-aws/website/docs/r/autoscaling_group.html.markdown, no import test found"
+      "evidence": "terraform-provider-aws/internal/service/athena/capacity_reservation_test.go:247 testAccCapacityReservationImportStateIdFunc"
     },
     "aws_autoscaling_lifecycle_hook": {
-      "template": "{autoscaling_group_name}/{id}",
-      "docs": "terraform import aws_autoscaling_lifecycle_hook.example asg-name/lifecycle-hook-name",
+      "template": "{autoscaling_group_name}/{name}",
+      "docs": "terraform import aws_autoscaling_lifecycle_hook.example example-asg/example-hook",
       "docsSource": "terraform-provider-aws/website/docs/r/autoscaling_lifecycle_hook.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/autoscaling/lifecycle_hook_test.go:136 testAccLifecycleHookImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/autoscaling/lifecycle_hook_test.go:145 testAccLifecycleHookImportStateIDFunc -> acctest.AttrsImportStateIdFunc"
     },
     "aws_autoscaling_policy": {
-      "template": "{autoscaling_group_name}/{id}",
-      "docs": "terraform import aws_autoscaling_policy.example asg-name/policy-name",
+      "template": "{autoscaling_group_name}/{name}",
+      "docs": "terraform import aws_autoscaling_policy.example example-asg/example-policy",
       "docsSource": "terraform-provider-aws/website/docs/r/autoscaling_policy.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/autoscaling/policy_test.go:599 testAccPolicyImportStateIDFunc"
+      "evidence": "terraform-provider-aws/internal/service/autoscaling/policy_test.go:608 testAccPolicyImportStateIDFunc -> acctest.AttrsImportStateIdFunc"
     },
     "aws_autoscaling_schedule": {
-      "manual": true,
-      "snippet": "ImportStateId: fmt.Sprintf(\"%s/%s\", rName1, rName2)",
-      "docs": "terraform import aws_autoscaling_schedule.example auto-scaling-group-name/scheduled-action-name",
+      "template": "{autoscaling_group_name}/{scheduled_action_name}",
+      "docs": "terraform import aws_autoscaling_schedule.example example-asg/example-action",
       "docsSource": "terraform-provider-aws/website/docs/r/autoscaling_schedule.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/autoscaling/schedule_test.go:43 "
+      "evidence": "terraform-provider-aws/internal/service/autoscaling/schedule_test.go:254 testAccScheduleImportStateIDFunc -> acctest.AttrsImportStateIdFunc"
+    },
+    "aws_autoscaling_traffic_source_attachment": {
+      "template": "{autoscaling_group_name},{traffic_source.0.type},{traffic_source.0.identifier}",
+      "docs": "terraform import aws_autoscaling_traffic_source_attachment.example example,elbv2,arn:aws:elasticloadbalancing:us-west-2:123456789012:targetgroup/example/1234567890123456",
+      "docsSource": "terraform-provider-aws/website/docs/r/autoscaling_traffic_source_attachment.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/autoscaling/traffic_source_attachment_test.go:230 testAccTrafficSourceAttachmentImportStateIDFunc -> acctest.AttrsImportStateIdFunc"
     },
     "aws_autoscalingplans_scaling_plan": {
       "manual": true,
       "snippet": "func(s *terraform.State) (string, error) {\n\treturn rName, nil\n}",
       "docs": "terraform import aws_autoscalingplans_scaling_plan.example MyScale1",
       "docsSource": "terraform-provider-aws/website/docs/r/autoscalingplans_scaling_plan.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/autoscalingplans/scaling_plan_test.go:69 "
+      "evidence": "terraform-provider-aws/internal/service/autoscalingplans/scaling_plan_test.go:70 "
     },
     "aws_backup_restore_testing_plan": {
       "manual": true,
       "snippet": "ImportStateId: rName",
       "docs": "terraform import aws_backup_restore_testing_plan.example my_testing_plan",
       "docsSource": "terraform-provider-aws/website/docs/r/backup_restore_testing_plan.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/backup/restore_testing_plan_test.go:51 "
+      "evidence": "terraform-provider-aws/internal/service/backup/restore_testing_plan_test.go:52 "
     },
     "aws_backup_restore_testing_selection": {
       "manual": true,
       "snippet": "ImportStateId: fmt.Sprintf(\"%s:%s\", rName, rName+\"_plan\")",
       "docs": "terraform import aws_backup_restore_testing_selection.example restore_testing_selection_12345678:restore_testing_plan_12345678",
       "docsSource": "terraform-provider-aws/website/docs/r/backup_restore_testing_selection.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/backup/restore_testing_selection_test.go:45 "
+      "evidence": "terraform-provider-aws/internal/service/backup/restore_testing_selection_test.go:46 "
     },
     "aws_backup_selection": {
       "template": "{plan_id}|{id}",
-      "docs": "terraform import aws_backup_selection.example plan-id|selection-id",
+      "docs": "terraform import aws_backup_selection.example abcd1234|efgh5678",
       "docsSource": "terraform-provider-aws/website/docs/r/backup_selection.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/backup/selection_test.go:273 testAccSelectionImportStateIDFunc"
+      "evidence": "terraform-provider-aws/internal/service/backup/selection_test.go:282 testAccSelectionImportStateIDFunc"
+    },
+    "aws_bedrock_evaluation_job": {
+      "template": "{job_arn}",
+      "docs": "terraform import aws_bedrock_evaluation_job.example arn:aws:bedrock:us-west-2:123456789012:evaluation-job/abcdefgh1234",
+      "docsSource": "terraform-provider-aws/website/docs/r/bedrock_evaluation_job.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/bedrock/evaluation_job_identity_gen_test.go:59 acctest.AttrImportStateIdFunc"
+    },
+    "aws_bedrock_foundation_model_agreement": {
+      "template": "{model_id}",
+      "docs": "terraform import aws_bedrock_foundation_model_agreement.example eu.anthropic.claude-opus-4-5-20251101-v1:0",
+      "docsSource": "terraform-provider-aws/website/docs/r/bedrock_foundation_model_agreement.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/bedrock/foundation_model_agreement_identity_gen_test.go:76 acctest.AttrImportStateIdFunc"
     },
     "aws_bedrock_guardrail": {
       "template": "{guardrail_id},{version}",
       "docs": "terraform import aws_bedrock_guardrail.example guardrail-id-12345678,DRAFT",
       "docsSource": "terraform-provider-aws/website/docs/r/bedrock_guardrail.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/bedrock/guardrail_test.go:390 testAccGuardrailImportStateIDFunc"
+      "evidence": "terraform-provider-aws/internal/service/bedrock/guardrail_test.go:666 testAccGuardrailImportStateIDFunc"
     },
     "aws_bedrock_guardrail_version": {
       "template": "{guardrail_arn},{version}",
       "docs": "terraform import aws_bedrock_guardrail_version.example arn:aws:bedrock:us-west-2:123456789012:guardrail-id-12345678,1",
       "docsSource": "terraform-provider-aws/website/docs/r/bedrock_guardrail_version.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/bedrock/guardrail_version_test.go:170 testAccGuardrailVersionImportStateIDFunc"
+      "evidence": "terraform-provider-aws/internal/service/bedrock/guardrail_version_test.go:179 testAccGuardrailVersionImportStateIDFunc"
+    },
+    "aws_bedrock_model_invocation_job": {
+      "template": "{job_arn}",
+      "docs": "terraform import aws_bedrock_model_invocation_job.example arn:aws:bedrock:us-west-2:123456789012:model-invocation-job/abcdefgh1234",
+      "docsSource": "terraform-provider-aws/website/docs/r/bedrock_model_invocation_job.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/bedrock/model_invocation_job_identity_gen_test.go:59 acctest.AttrImportStateIdFunc"
+    },
+    "aws_bedrock_use_case_for_model_access": {
+      "manual": true,
+      "snippet": "{\n\treturn acctest.ImportStateIDAccountID(context.Background())\n}",
+      "docs": "terraform import aws_bedrock_use_case_for_model_access.example 123456789012",
+      "docsSource": "terraform-provider-aws/website/docs/r/bedrock_use_case_for_model_access.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/bedrock/use_case_for_model_access_test.go:158 importStateIDAccountID"
     },
     "aws_bedrockagentcore_agent_runtime": {
       "template": "{agent_runtime_id}",
       "docs": "terraform import aws_bedrockagentcore_agent_runtime.example agent-runtime-12345",
       "docsSource": "terraform-provider-aws/website/docs/r/bedrockagentcore_agent_runtime.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/bedrockagentcore/agent_runtime_test.go:64 acctest.AttrImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/bedrockagentcore/agent_runtime_tags_gen_test.go:74 acctest.AttrImportStateIdFunc"
     },
     "aws_bedrockagentcore_agent_runtime_endpoint": {
       "template": "{agent_runtime_id},{name}",
@@ -307,43 +361,91 @@
       "template": "{name}",
       "docs": "terraform import aws_bedrockagentcore_api_key_credential_provider.example example-api-key-provider",
       "docsSource": "terraform-provider-aws/website/docs/r/bedrockagentcore_api_key_credential_provider.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/bedrockagentcore/api_key_credential_provider_test.go:61 acctest.AttrImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/bedrockagentcore/api_key_credential_provider_identity_gen_test.go:65 acctest.AttrImportStateIdFunc"
     },
     "aws_bedrockagentcore_browser": {
       "template": "{browser_id}",
       "docs": "terraform import aws_bedrockagentcore_browser.example BROWSER1234567890",
       "docsSource": "terraform-provider-aws/website/docs/r/bedrockagentcore_browser.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/bedrockagentcore/browser_test.go:64 acctest.AttrImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/bedrockagentcore/browser_tags_gen_test.go:73 acctest.AttrImportStateIdFunc"
+    },
+    "aws_bedrockagentcore_browser_profile": {
+      "template": "{profile_id}",
+      "docs": "terraform import aws_bedrockagentcore_browser_profile.example browser-profile-id-12345678",
+      "docsSource": "terraform-provider-aws/website/docs/r/bedrockagentcore_browser_profile.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/bedrockagentcore/browser_profile_identity_gen_test.go:61 acctest.AttrImportStateIdFunc"
     },
     "aws_bedrockagentcore_code_interpreter": {
       "template": "{code_interpreter_id}",
       "docs": "terraform import aws_bedrockagentcore_code_interpreter.example CODEINTERPRETER1234567890",
       "docsSource": "terraform-provider-aws/website/docs/r/bedrockagentcore_code_interpreter.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/bedrockagentcore/code_interpreter_test.go:59 acctest.AttrImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/bedrockagentcore/code_interpreter_tags_gen_test.go:73 acctest.AttrImportStateIdFunc"
+    },
+    "aws_bedrockagentcore_evaluator": {
+      "template": "{evaluator_id}",
+      "docs": "terraform import aws_bedrockagentcore_evaluator.example helpfulness_evaluator-abc1234567",
+      "docsSource": "terraform-provider-aws/website/docs/r/bedrockagentcore_evaluator.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/bedrockagentcore/evaluator_identity_gen_test.go:61 acctest.AttrImportStateIdFunc"
     },
     "aws_bedrockagentcore_gateway": {
       "template": "{gateway_id}",
       "docs": "terraform import aws_bedrockagentcore_gateway.example GATEWAY1234567890",
       "docsSource": "terraform-provider-aws/website/docs/r/bedrockagentcore_gateway.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/bedrockagentcore/gateway_test.go:62 acctest.AttrImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/bedrockagentcore/gateway_tags_gen_test.go:73 acctest.AttrImportStateIdFunc"
+    },
+    "aws_bedrockagentcore_gateway_rule": {
+      "template": "{gateway_identifier},{rule_id}",
+      "docs": "terraform import aws_bedrockagentcore_gateway_rule.example example-gateway-abcdef1234,11111111-2222-3333-4444-555555555555",
+      "docsSource": "terraform-provider-aws/website/docs/r/bedrockagentcore_gateway_rule.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/bedrockagentcore/gateway_rule_test.go:24 testAccGatewayRuleImportStateIDFunc -> acctest.AttrsImportStateIdFunc"
     },
     "aws_bedrockagentcore_gateway_target": {
       "template": "{gateway_identifier},{target_id}",
       "docs": "terraform import aws_bedrockagentcore_gateway_target.example GATEWAY1234567890,TARGET0987654321",
       "docsSource": "terraform-provider-aws/website/docs/r/bedrockagentcore_gateway_target.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/bedrockagentcore/gateway_target_test.go:59 acctest.AttrsImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/bedrockagentcore/gateway_target_test.go:40 testAccGatewayTargetImportStateIDFunc -> acctest.AttrsImportStateIdFunc"
+    },
+    "aws_bedrockagentcore_harness": {
+      "template": "{harness_id}",
+      "docs": "terraform import aws_bedrockagentcore_harness.example example-Ab12Cd34Ef",
+      "docsSource": "terraform-provider-aws/website/docs/r/bedrockagentcore_harness.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/bedrockagentcore/harness_identity_gen_test.go:61 acctest.AttrImportStateIdFunc"
     },
     "aws_bedrockagentcore_memory_strategy": {
       "template": "{memory_id},{memory_strategy_id}",
-      "docs": "terraform import aws_bedrockagentcore_memory_strategy.example MEMORY1234567890,STRATEGY0987654321",
+      "docs": "terraform import aws_bedrockagentcore_memory_strategy.example example_memory-5JcvKJ4GP0,example_memory_strategy-pblFzi8VyW",
       "docsSource": "terraform-provider-aws/website/docs/r/bedrockagentcore_memory_strategy.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/bedrockagentcore/memory_strategy_test.go:355 testAccMemoryStrategyImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/bedrockagentcore/memory_strategy_test.go:3641 testAccMemoryStrategyImportStateIDFunc -> acctest.AttrsImportStateIdFunc"
     },
     "aws_bedrockagentcore_oauth2_credential_provider": {
       "template": "{name}",
-      "docs": "terraform import aws_bedrockagentcore_oauth2_credential_provider.example oauth2-provider-name",
+      "docs": "terraform import aws_bedrockagentcore_oauth2_credential_provider.example example-oauth2-provider",
       "docsSource": "terraform-provider-aws/website/docs/r/bedrockagentcore_oauth2_credential_provider.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/bedrockagentcore/oauth2_credential_provider_test.go:61 acctest.AttrImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/bedrockagentcore/oauth2_credential_provider_identity_gen_test.go:65 acctest.AttrImportStateIdFunc"
+    },
+    "aws_bedrockagentcore_online_evaluation_config": {
+      "template": "{online_evaluation_config_id}",
+      "docs": "terraform import aws_bedrockagentcore_online_evaluation_config.example my_evaluation_config-aBcDeFgHiJ",
+      "docsSource": "terraform-provider-aws/website/docs/r/bedrockagentcore_online_evaluation_config.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/bedrockagentcore/online_evaluation_config_identity_gen_test.go:61 acctest.AttrImportStateIdFunc"
+    },
+    "aws_bedrockagentcore_policy": {
+      "template": "{policy_engine_id},{policy_id}",
+      "docs": "terraform import aws_bedrockagentcore_policy.example PolicyEngine_i2fo6-dyqwrzl954,policy_ar2c3-o_rospxr2j",
+      "docsSource": "terraform-provider-aws/website/docs/r/bedrockagentcore_policy.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/bedrockagentcore/policy_test.go:252 testAccPolicyImportStateIDFunc -> acctest.AttrsImportStateIdFunc"
+    },
+    "aws_bedrockagentcore_policy_engine": {
+      "template": "{policy_engine_id}",
+      "docs": "terraform import aws_bedrockagentcore_policy_engine.example policy-engine-id-12345678",
+      "docsSource": "terraform-provider-aws/website/docs/r/bedrockagentcore_policy_engine.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/bedrockagentcore/policy_engine_identity_gen_test.go:59 acctest.AttrImportStateIdFunc"
+    },
+    "aws_bedrockagentcore_resource_policy": {
+      "template": "{resource_arn}",
+      "docs": "terraform import aws_bedrockagentcore_resource_policy.example arn:aws:bedrock-agentcore:us-west-2:012345678901:runtime/abcd1234",
+      "docsSource": "terraform-provider-aws/website/docs/r/bedrockagentcore_resource_policy.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/bedrockagentcore/resource_policy_identity_gen_test.go:58 acctest.AttrImportStateIdFunc"
     },
     "aws_bedrockagentcore_token_vault_cmk": {
       "template": "{token_vault_id}",
@@ -380,7 +482,7 @@
       "snippet": "func(s *terraform.State) (string, error) {\n\trs, ok := s.RootModule().Resources[resourceName]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"Not found: %s\", resourceName)\n\t}\n\n\treturn fmt.Sprintf(\"%s,DELEGATED_ADMIN\", rs.Primary.ID), nil\n}",
       "docs": "terraform import aws_cloudformation_stack_instances.example example,SELF",
       "docsSource": "terraform-provider-aws/website/docs/r/cloudformation_stack_instances.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/cloudformation/stack_instances_test.go:511 "
+      "evidence": "terraform-provider-aws/internal/service/cloudformation/stack_instances_test.go:528 "
     },
     "aws_cloudformation_stack_set": {
       "manual": true,
@@ -394,7 +496,7 @@
       "snippet": "func(s *terraform.State) (string, error) {\n\trs, ok := s.RootModule().Resources[resourceName]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"Not found: %s\", resourceName)\n\t}\n\n\treturn fmt.Sprintf(\"%s,SELF\", rs.Primary.ID), nil\n}",
       "docs": "terraform import aws_cloudformation_stack_set_instance.example example,123456789012,us-east-1",
       "docsSource": "terraform-provider-aws/website/docs/r/cloudformation_stack_set_instance.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/cloudformation/stack_set_instance_test.go:65 "
+      "evidence": "terraform-provider-aws/internal/service/cloudformation/stack_set_instance_test.go:66 "
     },
     "aws_cloudformation_type": {
       "manual": true,
@@ -412,7 +514,7 @@
       "template": "{name}",
       "docs": "terraform import aws_cloudfront_distribution_tenant.example TENANT123EXAMPLE",
       "docsSource": "terraform-provider-aws/website/docs/r/cloudfront_distribution_tenant.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/cloudfront/distribution_tenant_test.go:60 acctest.AttrImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/cloudfront/distribution_tenant_test.go:82 acctest.AttrImportStateIdFunc"
     },
     "aws_cloudfront_key_value_store": {
       "template": "{name}",
@@ -426,17 +528,23 @@
       "docsSource": "terraform-provider-aws/website/docs/r/cloudfrontkeyvaluestore_keys_exclusive.html.markdown",
       "evidence": "terraform-provider-aws/internal/service/cloudfrontkeyvaluestore/keys_exclusive_test.go:63 acctest.AttrImportStateIdFunc"
     },
+    "aws_cloudwatch_alarm_mute_rule": {
+      "template": "{name}",
+      "docs": "terraform import aws_cloudwatch_alarm_mute_rule.example example",
+      "docsSource": "terraform-provider-aws/website/docs/r/cloudwatch_alarm_mute_rule.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/cloudwatch/alarm_mute_rule_identity_gen_test.go:64 acctest.AttrImportStateIdFunc"
+    },
     "aws_cloudwatch_contributor_insight_rule": {
       "template": "{rule_name}",
-      "docs": "terraform import aws_cloudwatch_contributor_insight_rule.example contributor_insight_rule-name",
+      "docs": "terraform import aws_cloudwatch_contributor_insight_rule.example example-rule",
       "docsSource": "terraform-provider-aws/website/docs/r/cloudwatch_contributor_insight_rule.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/cloudwatch/contributor_insight_rule_test.go:139 testAccContributorInsightRuleImportStateIDFunc"
+      "evidence": "terraform-provider-aws/internal/service/cloudwatch/contributor_insight_rule_identity_gen_test.go:62 acctest.AttrImportStateIdFunc"
     },
     "aws_cloudwatch_contributor_managed_insight_rule": {
       "template": "{resource_arn},{template_name}",
-      "docs": "terraform import aws_cloudwatch_contributor_managed_insight_rule.example contributor_managed_insight_rule-id-12345678",
+      "docs": "terraform import aws_cloudwatch_contributor_managed_insight_rule.example arn:aws:ec2:us-east-1:123456789012:vpc-endpoint-service/vpce-svc-0123456789abcdef0,VpcEndpointService-BytesByEndpointId-v1",
       "docsSource": "terraform-provider-aws/website/docs/r/cloudwatch_contributor_managed_insight_rule.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/cloudwatch/contributor_managed_insight_rule_test.go:186 testAccContributorManagedInsightRuleImportStateIDFunc"
+      "evidence": "terraform-provider-aws/internal/service/cloudwatch/contributor_managed_insight_rule_test.go:334 testAccContributorManagedInsightRuleImportStateIDFunc -> acctest.AttrsImportStateIdFunc"
     },
     "aws_cloudwatch_event_rule": {
       "template": "{name}",
@@ -448,63 +556,67 @@
       "template": "{event_bus_name}/{rule}/{target_id}",
       "docs": "terraform import aws_cloudwatch_event_target.example rule-name/target-id",
       "docsSource": "terraform-provider-aws/website/docs/r/cloudwatch_event_target.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/events/target_test.go:1296 testAccTargetImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/events/target_test.go:1303 testAccTargetImportStateIdFunc"
     },
     "aws_cloudwatch_log_account_policy": {
-      "manual": true,
-      "snippet": "{\n\trs, ok := s.RootModule().Resources[n]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"Not found: %s\", n)\n\t}\n\n\tpolicyName := rs.Primary.ID\n\tpolicyType := rs.Primary.Attributes[\"policy_type\"]\n\tstateID := fmt.Sprintf(\"%s:%s\", policyName, policyType)\n\n\treturn stateID, nil\n}",
+      "template": "{policy_name}:{policy_type}",
       "docs": "terraform import aws_cloudwatch_log_account_policy.example \"my-account-policy:SUBSCRIPTION_FILTER_POLICY\"",
       "docsSource": "terraform-provider-aws/website/docs/r/cloudwatch_log_account_policy.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/logs/account_policy_test.go:212 testAccAccountPolicyImportStateIDFunc"
+      "evidence": "terraform-provider-aws/internal/service/logs/account_policy_test.go:224 testAccAccountPolicyImportStateIDFunc -> acctest.AttrsImportStateIdFunc"
     },
     "aws_cloudwatch_log_anomaly_detector": {
       "template": "{arn}",
-      "docs": "terraform import aws_cloudwatch_log_anomaly_detector.example log_anomaly_detector-arn-12345678",
+      "docs": "terraform import aws_cloudwatch_log_anomaly_detector.example arn:aws:logs:us-east-1:123456789012:anomaly-detector:1a2b3c4d-5e6f-7890-abcd-ef1234567890",
       "docsSource": "terraform-provider-aws/website/docs/r/cloudwatch_log_anomaly_detector.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/logs/anomaly_detector_test.go:186 testAccAnomalyDetectorImportStateIDFunc"
+      "evidence": "terraform-provider-aws/internal/service/logs/anomaly_detector_identity_gen_test.go:59 acctest.AttrImportStateIdFunc"
     },
     "aws_cloudwatch_log_delivery_destination": {
       "template": "{name}",
       "docs": "terraform import aws_cloudwatch_log_delivery_destination.example example",
       "docsSource": "terraform-provider-aws/website/docs/r/cloudwatch_log_delivery_destination.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/logs/delivery_destination_test.go:473 testAccDeliveryDestinationImportStateIDFunc"
+      "evidence": "terraform-provider-aws/internal/service/logs/delivery_destination_identity_gen_test.go:62 acctest.AttrImportStateIdFunc"
     },
     "aws_cloudwatch_log_delivery_destination_policy": {
       "template": "{delivery_destination_name}",
       "docs": "terraform import aws_cloudwatch_log_delivery_destination_policy.example example",
       "docsSource": "terraform-provider-aws/website/docs/r/cloudwatch_log_delivery_destination_policy.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/logs/delivery_destination_policy_test.go:122 testAccDeliveryDestinationPolicyImportStateIDFunc"
+      "evidence": "terraform-provider-aws/internal/service/logs/delivery_destination_policy_identity_gen_test.go:60 acctest.AttrImportStateIdFunc"
     },
     "aws_cloudwatch_log_delivery_source": {
       "template": "{name}",
       "docs": "terraform import aws_cloudwatch_log_delivery_source.example example",
       "docsSource": "terraform-provider-aws/website/docs/r/cloudwatch_log_delivery_source.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/logs/delivery_source_test.go:214 testAccDeliverySourceImportStateIDFunc"
+      "evidence": "terraform-provider-aws/internal/service/logs/delivery_source_identity_gen_test.go:75 acctest.AttrImportStateIdFunc"
     },
     "aws_cloudwatch_log_index_policy": {
       "template": "{log_group_name}",
       "docs": "terraform import aws_cloudwatch_log_index_policy.example /aws/log/group/name",
       "docsSource": "terraform-provider-aws/website/docs/r/cloudwatch_log_index_policy.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/logs/index_policy_test.go:153 testAccIndexPolicyImportStateIDFunc"
+      "evidence": "terraform-provider-aws/internal/service/logs/index_policy_identity_gen_test.go:60 acctest.AttrImportStateIdFunc"
     },
     "aws_cloudwatch_log_metric_filter": {
       "template": "{log_group_name}:{name}",
-      "docs": "terraform import aws_cloudwatch_log_metric_filter.example /aws/lambda/function:test",
+      "docs": "terraform import aws_cloudwatch_log_metric_filter.example example-group:example-filter",
       "docsSource": "terraform-provider-aws/website/docs/r/cloudwatch_log_metric_filter.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/logs/metric_filter_test.go:187 testAccMetricFilterImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/logs/metric_filter_test.go:243 testAccMetricFilterImportStateIDFunc -> acctest.AttrsImportStateIdFunc"
+    },
+    "aws_cloudwatch_log_s3_table_integration_source": {
+      "template": "{integration_arn},{id}",
+      "docs": "terraform import aws_cloudwatch_log_s3_table_integration_source.example arn:aws:observabilityadmin:us-west-2:123456789012:s3tableintegration/3g5043wqe54nmw5apiugwkn1a,a8928b36-ab82-4ae2-ae5c-fcb910ec4237",
+      "docsSource": "terraform-provider-aws/website/docs/r/cloudwatch_log_s3_table_integration_source.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/logs/s3_table_integration_source_test.go:90 testAccS3TableIntegrationSourceImportStateIDFunc -> acctest.AttrsImportStateIdFunc"
     },
     "aws_cloudwatch_log_stream": {
-      "template": "{log_group_name}:{id}",
-      "docs": "terraform import aws_cloudwatch_log_stream.example Yada:SampleLogStream1234",
+      "template": "{log_group_name}:{name}",
+      "docs": "terraform import aws_cloudwatch_log_stream.example example-group:example-stream",
       "docsSource": "terraform-provider-aws/website/docs/r/cloudwatch_log_stream.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/logs/stream_test.go:144 testAccStreamImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/logs/stream_test.go:199 testAccStreamImportStateIDFunc -> acctest.AttrsImportStateIdFunc"
     },
     "aws_cloudwatch_log_subscription_filter": {
-      "manual": true,
-      "snippet": "{\n\trs, ok := s.RootModule().Resources[resourceName]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"Not found: %s\", resourceName)\n\t}\n\n\tlogGroupName := rs.Primary.Attributes[names.AttrLogGroupName]\n\tfilterNamePrefix := rs.Primary.Attributes[names.AttrName]\n\tstateID := fmt.Sprintf(\"%s|%s\", logGroupName, filterNamePrefix)\n\n\treturn stateID, nil\n}",
-      "docs": "terraform import aws_cloudwatch_log_subscription_filter.example \"/aws/lambda/example_lambda_name|test_lambdafunction_logfilter\"",
+      "template": "{log_group_name}|{name}",
+      "docs": "terraform import aws_cloudwatch_log_subscription_filter.example example-group|example-filter",
       "docsSource": "terraform-provider-aws/website/docs/r/cloudwatch_log_subscription_filter.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/logs/subscription_filter_test.go:412 testAccSubscriptionFilterImportStateIDFunc"
+      "evidence": "terraform-provider-aws/internal/service/logs/subscription_filter_test.go:524 testAccSubscriptionFilterImportStateIDFunc -> acctest.AttrsImportStateIdFunc"
     },
     "aws_cloudwatch_log_transformer": {
       "template": "{log_group_arn}",
@@ -513,11 +625,10 @@
       "evidence": "terraform-provider-aws/internal/service/logs/transformer_identity_gen_test.go:58 acctest.AttrImportStateIdFunc"
     },
     "aws_cloudwatch_query_definition": {
-      "manual": true,
-      "snippet": "{\n\tid := arn.ARN{\n\t\tAccountID:\tacctest.AccountID(ctx),\n\t\tPartition:\tacctest.Partition(),\n\t\tRegion:\t\tacctest.Region(),\n\t\tService:\t\"logs\",\n\t\tResource:\tfmt.Sprintf(\"query-definition:%s\", aws.ToString(v.QueryDefinitionId)),\n\t}\n\n\treturn id.String(), nil\n}",
+      "template": "{arn}",
       "docs": "terraform import aws_cloudwatch_query_definition.example arn:aws:logs:us-west-2:123456789012:query-definition:269951d7-6f75-496d-9d7b-6b7a5486bdbd",
       "docsSource": "terraform-provider-aws/website/docs/r/cloudwatch_query_definition.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/logs/query_definition_test.go:195 testAccQueryDefinitionImportStateID"
+      "evidence": "terraform-provider-aws/internal/service/logs/query_definition_identity_gen_test.go:62 acctest.AttrImportStateIdFunc"
     },
     "aws_codecatalyst_project": {
       "manual": true,
@@ -536,19 +647,19 @@
       "snippet": "ImportStateId: rName",
       "docs": "terraform import aws_codedeploy_app.example my-application",
       "docsSource": "terraform-provider-aws/website/docs/r/codedeploy_app.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/deploy/app_test.go:53 "
+      "evidence": "terraform-provider-aws/internal/service/deploy/app_test.go:54 "
     },
     "aws_codedeploy_deployment_group": {
       "template": "{app_name}:{deployment_group_name}",
       "docs": "terraform import aws_codedeploy_deployment_group.example my-application:my-deployment-group",
       "docsSource": "terraform-provider-aws/website/docs/r/codedeploy_deployment_group.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/deploy/deployment_group_test.go:1731 testAccDeploymentGroupImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/deploy/deployment_group_test.go:1748 testAccDeploymentGroupImportStateIdFunc"
     },
     "aws_cognito_log_delivery_configuration": {
       "template": "{user_pool_id}",
       "docs": "terraform import aws_cognito_log_delivery_configuration.example us-west-2_example123",
       "docsSource": "terraform-provider-aws/website/docs/r/cognito_log_delivery_configuration.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/cognitoidp/log_delivery_configuration_test.go:248 testAccLogDeliveryConfigurationImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/cognitoidp/log_delivery_configuration_test.go:257 testAccLogDeliveryConfigurationImportStateIdFunc"
     },
     "aws_cognito_managed_login_branding": {
       "template": "{user_pool_id},{managed_login_branding_id}",
@@ -561,26 +672,26 @@
       "snippet": "{\n\trs, ok := s.RootModule().Resources[n]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"Not found: %s\", n)\n\t}\n\n\tconn := acctest.ProviderMeta(ctx, t).CognitoIDPClient(ctx)\n\n\tuserPoolID := rs.Primary.Attributes[names.AttrUserPoolID]\n\tclientID := rs.Primary.ID\n\t_, err := tfcognitoidp.FindUserPoolClientByTwoPartKey(ctx, conn, userPoolID, clientID)\n\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\n\treturn fmt.Sprintf(\"%s/%s\", userPoolID, clientID), nil\n}",
       "docs": "terraform import aws_cognito_managed_user_pool_client.example us-west-2_abc123/3ho4ek12345678909nh3fmhpko",
       "docsSource": "terraform-provider-aws/website/docs/r/cognito_managed_user_pool_client.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/cognitoidp/user_pool_client_test.go:1476 testAccUserPoolClientImportStateIDFunc"
+      "evidence": "terraform-provider-aws/internal/service/cognitoidp/user_pool_client_test.go:1494 testAccUserPoolClientImportStateIDFunc"
     },
     "aws_cognito_user_pool_client": {
       "manual": true,
       "snippet": "{\n\trs, ok := s.RootModule().Resources[n]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"Not found: %s\", n)\n\t}\n\n\tconn := acctest.ProviderMeta(ctx, t).CognitoIDPClient(ctx)\n\n\tuserPoolID := rs.Primary.Attributes[names.AttrUserPoolID]\n\tclientID := rs.Primary.ID\n\t_, err := tfcognitoidp.FindUserPoolClientByTwoPartKey(ctx, conn, userPoolID, clientID)\n\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\n\treturn fmt.Sprintf(\"%s/%s\", userPoolID, clientID), nil\n}",
       "docs": "terraform import aws_cognito_user_pool_client.example us-west-2_abc123/3ho4ek12345678909nh3fmhpko",
       "docsSource": "terraform-provider-aws/website/docs/r/cognito_user_pool_client.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/cognitoidp/user_pool_client_test.go:1476 testAccUserPoolClientImportStateIDFunc"
+      "evidence": "terraform-provider-aws/internal/service/cognitoidp/user_pool_client_test.go:1494 testAccUserPoolClientImportStateIDFunc"
     },
     "aws_connect_phone_number_contact_flow_association": {
       "template": "{phone_number_id},{instance_id},{contact_flow_id}",
       "docs": "terraform import aws_connect_phone_number_contact_flow_association.example 36727a4c-4683-4e49-880c-3347c61110a4,fa6c1691-e2eb-4487-bdb9-1aaed6268ebd,c4acdc79-395e-4280-a294-9062f56b07bb",
       "docsSource": "terraform-provider-aws/website/docs/r/connect_phone_number_contact_flow_association.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/connect/phone_number_contact_flow_association_test.go:126 testAccPhoneNumberContactFlowAssociationImportStateIDFunc"
+      "evidence": "terraform-provider-aws/internal/service/connect/phone_number_contact_flow_association_test.go:134 testAccPhoneNumberContactFlowAssociationImportStateIDFunc"
     },
     "aws_controltower_baseline": {
       "template": "{arn}",
       "docs": "terraform import aws_controltower_baseline.example arn:aws:controltower:us-east-1:012345678912:enabledbaseline/XALULM96QHI525UOC",
       "docsSource": "terraform-provider-aws/website/docs/r/controltower_baseline.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/controltower/baseline_test.go:54 acctest.AttrImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/controltower/baseline_test.go:55 acctest.AttrImportStateIdFunc"
     },
     "aws_controltower_control": {
       "manual": true,
@@ -592,84 +703,90 @@
       "template": "{domain_name}/{id}",
       "docs": "terraform import aws_customerprofiles_profile.example domain-name/5f2f473dfbe841eb8d05cfc2a4c926df",
       "docsSource": "terraform-provider-aws/website/docs/r/customerprofiles_profile.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/customerprofiles/profile_test.go:101 acctest.AttrsImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/customerprofiles/profile_test.go:103 acctest.AttrsImportStateIdFunc"
     },
     "aws_datasync_location_fsx_lustre_file_system": {
       "template": "{id}#{fsx_filesystem_arn}",
       "docs": "terraform import aws_datasync_location_fsx_lustre_file_system.example arn:aws:datasync:us-west-2:123456789012:location/loc-12345678901234567#arn:aws:fsx:us-west-2:476956259333:file-system/fs-08e04cd442c1bb94a",
       "docsSource": "terraform-provider-aws/website/docs/r/datasync_location_fsx_lustre_file_system.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/datasync/location_fsx_lustre_file_system_test.go:219 testAccLocationFSxLustreImportStateID"
+      "evidence": "terraform-provider-aws/internal/service/datasync/location_fsx_lustre_file_system_test.go:228 testAccLocationFSxLustreImportStateID"
     },
     "aws_datasync_location_fsx_ontap_file_system": {
       "template": "{id}#{fsx_filesystem_arn}",
       "docs": "terraform import aws_datasync_location_fsx_ontap_file_system.example arn:aws:datasync:us-west-2:123456789012:location/loc-12345678901234567#arn:aws:fsx:us-west-2:123456789012:storage-virtual-machine/svm-12345678abcdef123",
       "docsSource": "terraform-provider-aws/website/docs/r/datasync_location_fsx_ontap_file_system.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/datasync/location_fsx_ontap_file_system_test.go:270 testAccLocationFSxONTAPImportStateID"
+      "evidence": "terraform-provider-aws/internal/service/datasync/location_fsx_ontap_file_system_test.go:279 testAccLocationFSxONTAPImportStateID"
     },
     "aws_datasync_location_fsx_openzfs_file_system": {
       "template": "{id}#{fsx_filesystem_arn}",
       "docs": "terraform import aws_datasync_location_fsx_openzfs_file_system.example arn:aws:datasync:us-west-2:123456789012:location/loc-12345678901234567#arn:aws:fsx:us-west-2:123456789012:file-system/fs-08e04cd442c1bb94a",
       "docsSource": "terraform-provider-aws/website/docs/r/datasync_location_fsx_openzfs_file_system.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/datasync/location_fsx_openzfs_file_system_test.go:219 testAccLocationFSxOpenZFSImportStateID"
+      "evidence": "terraform-provider-aws/internal/service/datasync/location_fsx_openzfs_file_system_test.go:228 testAccLocationFSxOpenZFSImportStateID"
     },
     "aws_datasync_location_fsx_windows_file_system": {
       "template": "{id}#{fsx_filesystem_arn}",
       "docs": "terraform import aws_datasync_location_fsx_windows_file_system.example arn:aws:datasync:us-west-2:123456789012:location/loc-12345678901234567#arn:aws:fsx:us-west-2:476956259333:file-system/fs-08e04cd442c1bb94a",
       "docsSource": "terraform-provider-aws/website/docs/r/datasync_location_fsx_windows_file_system.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/datasync/location_fsx_windows_file_system_test.go:226 testAccLocationFSxWindowsImportStateID"
+      "evidence": "terraform-provider-aws/internal/service/datasync/location_fsx_windows_file_system_test.go:235 testAccLocationFSxWindowsImportStateID"
     },
     "aws_datazone_asset_type": {
       "manual": true,
-      "snippet": "{\n\trs, ok := s.RootModule().Resources[resourceName]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"Not found: %s\", resourceName)\n\t}\n\n\treturn strings.Join([]string{rs.Primary.Attributes[\"domain_identifier\"], rs.Primary.Attributes[names.AttrName]}, \",\"), nil\n}",
+      "snippet": "acctest.AttrsImportStateIdFunc(resourceName, flex.ResourceIdSeparator, \"domain_identifier\", names.AttrName)",
       "docs": "terraform import aws_datazone_asset_type.example domain-id-12345678,example",
       "docsSource": "terraform-provider-aws/website/docs/r/datazone_asset_type.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/datazone/asset_type_test.go:150 testAccAssetTypeImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/datazone/asset_type_identity_gen_test.go:65 "
     },
     "aws_datazone_environment": {
       "manual": true,
-      "snippet": "{\n\trs, ok := s.RootModule().Resources[resourceName]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"Not found: %s\", resourceName)\n\t}\n\treturn strings.Join([]string{rs.Primary.Attributes[\"domain_identifier\"], rs.Primary.ID}, \",\"), nil\n}",
+      "snippet": "acctest.AttrsImportStateIdFunc(resourceName, flex.ResourceIdSeparator, \"domain_identifier\", names.AttrID)",
       "docs": "terraform import aws_datazone_environment.example dzd_d2i7tzk3tnjjf4,5vpywijpwryec0",
       "docsSource": "terraform-provider-aws/website/docs/r/datazone_environment.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/datazone/environment_test.go:440 testAccEnvironmentImportStateFunc"
+      "evidence": "terraform-provider-aws/internal/service/datazone/environment_identity_gen_test.go:78 "
     },
     "aws_datazone_environment_blueprint_configuration": {
       "template": "{domain_id}/{environment_blueprint_id}",
       "docs": "terraform import aws_datazone_environment_blueprint_configuration.example domain-id-12345/environment-blueprint-id-54321",
       "docsSource": "terraform-provider-aws/website/docs/r/datazone_environment_blueprint_configuration.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/datazone/environment_blueprint_configuration_test.go:350 testAccEnvironmentBlueprintConfigurationImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/datazone/environment_blueprint_configuration_test.go:414 testAccEnvironmentBlueprintConfigurationImportStateIdFunc"
     },
     "aws_datazone_environment_profile": {
       "template": "{id},{domain_identifier}",
       "docs": "terraform import aws_datazone_environment_profile.example environment_profile-id-12345678,domain-id-12345678",
       "docsSource": "terraform-provider-aws/website/docs/r/datazone_environment_profile.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/datazone/environment_profile_test.go:227 testAccAuthorizerEnvProfImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/datazone/environment_profile_test.go:236 testAccAuthorizerEnvProfImportStateIdFunc"
     },
     "aws_datazone_form_type": {
       "manual": true,
-      "snippet": "{\n\trs, ok := s.RootModule().Resources[resourceName]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"Not found: %s\", resourceName)\n\t}\n\treturn strings.Join([]string{rs.Primary.Attributes[\"domain_identifier\"], rs.Primary.Attributes[names.AttrName], rs.Primary.Attributes[\"revision\"]}, \",\"), nil\n}",
+      "snippet": "acctest.AttrsImportStateIdFunc(resourceName, flex.ResourceIdSeparator, \"domain_identifier\", names.AttrName, \"revision\")",
       "docs": "terraform import aws_datazone_form_type.example domain_identifier,name,revision",
       "docsSource": "terraform-provider-aws/website/docs/r/datazone_form_type.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/datazone/form_type_test.go:155 testAccAuthorizerImportStateUserProfileFunc"
+      "evidence": "terraform-provider-aws/internal/service/datazone/form_type_identity_gen_test.go:67 "
     },
     "aws_datazone_glossary": {
       "manual": true,
-      "snippet": "{\n\trs, ok := s.RootModule().Resources[resourceName]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"Not found: %s\", resourceName)\n\t}\n\n\treturn strings.Join([]string{rs.Primary.Attributes[\"domain_identifier\"], rs.Primary.ID, rs.Primary.Attributes[\"owning_project_identifier\"]}, \",\"), nil\n}",
+      "snippet": "acctest.AttrsImportStateIdFunc(resourceName, flex.ResourceIdSeparator, \"domain_identifier\", names.AttrID)",
       "docs": "terraform import aws_datazone_glossary.example domain-id,glossary-id,owning-project-identifier",
       "docsSource": "terraform-provider-aws/website/docs/r/datazone_glossary.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/datazone/glossary_test.go:216 testAccAuthorizerGlossaryImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/datazone/glossary_identity_gen_test.go:65 "
     },
     "aws_datazone_glossary_term": {
       "manual": true,
-      "snippet": "{\n\trs, ok := s.RootModule().Resources[resourceName]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"Not found: %s\", resourceName)\n\t}\n\n\treturn strings.Join([]string{rs.Primary.Attributes[\"domain_identifier\"], rs.Primary.ID, rs.Primary.Attributes[\"glossary_identifier\"]}, \",\"), nil\n}",
+      "snippet": "acctest.AttrsImportStateIdFunc(resourceName, flex.ResourceIdSeparator, \"domain_identifier\", names.AttrID)",
       "docs": "terraform import aws_datazone_glossary_term.example domain-id,glossary-term-id,glossary-id",
       "docsSource": "terraform-provider-aws/website/docs/r/datazone_glossary_term.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/datazone/glossary_term_test.go:217 testAccAuthorizerGlossaryTermImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/datazone/glossary_term_identity_gen_test.go:65 "
+    },
+    "aws_datazone_policy_grant": {
+      "template": "{domain_identifier},{entity_type},{entity_identifier},{policy_type},{grant_id}",
+      "docs": "terraform import aws_datazone_policy_grant.example dzd_54nakfrg9k6sri,DOMAIN_UNIT,9v3oj4n26k4yrq,CREATE_DOMAIN_UNIT,3v8lox42tj5zic",
+      "docsSource": "terraform-provider-aws/website/docs/r/datazone_policy_grant.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/datazone/policy_grant_test.go:243 testAccPolicyGrantImportStateIDFunc"
     },
     "aws_datazone_project": {
       "template": "{domain_identifier}:{id}",
       "docs": "terraform import aws_datazone_project.example domain-1234:project-1234",
       "docsSource": "terraform-provider-aws/website/docs/r/datazone_project.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/datazone/project_test.go:244 testAccAuthorizerImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/datazone/project_test.go:253 testAccProjectImportStateIdFunc"
     },
     "aws_datazone_user_profile": {
       "manual": true,
@@ -682,19 +799,37 @@
       "template": "{vpc_id}",
       "docs": "terraform import aws_default_route_table.example vpc-33cc44dd",
       "docsSource": "terraform-provider-aws/website/docs/r/default_route_table.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_default_route_table_test.go:58 acctest.AttrImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_default_route_table_test.go:59 acctest.AttrImportStateIdFunc"
     },
     "aws_directory_service_trust": {
       "template": "{directory_id}/{remote_domain_name}",
       "docs": "terraform import aws_directory_service_trust.example d-926724cf57/directory.example.com",
       "docsSource": "terraform-provider-aws/website/docs/r/directory_service_trust.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/ds/trust_test.go:576 testAccTrustStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/ds/trust_test.go:584 testAccTrustStateIdFunc"
+    },
+    "aws_dms_data_provider": {
+      "template": "{arn}",
+      "docs": "terraform import aws_dms_data_provider.example arn:aws:dms:us-east-1:123456789012:data-provider:EXAMPLEABCDEFGHIJKLMNOPQRS",
+      "docsSource": "terraform-provider-aws/website/docs/r/dms_data_provider.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/dms/data_provider_identity_gen_test.go:59 acctest.AttrImportStateIdFunc"
+    },
+    "aws_dms_instance_profile": {
+      "template": "{arn}",
+      "docs": "terraform import aws_dms_instance_profile.example arn:aws:dms:us-east-1:123456789012:instance-profile:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
+      "docsSource": "terraform-provider-aws/website/docs/r/dms_instance_profile.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/dms/instance_profile_identity_gen_test.go:53 acctest.AttrImportStateIdFunc"
+    },
+    "aws_dms_migration_project": {
+      "template": "{arn}",
+      "docs": "terraform import aws_dms_migration_project.example arn:aws:dms:us-east-1:123456789012:migration-project:EXAMPLEABCDEFGHIJKLMNOPQRS",
+      "docsSource": "terraform-provider-aws/website/docs/r/dms_migration_project.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/dms/migration_project_identity_gen_test.go:56 acctest.AttrImportStateIdFunc"
     },
     "aws_dsql_cluster": {
       "template": "{identifier}",
       "docs": "terraform import aws_dsql_cluster.example abcde1f234ghijklmnop5qr6st",
       "docsSource": "terraform-provider-aws/website/docs/r/dsql_cluster.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/dsql/cluster_tags_gen_test.go:68 acctest.AttrImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/dsql/cluster_identity_gen_test.go:59 acctest.AttrImportStateIdFunc"
     },
     "aws_dsql_cluster_peering": {
       "template": "{identifier}",
@@ -702,12 +837,18 @@
       "docsSource": "terraform-provider-aws/website/docs/r/dsql_cluster_peering.html.markdown",
       "evidence": "terraform-provider-aws/internal/service/dsql/cluster_peering_test.go:48 acctest.AttrImportStateIdFunc"
     },
+    "aws_dsql_cluster_policy": {
+      "template": "{identifier}",
+      "docs": "terraform import aws_dsql_cluster_policy.example abcde1f234ghijklmnop5qr6st",
+      "docsSource": "terraform-provider-aws/website/docs/r/dsql_cluster_policy.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/dsql/cluster_policy_identity_gen_test.go:56 acctest.AttrImportStateIdFunc"
+    },
     "aws_dx_connection": {
       "manual": true,
       "snippet": "ImportStateId: connectionID",
       "docs": "terraform import aws_dx_connection.example dxcon-ffre0ec3",
       "docsSource": "terraform-provider-aws/website/docs/r/dx_connection.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/directconnect/connection_test.go:98 "
+      "evidence": "terraform-provider-aws/internal/service/directconnect/connection_test.go:109 "
     },
     "aws_dx_gateway_association": {
       "template": "{dx_gateway_id}/{associated_gateway_id}",
@@ -720,14 +861,14 @@
       "snippet": "func(s *terraform.State) (string, error) {\n\treturn strings.Join([]string{\n\t\taws.ToString(proposal.ProposalId),\n\t\taws.ToString(proposal.DirectConnectGatewayId),\n\t\taws.ToString(proposal.AssociatedGateway.Id),\n\t}, \"/\"), nil\n}",
       "docs": "terraform import aws_dx_gateway_association_proposal.example ac90e981-b718-4364-872d-65478c84fafe",
       "docsSource": "terraform-provider-aws/website/docs/r/dx_gateway_association_proposal.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/directconnect/gateway_association_proposal_test.go:142 "
+      "evidence": "terraform-provider-aws/internal/service/directconnect/gateway_association_proposal_test.go:151 "
     },
     "aws_dynamodb_global_secondary_index": {
       "manual": true,
       "snippet": "{\n\trs, ok := s.RootModule().Resources[resourceName]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"Not found: %s\", resourceName)\n\t}\n\n\tparts := []string{\n\t\trs.Primary.Attributes[names.AttrTableName],\n\t\trs.Primary.Attributes[\"index_name\"],\n\t}\n\n\treturn strings.Join(parts, intflex.ResourceIdSeparator), nil\n}",
       "docs": "terraform import aws_dynamodb_global_secondary_index.example 'example-table,example-index'",
       "docsSource": "terraform-provider-aws/website/docs/r/dynamodb_global_secondary_index.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/dynamodb/global_secondary_index_test.go:3056 testAccGlobalSecondaryIndexImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/dynamodb/global_secondary_index_test.go:2953 testAccGlobalSecondaryIndexImportStateIdFunc"
     },
     "aws_ec2_allowed_images_settings": {
       "manual": true,
@@ -740,7 +881,7 @@
       "template": "{client_vpn_endpoint_id},{id}",
       "docs": "terraform import aws_ec2_client_vpn_network_association.example cvpn-endpoint-0ac3a1abbccddd666,cvpn-assoc-0b8db902465d069ad",
       "docsSource": "terraform-provider-aws/website/docs/r/ec2_client_vpn_network_association.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/ec2/vpnclient_network_association_test.go:170 testAccClientVPNNetworkAssociationImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/ec2/vpnclient_network_association_test.go:179 testAccClientVPNNetworkAssociationImportStateIdFunc"
     },
     "aws_ec2_default_credit_specification": {
       "template": "{instance_family}",
@@ -753,20 +894,20 @@
       "snippet": "{\n\trs, ok := s.RootModule().Resources[resourceName]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"not found: %s\", resourceName)\n\t}\n\n\tplID := rs.Primary.Attributes[\"prefix_list_id\"]\n\tcidr := rs.Primary.Attributes[\"cidr\"]\n\n\treturn tfec2.ManagedPrefixListEntryCreateResourceID(plID, cidr), nil\n}",
       "docs": "terraform import aws_ec2_managed_prefix_list_entry.example pl-0570a1d2d725c16be,10.0.3.0/24",
       "docsSource": "terraform-provider-aws/website/docs/r/ec2_managed_prefix_list_entry.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_managed_prefix_list_entry_test.go:273 testAccManagedPrefixListEntryImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_managed_prefix_list_entry_test.go:282 testAccManagedPrefixListEntryImportStateIdFunc"
     },
     "aws_ec2_subnet_cidr_reservation": {
       "manual": true,
       "snippet": "{\n\trs, ok := s.RootModule().Resources[resourceName]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"not found: %s\", resourceName)\n\t}\n\tsubnetId := rs.Primary.Attributes[names.AttrSubnetID]\n\treturn fmt.Sprintf(\"%s:%s\", subnetId, rs.Primary.ID), nil\n}",
       "docs": "terraform import aws_ec2_subnet_cidr_reservation.example subnet-01llsxvsxabqiymcz:scr-4mnvz6wb7otksjcs9",
       "docsSource": "terraform-provider-aws/website/docs/r/ec2_subnet_cidr_reservation.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_subnet_cidr_reservation_test.go:157 testAccSubnetCIDRReservationImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_subnet_cidr_reservation_test.go:166 testAccSubnetCIDRReservationImportStateIdFunc"
     },
     "aws_ec2_traffic_mirror_filter_rule": {
       "template": "{traffic_mirror_filter_id}:{id}",
       "docs": "terraform import aws_ec2_traffic_mirror_filter_rule.example tmf-0fbb93ddf38198f64:tmfr-05a458f06445d0aee",
       "docsSource": "terraform-provider-aws/website/docs/r/ec2_traffic_mirror_filter_rule.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_traffic_mirror_filter_rule_test.go:220 testAccTrafficMirrorFilterRuleImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_traffic_mirror_filter_rule_test.go:229 testAccTrafficMirrorFilterRuleImportStateIdFunc"
     },
     "aws_ec2_transit_gateway_metering_policy": {
       "template": "{transit_gateway_metering_policy_id}",
@@ -779,6 +920,12 @@
       "docs": "terraform import aws_ec2_transit_gateway_metering_policy_entry.example tgw-policy-12345678,100",
       "docsSource": "terraform-provider-aws/website/docs/r/ec2_transit_gateway_metering_policy_entry.html.markdown",
       "evidence": "terraform-provider-aws/internal/service/ec2/transitgateway_metering_policy_entry_test.go:62 acctest.AttrsImportStateIdFunc"
+    },
+    "aws_ec2_transit_gateway_policy_table_entry": {
+      "template": "{transit_gateway_policy_table_id},{policy_rule_number}",
+      "docs": "terraform import aws_ec2_transit_gateway_policy_table_entry.example tgw-ptb-000000000fffffff,100",
+      "docsSource": "terraform-provider-aws/website/docs/r/ec2_transit_gateway_policy_table_entry.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/ec2/transitgateway_policy_table_entry_test.go:260 testAccTransitGatewayPolicyTableEntryImportStateIDFunc -> acctest.AttrsImportStateIdFunc"
     },
     "aws_ecr_account_setting": {
       "manual": true,
@@ -804,38 +951,50 @@
       "template": "{name}",
       "docs": "terraform import aws_ecs_cluster.example stateless-app",
       "docsSource": "terraform-provider-aws/website/docs/r/ecs_cluster.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/ecs/cluster_test.go:54 acctest.AttrImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/ecs/cluster_test.go:391 testAccClusterImportStateIdFunc -> acctest.AttrImportStateIdFunc"
+    },
+    "aws_ecs_daemon": {
+      "template": "{arn}",
+      "docs": "terraform import aws_ecs_daemon.example arn:aws:ecs:us-east-1:123456789012:daemon/example-cluster/example-daemon",
+      "docsSource": "terraform-provider-aws/website/docs/r/ecs_daemon.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/ecs/daemon_identity_gen_test.go:56 acctest.AttrImportStateIdFunc"
+    },
+    "aws_ecs_daemon_task_definition": {
+      "template": "{arn}",
+      "docs": "terraform import aws_ecs_daemon_task_definition.example arn:aws:ecs:us-east-1:012345678910:daemon-task-definition/mydaemonfamily:123",
+      "docsSource": "terraform-provider-aws/website/docs/r/ecs_daemon_task_definition.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/ecs/daemon_task_definition_identity_gen_test.go:56 acctest.AttrImportStateIdFunc"
     },
     "aws_ecs_express_gateway_service": {
       "template": "{service_arn}",
       "docs": "terraform import aws_ecs_express_gateway_service.example arn:aws:ecs:us-west-2:123456789012:service/my-cluster/my-express-gateway-service",
       "docsSource": "terraform-provider-aws/website/docs/r/ecs_express_gateway_service.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/ecs/express_gateway_service_test.go:68 acctest.AttrImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/ecs/express_gateway_service_test.go:83 acctest.AttrImportStateIdFunc"
     },
     "aws_ecs_service": {
       "manual": true,
       "snippet": "{\n\trs, ok := s.RootModule().Resources[resourceName]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"Not found: %s\", resourceName)\n\t}\n\n\tcluster := rs.Primary.Attributes[\"cluster\"]\n\tif arn.IsARN(cluster) {\n\t\tclusterArn, err := arn.Parse(cluster)\n\t\tif err != nil {\n\t\t\treturn \"\", err\n\t\t}\n\n\t\tclusterParts := strings.Split(clusterArn.Resource, \"/\")\n\t\tif len(clusterParts) != 2 {\n\t\t\treturn \"\", fmt.Errorf(\"wrong format of resource: %s, expecting 'cluster-name/service-name'\", clusterArn)\n\t\t}\n\n\t\tcluster = clusterParts[1]\n\t}\n\n\treturn fmt.Sprintf(\"%s/%s\", cluster, rs.Primary.Attributes[names.AttrName]), nil\n}",
       "docs": "terraform import aws_ecs_service.example cluster-name/service-name",
       "docsSource": "terraform-provider-aws/website/docs/r/ecs_service.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/ecs/service_test.go:3234 testAccServiceImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/ecs/service_test.go:3353 testAccServiceImportStateIdFunc"
     },
     "aws_ecs_task_definition": {
       "template": "{arn}",
       "docs": "terraform import aws_ecs_task_definition.example arn:aws:ecs:us-east-1:012345678910:task-definition/mytaskfamily:123",
       "docsSource": "terraform-provider-aws/website/docs/r/ecs_task_definition.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/ecs/task_definition_test.go:1697 testAccTaskDefinitionImportStateIdFunc -> acctest.AttrImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/ecs/task_definition_test.go:1889 testAccTaskDefinitionImportStateIdFunc -> acctest.AttrImportStateIdFunc"
     },
     "aws_eks_capability": {
       "template": "{cluster_name},{capability_name}",
-      "docs": "terraform import aws_eks_capability.example my-cluster,my-capability",
+      "docs": "terraform import aws_eks_capability.example example-cluster,example-capability",
       "docsSource": "terraform-provider-aws/website/docs/r/eks_capability.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/eks/capability_test.go:58 acctest.AttrsImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/eks/capability_test.go:262 testAccCapabilityImportStateIDFunc -> acctest.AttrsImportStateIdFunc"
     },
     "aws_eks_pod_identity_association": {
       "template": "{cluster_name},{association_id}",
-      "docs": "terraform import aws_eks_pod_identity_association.example example,a-12345678",
+      "docs": "terraform import aws_eks_pod_identity_association.example example-cluster,a-yrpsdroc4ei7k6xps",
       "docsSource": "terraform-provider-aws/website/docs/r/eks_pod_identity_association.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/eks/pod_identity_association_test.go:305 testAccCheckPodIdentityAssociationImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/eks/pod_identity_association_test.go:364 testAccCheckPodIdentityAssociationImportStateIDFunc -> acctest.AttrsImportStateIdFunc"
     },
     "aws_elasticache_reserved_cache_node": {
       "manual": true,
@@ -850,12 +1009,6 @@
       "docsSource": "terraform-provider-aws/website/docs/r/elasticsearch_domain.html.markdown",
       "evidence": "terraform-provider-aws/internal/service/elasticsearch/domain_test.go:57 "
     },
-    "aws_elasticsearch_vpc_endpoint_connection": {
-      "manual": true,
-      "docs": "terraform import aws_elasticsearch_vpc_endpoint_connection.example endpoint-id",
-      "docsSource": "terraform-provider-aws/website/docs/r/elasticsearch_vpc_endpoint.html.markdown",
-      "evidence": "docs-only: multi-segment or attribute-based example in terraform-provider-aws/website/docs/r/elasticsearch_vpc_endpoint.html.markdown, no import test found"
-    },
     "aws_emr_instance_fleet": {
       "template": "{cluster_id}/{id}",
       "docs": "terraform import aws_emr_instance_fleet.example j-123456ABCDEF/if-15EK4O09RZLNR",
@@ -866,7 +1019,7 @@
       "template": "{cluster_id}/{id}",
       "docs": "terraform import aws_emr_instance_group.example j-123456ABCDEF/ig-15EK4O09RZLNR",
       "docsSource": "terraform-provider-aws/website/docs/r/emr_instance_group.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/emr/instance_group_test.go:393 testAccInstanceGroupResourceImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/emr/instance_group_test.go:410 testAccInstanceGroupResourceImportStateIdFunc"
     },
     "aws_emrcontainers_virtual_cluster": {
       "manual": true,
@@ -874,11 +1027,17 @@
       "docsSource": "terraform-provider-aws/website/docs/r/emrcontainers_virtual_cluster.html.markdown",
       "evidence": "docs-only: multi-segment or attribute-based example in terraform-provider-aws/website/docs/r/emrcontainers_virtual_cluster.html.markdown, no import test found"
     },
+    "aws_fis_safety_lever_state": {
+      "template": "{region}",
+      "docs": "terraform import aws_fis_safety_lever_state.example us-west-2",
+      "docsSource": "terraform-provider-aws/website/docs/r/fis_safety_lever_state.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/fis/safety_lever_state_identity_test.go:55 acctest.AttrImportStateIdFunc"
+    },
     "aws_fis_target_account_configuration": {
       "template": "{account_id},{experiment_template_id}",
       "docs": "terraform import aws_fis_target_account_configuration.example 123456789012,abcd123456789",
       "docsSource": "terraform-provider-aws/website/docs/r/fis_target_account_configuration.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/fis/target_account_configuration_test.go:52 acctest.AttrsImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/fis/target_account_configuration_test.go:53 acctest.AttrsImportStateIdFunc"
     },
     "aws_fsx_s3_access_point_attachment": {
       "template": "{name}",
@@ -886,29 +1045,35 @@
       "docsSource": "terraform-provider-aws/website/docs/r/fsx_s3_access_point_attachment.html.markdown",
       "evidence": "terraform-provider-aws/internal/service/fsx/s3_access_point_attachment_test.go:57 acctest.AttrImportStateIdFunc"
     },
+    "aws_glue_catalog": {
+      "template": "{name}",
+      "docs": "terraform import aws_glue_catalog.example example",
+      "docsSource": "terraform-provider-aws/website/docs/r/glue_catalog.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/glue/catalog_identity_gen_test.go:70 acctest.AttrImportStateIdFunc"
+    },
     "aws_glue_catalog_table_optimizer": {
       "template": "{catalog_id},{database_name},{table_name},{type}",
       "docs": "terraform import aws_glue_catalog_table_optimizer.example 123456789012,example_database,example_table,compaction",
       "docsSource": "terraform-provider-aws/website/docs/r/glue_catalog_table_optimizer.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/glue/catalog_table_optimizer_test.go:340 testAccCatalogTableOptimizerStateIDFunc"
+      "evidence": "terraform-provider-aws/internal/service/glue/catalog_table_optimizer_test.go:395 testAccCatalogTableOptimizerStateIDFunc"
     },
     "aws_iam_group_policies_exclusive": {
       "template": "{group_name}",
       "docs": "terraform import aws_iam_group_policies_exclusive.example MyGroup",
       "docsSource": "terraform-provider-aws/website/docs/r/iam_group_policies_exclusive.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/iam/group_policies_exclusive_test.go:53 acctest.AttrImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/iam/group_policies_exclusive_test.go:54 acctest.AttrImportStateIdFunc"
     },
     "aws_iam_group_policy_attachment": {
       "template": "{group}/{policy_arn}",
       "docs": "terraform import aws_iam_group_policy_attachment.example test-group/arn:aws:iam::xxxxxxxxxxxx:policy/test-policy",
       "docsSource": "terraform-provider-aws/website/docs/r/iam_group_policy_attachment.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/iam/group_policy_attachment_test.go:160 testAccGroupPolicyAttachmentImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/iam/group_policy_attachment_test.go:169 testAccGroupPolicyAttachmentImportStateIdFunc"
     },
     "aws_iam_group_policy_attachments_exclusive": {
       "template": "{group_name}",
       "docs": "terraform import aws_iam_group_policy_attachments_exclusive.example MyGroup",
       "docsSource": "terraform-provider-aws/website/docs/r/iam_group_policy_attachments_exclusive.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/iam/group_policy_attachments_exclusive_test.go:51 acctest.AttrImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/iam/group_policy_attachments_exclusive_test.go:52 acctest.AttrImportStateIdFunc"
     },
     "aws_iam_outbound_web_identity_federation": {
       "manual": true,
@@ -921,19 +1086,19 @@
       "template": "{role_name}",
       "docs": "terraform import aws_iam_role_policies_exclusive.example MyRole",
       "docsSource": "terraform-provider-aws/website/docs/r/iam_role_policies_exclusive.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/iam/role_policies_exclusive_test.go:51 acctest.AttrImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/iam/role_policies_exclusive_test.go:52 acctest.AttrImportStateIdFunc"
     },
     "aws_iam_role_policy_attachment": {
       "template": "{role}/{policy_arn}",
       "docs": "terraform import aws_iam_role_policy_attachment.example test-role/arn:aws:iam::xxxxxxxxxxxx:policy/test-policy",
       "docsSource": "terraform-provider-aws/website/docs/r/iam_role_policy_attachment.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/iam/role_policy_attachment_test.go:190 testAccRolePolicyAttachmentImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/iam/role_policy_attachment_test.go:207 testAccRolePolicyAttachmentImportStateIdFunc"
     },
     "aws_iam_role_policy_attachments_exclusive": {
       "template": "{role_name}",
       "docs": "terraform import aws_iam_role_policy_attachments_exclusive.example MyRole",
       "docsSource": "terraform-provider-aws/website/docs/r/iam_role_policy_attachments_exclusive.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/iam/role_policy_attachments_exclusive_test.go:49 acctest.AttrImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/iam/role_policy_attachments_exclusive_test.go:50 acctest.AttrImportStateIdFunc"
     },
     "aws_iam_server_certificate": {
       "manual": true,
@@ -953,26 +1118,26 @@
       "template": "{user_name}",
       "docs": "terraform import aws_iam_user_policies_exclusive.example MyUser",
       "docsSource": "terraform-provider-aws/website/docs/r/iam_user_policies_exclusive.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/iam/user_policies_exclusive_test.go:53 acctest.AttrImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/iam/user_policies_exclusive_test.go:54 acctest.AttrImportStateIdFunc"
     },
     "aws_iam_user_policy_attachment": {
       "template": "{user}/{policy_arn}",
       "docs": "terraform import aws_iam_user_policy_attachment.example test-user/arn:aws:iam::xxxxxxxxxxxx:policy/test-policy",
       "docsSource": "terraform-provider-aws/website/docs/r/iam_user_policy_attachment.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/iam/user_policy_attachment_test.go:163 testAccUserPolicyAttachmentImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/iam/user_policy_attachment_test.go:172 testAccUserPolicyAttachmentImportStateIdFunc"
     },
     "aws_iam_user_policy_attachments_exclusive": {
       "template": "{user_name}",
       "docs": "terraform import aws_iam_user_policy_attachments_exclusive.example MyUser",
       "docsSource": "terraform-provider-aws/website/docs/r/iam_user_policy_attachments_exclusive.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/iam/user_policy_attachments_exclusive_test.go:51 acctest.AttrImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/iam/user_policy_attachments_exclusive_test.go:52 acctest.AttrImportStateIdFunc"
     },
     "aws_iam_user_ssh_key": {
       "manual": true,
       "snippet": "{\n\trs, ok := s.RootModule().Resources[resourceName]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"not found: %s\", resourceName)\n\t}\n\n\tusername := rs.Primary.Attributes[names.AttrUsername]\n\tsshPublicKeyId := rs.Primary.Attributes[\"ssh_public_key_id\"]\n\tencoding := rs.Primary.Attributes[\"encoding\"]\n\n\treturn fmt.Sprintf(\"%s:%s:%s\", username, sshPublicKeyId, encoding), nil\n}",
       "docs": "terraform import aws_iam_user_ssh_key.example user:APKAJNCNNJICVN7CFKCA:SSH",
       "docsSource": "terraform-provider-aws/website/docs/r/iam_user_ssh_key.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/iam/user_ssh_key_test.go:163 testAccUserSSHKeyImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/iam/user_ssh_key_test.go:172 testAccUserSSHKeyImportStateIdFunc"
     },
     "aws_inspector2_filter": {
       "template": "{arn}",
@@ -986,25 +1151,18 @@
       "docsSource": "terraform-provider-aws/website/docs/r/invoicing_invoice_unit.html.markdown",
       "evidence": "terraform-provider-aws/internal/service/invoicing/invoice_unit_identity_gen_test.go:73 acctest.AttrImportStateIdFunc"
     },
-    "aws_kafka_topic": {
-      "manual": true,
-      "docs": "terraform import aws_kafka_topic.example arn:aws:kafka:us-west-2:123456789012:cluster/example/279c0212-d057-4dba-9aa9-1c4e5a25bfc7-3,topicname",
-      "docsSource": "terraform-provider-aws/website/docs/r/msk_topic.html.markdown",
-      "evidence": "docs-only: multi-segment or attribute-based example in terraform-provider-aws/website/docs/r/msk_topic.html.markdown, no import test found"
-    },
     "aws_kinesis_firehose_delivery_stream": {
       "manual": true,
       "snippet": "ImportStateId: \"just-a-name\"",
-      "docs": "terraform import aws_kinesis_firehose_delivery_stream.example arn:aws:firehose:us-east-1:XXX:deliverystream/example",
+      "docs": "terraform import aws_kinesis_firehose_delivery_stream.example arn:aws:firehose:us-east-1:123456789012:deliverystream/example-delivery-stream",
       "docsSource": "terraform-provider-aws/website/docs/r/kinesis_firehose_delivery_stream.html.markdown",
       "evidence": "terraform-provider-aws/internal/service/firehose/delivery_stream_test.go:116 "
     },
     "aws_kinesis_stream": {
-      "manual": true,
-      "snippet": "ImportStateId: rName",
-      "docs": "terraform import aws_kinesis_stream.example terraform-kinesis-test",
+      "template": "{name}",
+      "docs": "terraform import aws_kinesis_stream.example example-stream",
       "docsSource": "terraform-provider-aws/website/docs/r/kinesis_stream.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/kinesis/stream_test.go:57 "
+      "evidence": "terraform-provider-aws/internal/service/kinesis/stream_identity_gen_test.go:62 acctest.AttrImportStateIdFunc"
     },
     "aws_lakeformation_identity_center_configuration": {
       "template": "{catalog_id}",
@@ -1016,13 +1174,13 @@
       "template": "{name},{catalog_id}",
       "docs": "terraform import aws_lakeformation_lf_tag_expression.example example-tag-expression,123456789012",
       "docsSource": "terraform-provider-aws/website/docs/r/lakeformation_lf_tag_expression.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/lakeformation/lf_tag_expression_test.go:55 acctest.AttrsImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/lakeformation/lf_tag_expression_test.go:56 acctest.AttrsImportStateIdFunc"
     },
     "aws_lambda_alias": {
       "template": "{function_name}/{name}",
-      "docs": "terraform import aws_lambda_alias.example example/production",
+      "docs": "terraform import aws_lambda_alias.example example-function/production",
       "docsSource": "terraform-provider-aws/website/docs/r/lambda_alias.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/lambda/alias_test.go:336 testAccAliasImportStateIDFunc"
+      "evidence": "terraform-provider-aws/internal/service/lambda/alias_test.go:344 testAccAliasImportStateIDFunc"
     },
     "aws_lambda_capacity_provider": {
       "manual": true,
@@ -1035,20 +1193,51 @@
       "template": "{function_name}",
       "docs": "terraform import aws_lambda_function_recursion_config.example recursive_processor",
       "docsSource": "terraform-provider-aws/website/docs/r/lambda_function_recursion_config.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/lambda/function_recursion_config_test.go:52 acctest.AttrImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/lambda/function_recursion_config_test.go:53 acctest.AttrImportStateIdFunc"
+    },
+    "aws_lambda_function_scaling_config": {
+      "manual": true,
+      "snippet": "acctest.AttrsImportStateIdFunc(resourceName, flex.ResourceIdSeparator, \"function_name\", \"qualifier\")",
+      "docs": "terraform import aws_lambda_function_scaling_config.example my-function,$LATEST.PUBLISHED",
+      "docsSource": "terraform-provider-aws/website/docs/r/lambda_function_scaling_config.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/lambda/function_scaling_config_identity_gen_test.go:67 "
     },
     "aws_lambda_permission": {
       "manual": true,
       "snippet": "{\n\trs, ok := s.RootModule().Resources[resourceName]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"Not found: %s\", resourceName)\n\t}\n\n\tif v, ok := rs.Primary.Attributes[\"qualifier\"]; ok && v != \"\" {\n\t\treturn fmt.Sprintf(\"%s:%s/%s\", rs.Primary.Attributes[\"function_name\"], v, rs.Primary.Attributes[\"statement_id\"]), nil\n\t}\n\treturn fmt.Sprintf(\"%s/%s\", rs.Primary.Attributes[\"function_name\"], rs.Primary.Attributes[\"statement_id\"]), nil\n}",
       "docs": "terraform import aws_lambda_permission.example my_test_lambda_function/AllowExecutionFromCloudWatch",
       "docsSource": "terraform-provider-aws/website/docs/r/lambda_permission.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/lambda/permission_test.go:827 testAccPermissionImportStateIDFunc"
+      "evidence": "terraform-provider-aws/internal/service/lambda/permission_test.go:836 testAccPermissionImportStateIDFunc"
+    },
+    "aws_lambda_resource_policy": {
+      "template": "{resource_arn}",
+      "docs": "terraform import aws_lambda_resource_policy.example arn:aws:lambda:us-east-1:123456789012:function:example",
+      "docsSource": "terraform-provider-aws/website/docs/r/lambda_resource_policy.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/lambda/resource_policy_identity_gen_test.go:56 acctest.AttrImportStateIdFunc"
     },
     "aws_lambda_runtime_management_config": {
       "template": "{function_name},{qualifier}",
       "docs": "terraform import aws_lambda_runtime_management_config.example example,$LATEST",
       "docsSource": "terraform-provider-aws/website/docs/r/lambda_runtime_management_config.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/lambda/runtime_management_config_test.go:186 testAccRuntimeManagementConfigImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/lambda/runtime_management_config_test.go:220 testAccRuntimeManagementConfigImportStateIdFunc"
+    },
+    "aws_lambdacore_network_connector": {
+      "template": "{arn}",
+      "docs": "terraform import aws_lambdacore_network_connector.example arn:aws:lambda:us-east-1:123456789012:network-connector:example",
+      "docsSource": "terraform-provider-aws/website/docs/r/lambdacore_network_connector.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/lambdacore/network_connector_identity_gen_test.go:61 acctest.AttrImportStateIdFunc"
+    },
+    "aws_lambdamicrovms_image": {
+      "template": "{arn}",
+      "docs": "terraform import aws_lambdamicrovms_image.example arn:aws:lambda:us-east-1:123456789012:microvm-image:example",
+      "docsSource": "terraform-provider-aws/website/docs/r/lambdamicrovms_image.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/lambdamicrovms/image_identity_gen_test.go:61 acctest.AttrImportStateIdFunc"
+    },
+    "aws_lambdamicrovms_microvm": {
+      "template": "{microvm_id}",
+      "docs": "terraform import aws_lambdamicrovms_microvm.example mvm-01234567-abcd-ef01-2345-6789abcdef01",
+      "docsSource": "terraform-provider-aws/website/docs/r/lambdamicrovms_microvm.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/lambdamicrovms/microvm_identity_gen_test.go:64 acctest.AttrImportStateIdFunc"
     },
     "aws_lightsail_disk_attachment": {
       "manual": true,
@@ -1060,7 +1249,7 @@
       "template": "{name}_{domain_name}_{type}_{target}",
       "docs": "terraform import aws_lightsail_domain_entry.example www,example.com,A,127.0.0.1",
       "docsSource": "terraform-provider-aws/website/docs/r/lightsail_domain_entry.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/lightsail/domain_entry_test.go:313 testAccDomainEntryStateLegacyIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/lightsail/domain_entry_test.go:322 testAccDomainEntryStateLegacyIdFunc"
     },
     "aws_lightsail_lb_attachment": {
       "manual": true,
@@ -1090,43 +1279,63 @@
       "template": "{name}",
       "docs": "terraform import aws_media_packagev2_channel_group.example example",
       "docsSource": "terraform-provider-aws/website/docs/r/media_packagev2_channel_group.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/mediapackagev2/channel_group_test.go:126 testAccChannelGroupImportStateIdFunc -> acctest.AttrImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/mediapackagev2/channel_group_test.go:135 testAccChannelGroupImportStateIdFunc -> acctest.AttrImportStateIdFunc"
     },
     "aws_memorydb_multi_region_cluster": {
       "template": "{multi_region_cluster_name}",
       "docs": "terraform import aws_memorydb_multi_region_cluster.example virxk-example",
       "docsSource": "terraform-provider-aws/website/docs/r/memorydb_multi_region_cluster.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/memorydb/multi_region_cluster_test.go:447 testAccMultiRegionClusterImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/memorydb/multi_region_cluster_test.go:456 testAccMultiRegionClusterImportStateIdFunc"
+    },
+    "aws_msk_channel": {
+      "template": "{arn},{cluster_arn}",
+      "docs": "terraform import aws_msk_channel.example arn:aws:kafka:us-west-2:123456789012:channel/example/279c0212-d057-4dba-9aa9-1c4e5a25bfc7-3/a1b2c3d4,arn:aws:kafka:us-west-2:123456789012:cluster/example/279c0212-d057-4dba-9aa9-1c4e5a25bfc7-3",
+      "docsSource": "terraform-provider-aws/website/docs/r/msk_channel.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/kafka/channel_test.go:377 testAccChannelImportStateIDFunc -> acctest.AttrsImportStateIdFunc"
     },
     "aws_msk_topic": {
       "template": "{cluster_arn},{name}",
+      "docs": "terraform import aws_msk_topic.example arn:aws:kafka:us-west-2:123456789012:cluster/example/279c0212-d057-4dba-9aa9-1c4e5a25bfc7-3,topicname",
+      "docsSource": "terraform-provider-aws/website/docs/r/msk_topic.html.markdown",
       "evidence": "terraform-provider-aws/internal/service/kafka/topic_test.go:185 testAccTopicImportStateIDFunc -> acctest.AttrsImportStateIdFunc"
     },
     "aws_nat_gateway_eip_association": {
       "template": "{nat_gateway_id},{allocation_id}",
       "docs": "terraform import aws_nat_gateway_eip_association.example nat-1234567890abcdef1,eipalloc-1234567890abcdef1",
       "docsSource": "terraform-provider-aws/website/docs/r/nat_gateway_eip_association.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_nat_gateway_eip_association_test.go:138 testAccVPCNATGatewayEIPAssociationImportStateIDFunc"
+      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_nat_gateway_eip_association_test.go:146 testAccVPCNATGatewayEIPAssociationImportStateIDFunc"
+    },
+    "aws_neptunegraph_private_graph_endpoint": {
+      "template": "{graph_identifier}_{vpc_id}",
+      "docs": "terraform import aws_neptunegraph_private_graph_endpoint.example g-12a3bcdef4_vpc-111122223333aabbc",
+      "docsSource": "terraform-provider-aws/website/docs/r/neptunegraph_private_graph_endpoint.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/neptunegraph/private_graph_endpoint_identity_gen_test.go:63 acctest.AttrsImportStateIdFunc"
     },
     "aws_network_acl_rule": {
       "manual": true,
-      "snippet": "{\n\trs, ok := s.RootModule().Resources[resourceName]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"Not found: %s\", resourceName)\n\t}\n\n\tnaclID := rs.Primary.Attributes[\"network_acl_id\"]\n\truleNumber := rs.Primary.Attributes[\"rule_number\"]\n\tprotocol := rs.Primary.Attributes[names.AttrProtocol]\n\n\tif protocol != resourceProtocol {\n\t\tprotocol = resourceProtocol\n\t}\n\tegress := rs.Primary.Attributes[\"egress\"]\n\n\treturn strings.Join([]string{naclID, ruleNumber, protocol, egress}, tfec2.NetworkACLRuleImportIDSeparator), nil\n}",
+      "snippet": "{\n\trs, ok := s.RootModule().Resources[resourceName]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"Not found: %s\", resourceName)\n\t}\n\n\tnaclID := rs.Primary.Attributes[\"network_acl_id\"]\n\truleNumber := rs.Primary.Attributes[\"rule_number\"]\n\tprotocol := rs.Primary.Attributes[names.AttrProtocol]\n\n\tif protocolNumber, err := strconv.ParseInt(protocol, 10, 64); err == nil {\n\t\tprotocol = tfec2.IanaProtocolIToA[int(protocolNumber)]\n\t}\n\n\tegress := rs.Primary.Attributes[\"egress\"]\n\n\treturn strings.Join([]string{naclID, ruleNumber, protocol, egress}, tfec2.NetworkACLRuleImportIDSeparator), nil\n}",
       "docs": "terraform import aws_network_acl_rule.example acl-7aaabd18:100:tcp:false",
       "docsSource": "terraform-provider-aws/website/docs/r/network_acl_rule.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_network_acl_rule_test.go:825 testAccNetworkACLRuleImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_network_acl_rule_test.go:870 testAccNetworkACLRuleImportStateIdentityFunc"
     },
     "aws_network_interface_permission": {
       "template": "{network_interface_permission_id}",
       "docs": "terraform import aws_network_interface_permission.example eni-perm-056ad97ce2ac377ed",
       "docsSource": "terraform-provider-aws/website/docs/r/network_interface_permission.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_network_interface_permission_test.go:141 testAccNetworkInterfacePermissionImportStateIDFunc"
+      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_network_interface_permission_test.go:150 testAccNetworkInterfacePermissionImportStateIDFunc"
     },
     "aws_network_interface_sg_attachment": {
       "manual": true,
       "snippet": "{\n\trs, ok := s.RootModule().Resources[resourceName]\n\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"not found: %s\", resourceName)\n\t}\n\n\tvar networkInterfaceID string\n\tvar securityGroupID string\n\n\tnetworkInterfaceID = rs.Primary.Attributes[names.AttrNetworkInterfaceID]\n\tsecurityGroupID = rs.Primary.Attributes[\"security_group_id\"]\n\n\treturn fmt.Sprintf(\"%s_%s\", networkInterfaceID, securityGroupID), nil\n}",
       "docs": "terraform import aws_network_interface_sg_attachment.example eni-1234567890abcdef0_sg-1234567890abcdef0",
       "docsSource": "terraform-provider-aws/website/docs/r/network_interface_sg_attachment.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_network_interface_sg_attachment_test.go:323 testAccVPCNetworkInterfaceSGAttachmentImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_network_interface_sg_attachment_test.go:332 testAccVPCNetworkInterfaceSGAttachmentImportStateIdFunc"
+    },
+    "aws_networkfirewall_container_association": {
+      "template": "{container_association_arn}",
+      "docs": "terraform import aws_networkfirewall_container_association.example arn:aws:network-firewall:us-west-2:123456789012:container-association/example",
+      "docsSource": "terraform-provider-aws/website/docs/r/networkfirewall_container_association.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/networkfirewall/container_association_identity_gen_test.go:61 acctest.AttrImportStateIdFunc"
     },
     "aws_networkfirewall_firewall_transit_gateway_attachment_accepter": {
       "template": "{transit_gateway_attachment_id}",
@@ -1180,7 +1389,7 @@
       "template": "{core_network_id},{prefix_list_arn}",
       "docs": "terraform import aws_networkmanager_prefix_list_association.example core-network-0fab1c1e1e1e1e1e1,arn:aws:ec2:us-west-2:123456789012:prefix-list/pl-0123456789abcdef0",
       "docsSource": "terraform-provider-aws/website/docs/r/networkmanager_prefix_list_association.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/networkmanager/prefix_list_association_test.go:119 acctest.AttrsImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/networkmanager/prefix_list_association_test.go:120 testAccPrefixListAssociationImportStateIdFunc -> acctest.AttrsImportStateIdFunc"
     },
     "aws_networkmanager_site": {
       "template": "{arn}",
@@ -1244,55 +1453,98 @@
       "docsSource": "terraform-provider-aws/website/docs/r/observabilityadmin_centralization_rule_for_organization.html.markdown",
       "evidence": "terraform-provider-aws/internal/service/observabilityadmin/centralization_rule_for_organization_test.go:63 acctest.AttrImportStateIdFunc"
     },
+    "aws_observabilityadmin_s3_table_integration": {
+      "template": "{arn}",
+      "docs": "terraform import aws_observabilityadmin_s3_table_integration.example arn:aws:observabilityadmin:us-east-1:123456789012:s3-table-integration/example-id",
+      "docsSource": "terraform-provider-aws/website/docs/r/observabilityadmin_s3_table_integration.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/observabilityadmin/s3_table_integration_identity_gen_test.go:72 acctest.AttrImportStateIdFunc"
+    },
     "aws_observabilityadmin_telemetry_pipeline": {
       "template": "{arn}",
       "docs": "terraform import aws_observabilityadmin_telemetry_pipeline.example arn:aws:observabilityadmin:us-west-2:1234567890:telemetry-pipeline/id",
       "docsSource": "terraform-provider-aws/website/docs/r/observabilityadmin_telemetry_pipeline.html.markdown",
       "evidence": "terraform-provider-aws/internal/service/observabilityadmin/telemetry_pipeline_identity_gen_test.go:61 acctest.AttrImportStateIdFunc"
     },
+    "aws_observabilityadmin_telemetry_rule": {
+      "template": "{rule_name}",
+      "docs": "terraform import aws_observabilityadmin_telemetry_rule.example example-telemetry-rule",
+      "docsSource": "terraform-provider-aws/website/docs/r/observabilityadmin_telemetry_rule.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/observabilityadmin/telemetry_rule_identity_gen_test.go:70 acctest.AttrImportStateIdFunc"
+    },
+    "aws_observabilityadmin_telemetry_rule_for_organization": {
+      "template": "{rule_name}",
+      "docs": "terraform import aws_observabilityadmin_telemetry_rule_for_organization.example example-org-telemetry-rule",
+      "docsSource": "terraform-provider-aws/website/docs/r/observabilityadmin_telemetry_rule_for_organization.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/observabilityadmin/telemetry_rule_for_organization_identity_gen_test.go:76 acctest.AttrImportStateIdFunc"
+    },
+    "aws_odb_iam_role_association": {
+      "manual": true,
+      "snippet": "func(state *terraform.State) (string, error) {\n\trs, ok := state.RootModule().Resources[resourceName]\n\tif !ok {\n\t\treturn \"\", errors.New(\"resource not found in state\")\n\t}\n\n\tiamRoleARN, ok := rs.Primary.Attributes[names.AttrIAMRoleARN]\n\tif !ok || iamRoleARN == \"\" {\n\t\treturn \"\", errors.New(\"missing iam_role_arn in state\")\n\t}\n\n\tresourceARN, ok := rs.Primary.Attributes[names.AttrResourceARN]\n\tif !ok || resourceARN == \"\" {\n\t\treturn \"\", errors.New(\"missing resource_arn in state\")\n\t}\n\n\treturn iamRoleARN + \",\" + resourceARN, nil\n}",
+      "docs": "terraform import aws_odb_iam_role_association.example \"arn:aws:iam::123456789012:role/odb-iam-role-example,arn:aws:odb:us-east-1:123456789012:cloud-vm-cluster/odb-example-cluster-id\"",
+      "docsSource": "terraform-provider-aws/website/docs/r/odb_iam_role_association.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/odb/iam_role_association_test.go:100 "
+    },
     "aws_opensearch_authorize_vpc_endpoint_access": {
       "template": "{domain_name},{account}",
       "docs": "terraform import aws_opensearch_authorize_vpc_endpoint_access.example authorize_vpc_endpoint_access-id-12345678,123456789012",
       "docsSource": "terraform-provider-aws/website/docs/r/opensearch_authorize_vpc_endpoint_access.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/opensearch/authorize_vpc_endpoint_access_test.go:47 acctest.AttrsImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/opensearch/authorize_vpc_endpoint_access_test.go:48 acctest.AttrsImportStateIdFunc"
     },
     "aws_opensearch_domain": {
       "manual": true,
       "snippet": "ImportStateId: rName",
       "docs": "terraform import aws_opensearch_domain.example domain_name",
       "docsSource": "terraform-provider-aws/website/docs/r/opensearch_domain.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/opensearch/domain_test.go:278 "
+      "evidence": "terraform-provider-aws/internal/service/opensearch/domain_test.go:280 "
     },
-    "aws_opensearch_vpc_endpoint_connection": {
-      "manual": true,
-      "docs": "terraform import aws_opensearch_vpc_endpoint_connection.example endpoint-id",
-      "docsSource": "terraform-provider-aws/website/docs/r/opensearch_vpc_endpoint.html.markdown",
-      "evidence": "docs-only: multi-segment or attribute-based example in terraform-provider-aws/website/docs/r/opensearch_vpc_endpoint.html.markdown, no import test found"
+    "aws_opensearch_package_association": {
+      "template": "{domain_name},{package_id}",
+      "docs": "terraform import aws_opensearch_package_association.example example-domain,F123456789",
+      "docsSource": "terraform-provider-aws/website/docs/r/opensearch_package_association.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/opensearch/package_association_test.go:42 acctest.AttrsImportStateIdFunc"
     },
     "aws_opensearchserverless_access_policy": {
       "template": "{name}/{type}",
       "docs": "terraform import aws_opensearchserverless_access_policy.example example/data",
       "docsSource": "terraform-provider-aws/website/docs/r/opensearchserverless_access_policy.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/opensearchserverless/access_policy_test.go:44 acctest.AttrsImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/opensearchserverless/access_policy_test.go:143 testAccAccessPolicyImportStateIDFunc -> acctest.AttrsImportStateIdFunc"
     },
     "aws_opensearchserverless_lifecycle_policy": {
       "template": "{name}/{type}",
       "docs": "terraform import aws_opensearchserverless_lifecycle_policy.example example/retention",
       "docsSource": "terraform-provider-aws/website/docs/r/opensearchserverless_lifecycle_policy.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/opensearchserverless/lifecycle_policy_test.go:47 acctest.AttrsImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/opensearchserverless/lifecycle_policy_test.go:131 testAccLifecyclePolicyImportStateIDFunc -> acctest.AttrsImportStateIdFunc"
     },
     "aws_opensearchserverless_security_policy": {
       "template": "{name}/{type}",
       "docs": "terraform import aws_opensearchserverless_security_policy.example example/encryption",
       "docsSource": "terraform-provider-aws/website/docs/r/opensearchserverless_security_policy.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/opensearchserverless/security_policy_test.go:46 acctest.AttrsImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/opensearchserverless/security_policy_test.go:214 testAccSecurityPolicyImportStateIDFunc -> acctest.AttrsImportStateIdFunc"
+    },
+    "aws_organizations_aws_service_access": {
+      "template": "{service_principal}",
+      "docs": "terraform import aws_organizations_aws_service_access.example tagpolicies.tag.amazonaws.com",
+      "docsSource": "terraform-provider-aws/website/docs/r/organizations_aws_service_access.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/organizations/aws_service_access_identity_gen_test.go:69 acctest.AttrImportStateIdFunc"
     },
     "aws_organizations_policy": {
       "manual": true,
       "snippet": "ImportStateId: resourceID",
       "docs": "terraform import aws_organizations_policy.example p-12345678",
       "docsSource": "terraform-provider-aws/website/docs/r/organizations_policy.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/organizations/policy_test.go:653 "
+      "evidence": "terraform-provider-aws/internal/service/organizations/policy_test.go:662 "
+    },
+    "aws_osis_pipeline": {
+      "template": "{pipeline_name}",
+      "docs": "terraform import aws_osis_pipeline.example example",
+      "docsSource": "terraform-provider-aws/website/docs/r/osis_pipeline.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/osis/pipeline_identity_gen_test.go:65 acctest.AttrImportStateIdFunc"
+    },
+    "aws_osis_resource_policy": {
+      "template": "{resource_arn}",
+      "docs": "terraform import aws_osis_resource_policy.example arn:aws:osis:us-east-1:123456789012:pipeline/example",
+      "docsSource": "terraform-provider-aws/website/docs/r/osis_resource_policy.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/osis/resource_policy_identity_gen_test.go:56 acctest.AttrImportStateIdFunc"
     },
     "aws_pinpoint_email_template": {
       "template": "{template_name}",
@@ -1300,17 +1552,56 @@
       "docsSource": "terraform-provider-aws/website/docs/r/pinpoint_email_template.html.markdown",
       "evidence": "terraform-provider-aws/internal/service/pinpoint/email_template_test.go:46 acctest.AttrImportStateIdFunc"
     },
+    "aws_pinpointsmsvoicev2_event_destination": {
+      "manual": true,
+      "snippet": "acctest.AttrsImportStateIdFunc(resourceName, flex.ResourceIdSeparator, \"configuration_set_name\", \"event_destination_name\")",
+      "docs": "terraform import aws_pinpointsmsvoicev2_event_destination.example \"example-configuration-set,example-event-destination\"",
+      "docsSource": "terraform-provider-aws/website/docs/r/pinpointsmsvoicev2_event_destination.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/pinpointsmsvoicev2/event_destination_identity_gen_test.go:62 "
+    },
+    "aws_pinpointsmsvoicev2_keyword": {
+      "manual": true,
+      "snippet": "acctest.AttrsImportStateIdFunc(resourceName, flex.ResourceIdSeparator, \"origination_identity_arn\", \"keyword\")",
+      "docs": "terraform import aws_pinpointsmsvoicev2_keyword.example \"arn:aws:sms-voice:us-east-1:123456789012:phone-number/phone-abcdef0123456789abcdef0123456789,EXAMPLE\"",
+      "docsSource": "terraform-provider-aws/website/docs/r/pinpointsmsvoicev2_keyword.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/pinpointsmsvoicev2/keyword_identity_gen_test.go:67 "
+    },
+    "aws_pinpointsmsvoicev2_resource_policy": {
+      "template": "{resource_arn}",
+      "docs": "terraform import aws_pinpointsmsvoicev2_resource_policy.example arn:aws:sms-voice:us-east-1:123456789012:phone-number/phone-abcdef0123456789abcdef0123456789",
+      "docsSource": "terraform-provider-aws/website/docs/r/pinpointsmsvoicev2_resource_policy.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/pinpointsmsvoicev2/resource_policy_identity_gen_test.go:55 acctest.AttrImportStateIdFunc"
+    },
+    "aws_pinpointsmsvoicev2_sender_id": {
+      "manual": true,
+      "snippet": "acctest.AttrsImportStateIdFunc(resourceName, flex.ResourceIdSeparator, \"sender_id\", \"iso_country_code\")",
+      "docs": "terraform import aws_pinpointsmsvoicev2_sender_id.example \"MYSENDERID,US\"",
+      "docsSource": "terraform-provider-aws/website/docs/r/pinpointsmsvoicev2_sender_id.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/pinpointsmsvoicev2/sender_id_identity_gen_test.go:67 "
+    },
+    "aws_prometheus_anomaly_detector": {
+      "template": "{id},{workspace_id}",
+      "docs": "terraform import aws_prometheus_anomaly_detector.example ad-12345678-abcd-1234-abcd-123456789012,ws-12345678-abcd-1234-abcd-123456789012",
+      "docsSource": "terraform-provider-aws/website/docs/r/prometheus_anomaly_detector.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/amp/anomaly_detector_test.go:293 testAccAnomalyDetectorImportState -> acctest.AttrsImportStateIdFunc"
+    },
     "aws_prometheus_query_logging_configuration": {
       "template": "{workspace_id}",
       "docs": "terraform import aws_prometheus_query_logging_configuration.example ws-12345678-90ab-cdef-1234-567890abcdef",
       "docsSource": "terraform-provider-aws/website/docs/r/prometheus_query_logging_configuration.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/amp/query_logging_configuration_test.go:48 acctest.AttrImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/amp/query_logging_configuration_test.go:49 acctest.AttrImportStateIdFunc"
     },
     "aws_prometheus_resource_policy": {
       "template": "{workspace_id}",
       "docs": "terraform import aws_prometheus_resource_policy.example ws-12345678-90ab-cdef-1234-567890abcdef",
       "docsSource": "terraform-provider-aws/website/docs/r/prometheus_resource_policy.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/amp/resource_policy_test.go:46 acctest.AttrImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/amp/resource_policy_test.go:47 acctest.AttrImportStateIdFunc"
+    },
+    "aws_prometheus_scraper_logging_configuration": {
+      "template": "{scraper_id}",
+      "docs": "terraform import aws_prometheus_scraper_logging_configuration.example s-b6f487db-4761-4930-9215-e9d588a7efe2",
+      "docsSource": "terraform-provider-aws/website/docs/r/prometheus_scraper_logging_configuration.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/amp/scraper_logging_configuration_identity_gen_test.go:61 acctest.AttrImportStateIdFunc"
     },
     "aws_prometheus_workspace_configuration": {
       "template": "{workspace_id}",
@@ -1329,7 +1620,7 @@
       "snippet": "{\n\treturn acctest.AttrsImportStateIdFunc(n, \",\", names.AttrAWSAccountID, \"custom_permissions_name\")(s)\n}",
       "docs": "terraform import aws_quicksight_custom_permissions.example 123456789012,example-permissions",
       "docsSource": "terraform-provider-aws/website/docs/r/quicksight_custom_permissions.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/quicksight/custom_permissions_test.go:275 testAccCustomPermissionsImportStateID"
+      "evidence": "terraform-provider-aws/internal/service/quicksight/custom_permissions_test.go:283 testAccCustomPermissionsImportStateID"
     },
     "aws_quicksight_ip_restriction": {
       "template": "{aws_account_id}",
@@ -1348,21 +1639,21 @@
       "snippet": "{\n\treturn acctest.AttrsImportStateIdFunc(n, \",\", names.AttrAWSAccountID, names.AttrNamespace, names.AttrRole)(s)\n}",
       "docs": "terraform import aws_quicksight_role_custom_permission.example 012345678901,default,READER",
       "docsSource": "terraform-provider-aws/website/docs/r/quicksight_role_custom_permission.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/quicksight/role_custom_permission_test.go:202 testAccRoleCustomPermissionImportStateID"
+      "evidence": "terraform-provider-aws/internal/service/quicksight/role_custom_permission_test.go:210 testAccRoleCustomPermissionImportStateID"
     },
     "aws_quicksight_role_membership": {
       "manual": true,
       "snippet": "{\n\treturn acctest.AttrsImportStateIdFunc(n, \",\", names.AttrAWSAccountID, names.AttrNamespace, names.AttrRole, \"member_name\")(s)\n}",
       "docs": "terraform import aws_quicksight_role_membership.example 012345678901,default,READER,example-group",
       "docsSource": "terraform-provider-aws/website/docs/r/quicksight_role_membership.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/quicksight/role_membership_test.go:170 testAccRoleMembershipImportStateIDFunc"
+      "evidence": "terraform-provider-aws/internal/service/quicksight/role_membership_test.go:178 testAccRoleMembershipImportStateIDFunc"
     },
     "aws_quicksight_user_custom_permission": {
       "manual": true,
       "snippet": "{\n\treturn acctest.AttrsImportStateIdFunc(n, \",\", names.AttrAWSAccountID, names.AttrNamespace, names.AttrUserName)(s)\n}",
       "docs": "terraform import aws_quicksight_user_custom_permission.example 012345678901,default,user1",
       "docsSource": "terraform-provider-aws/website/docs/r/quicksight_user_custom_permission.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/quicksight/user_custom_permission_test.go:201 testAccUserCustomPermissionImportStateID"
+      "evidence": "terraform-provider-aws/internal/service/quicksight/user_custom_permission_test.go:209 testAccUserCustomPermissionImportStateID"
     },
     "aws_ram_permission": {
       "template": "{arn}",
@@ -1392,13 +1683,13 @@
       "template": "{db_shard_group_identifier}",
       "docs": "terraform import aws_rds_shard_group.example example-shard-group",
       "docsSource": "terraform-provider-aws/website/docs/r/rds_shard_group.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/rds/shard_group_test.go:281 testAccShardGroupImportStateIDFunc"
+      "evidence": "terraform-provider-aws/internal/service/rds/shard_group_test.go:289 testAccShardGroupImportStateIDFunc"
     },
     "aws_redshift_idc_application": {
       "template": "{redshift_idc_application_arn}",
       "docs": "terraform import aws_redshift_idc_application.example example",
       "docsSource": "terraform-provider-aws/website/docs/r/redshift_idc_application.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/redshift/idc_application_test.go:45 acctest.AttrImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/redshift/idc_application_test.go:46 acctest.AttrImportStateIdFunc"
     },
     "aws_redshift_integration": {
       "template": "{arn}",
@@ -1406,11 +1697,18 @@
       "docsSource": "terraform-provider-aws/website/docs/r/redshift_integration.html.markdown",
       "evidence": "terraform-provider-aws/internal/service/redshift/integration_identity_gen_test.go:59 acctest.AttrImportStateIdFunc"
     },
+    "aws_redshift_namespace_registration": {
+      "manual": true,
+      "snippet": "{\n\trs, ok := s.RootModule().Resources[resourceName]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"Not found: %s\", resourceName)\n\t}\n\n\tswitch rs.Primary.Attributes[\"namespace_type\"] {\n\tcase \"serverless\":\n\t\treturn fmt.Sprintf(\"%s,%s,%s\", rs.Primary.Attributes[\"consumer_identifier\"], rs.Primary.Attributes[\"serverless_namespace_identifier\"], rs.Primary.Attributes[\"serverless_workgroup_identifier\"]), nil\n\tcase \"provisioned\":\n\t\treturn fmt.Sprintf(\"%s,%s\", rs.Primary.Attributes[\"consumer_identifier\"], rs.Primary.Attributes[\"provisioned_cluster_identifier\"]), nil\n\tdefault:\n\t\treturn \"\", fmt.Errorf(\"unexpected namespace_type: %q\", rs.Primary.Attributes[\"namespace_type\"])\n\t}\n}",
+      "docs": "terraform import aws_redshift_namespace_registration.example DataCatalog/123456789012,example-namespace,example-workgroup",
+      "docsSource": "terraform-provider-aws/website/docs/r/redshift_namespace_registration.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/redshift/namespace_registration_test.go:139 testAccNamespaceRegistrationImportStateIdFunc"
+    },
     "aws_rekognition_stream_processor": {
       "template": "{name}",
       "docs": "terraform import aws_rekognition_stream_processor.example my-stream",
       "docsSource": "terraform-provider-aws/website/docs/r/rekognition_stream_processor.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/rekognition/stream_processor_test.go:59 acctest.AttrImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/rekognition/stream_processor_identity_gen_test.go:62 acctest.AttrImportStateIdFunc"
     },
     "aws_resiliencehub_resiliency_policy": {
       "template": "{arn}",
@@ -1418,24 +1716,66 @@
       "docsSource": "terraform-provider-aws/website/docs/r/resiliencehub_resiliency_policy.html.markdown",
       "evidence": "terraform-provider-aws/internal/service/resiliencehub/resiliency_policy_tags_gen_test.go:70 acctest.AttrImportStateIdFunc"
     },
+    "aws_resiliencehubv2_assertion": {
+      "template": "{service_arn},{assertion_id}",
+      "docs": "terraform import aws_resiliencehubv2_assertion.example arn:aws:resiliencehub:us-west-2:123456789012:service/example-service:abc123,12345678-1234-1234-1234-123456789012",
+      "docsSource": "terraform-provider-aws/website/docs/r/resiliencehubv2_assertion.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/resiliencehubv2/assertion_test.go:25 testAccCheckAssertionImportStateIDFunc -> acctest.AttrsImportStateIdFunc"
+    },
+    "aws_resiliencehubv2_input_source": {
+      "template": "{service_arn},{input_source_id}",
+      "docs": "terraform import aws_resiliencehubv2_input_source.example arn:aws:resiliencehub:us-west-2:123456789012:service/example-service:abc123,12345678-1234-1234-1234-123456789012",
+      "docsSource": "terraform-provider-aws/website/docs/r/resiliencehubv2_input_source.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/resiliencehubv2/input_source_test.go:27 testAccCheckInputSourceImportStateIDFunc -> acctest.AttrsImportStateIdFunc"
+    },
+    "aws_resiliencehubv2_policy": {
+      "template": "{arn}",
+      "docs": "terraform import aws_resiliencehubv2_policy.example arn:aws:resiliencehub:us-west-2:123456789012:policy/example-policy:abc123",
+      "docsSource": "terraform-provider-aws/website/docs/r/resiliencehubv2_policy.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/resiliencehubv2/policy_identity_gen_test.go:58 acctest.AttrImportStateIdFunc"
+    },
+    "aws_resiliencehubv2_service": {
+      "template": "{arn}",
+      "docs": "terraform import aws_resiliencehubv2_service.example arn:aws:resiliencehub:us-west-2:123456789012:service/example-service:abc123",
+      "docsSource": "terraform-provider-aws/website/docs/r/resiliencehubv2_service.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/resiliencehubv2/service_identity_gen_test.go:58 acctest.AttrImportStateIdFunc"
+    },
+    "aws_resiliencehubv2_service_function": {
+      "template": "{service_arn},{service_function_id}",
+      "docs": "terraform import aws_resiliencehubv2_service_function.example arn:aws:resiliencehub:us-west-2:123456789012:service/example-service:abc123,12345678-1234-1234-1234-123456789012",
+      "docsSource": "terraform-provider-aws/website/docs/r/resiliencehubv2_service_function.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/resiliencehubv2/service_function_test.go:26 testAccCheckServiceFunctionImportStateIDFunc -> acctest.AttrsImportStateIdFunc"
+    },
+    "aws_resiliencehubv2_system": {
+      "template": "{arn}",
+      "docs": "terraform import aws_resiliencehubv2_system.example arn:aws:resiliencehub:us-west-2:123456789012:system/example-system:abc123",
+      "docsSource": "terraform-provider-aws/website/docs/r/resiliencehubv2_system.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/resiliencehubv2/system_identity_gen_test.go:58 acctest.AttrImportStateIdFunc"
+    },
+    "aws_resiliencehubv2_user_journey": {
+      "template": "{system_arn},{user_journey_id}",
+      "docs": "terraform import aws_resiliencehubv2_user_journey.example arn:aws:resiliencehub:us-west-2:123456789012:system/example-system:abc123,12345678-1234-1234-1234-123456789012",
+      "docsSource": "terraform-provider-aws/website/docs/r/resiliencehubv2_user_journey.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/resiliencehubv2/user_journey_test.go:25 testAccCheckUserJourneyImportStateIDFunc -> acctest.AttrsImportStateIdFunc"
+    },
     "aws_route": {
       "manual": true,
       "snippet": "{\n\trs, ok := s.RootModule().Resources[resourceName]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"not found: %s\", resourceName)\n\t}\n\n\tdestination := rs.Primary.Attributes[\"destination_cidr_block\"]\n\tif v, ok := rs.Primary.Attributes[\"destination_ipv6_cidr_block\"]; ok && v != \"\" {\n\t\tdestination = v\n\t}\n\tif v, ok := rs.Primary.Attributes[\"destination_prefix_list_id\"]; ok && v != \"\" {\n\t\tdestination = v\n\t}\n\n\treturn fmt.Sprintf(\"%s_%s\", rs.Primary.Attributes[\"route_table_id\"], destination), nil\n}",
       "docs": "terraform import aws_route.example rtb-656C65616E6F72_10.42.0.0/16",
       "docsSource": "terraform-provider-aws/website/docs/r/route.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_route_test.go:2661 testAccRouteImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_route_test.go:2677 testAccRouteImportStateIdFunc"
     },
     "aws_route53_records_exclusive": {
       "template": "{zone_id}",
       "docs": "terraform import aws_route53_records_exclusive.example ABCD1234",
       "docsSource": "terraform-provider-aws/website/docs/r/route53_records_exclusive.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/route53/records_exclusive_test.go:634 testAccRecordsExclusiveImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/route53/records_exclusive_test.go:642 testAccRecordsExclusiveImportStateIdFunc"
     },
     "aws_route53_traffic_policy": {
       "template": "{id}/{version}",
       "docs": "terraform import aws_route53_traffic_policy.example 01a52019-d16f-422a-ae72-c306d2b6df7e/1",
       "docsSource": "terraform-provider-aws/website/docs/r/route53_traffic_policy.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/route53/traffic_policy_test.go:162 testAccTrafficPolicyImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/route53/traffic_policy_test.go:171 testAccTrafficPolicyImportStateIdFunc"
     },
     "aws_route53_zone": {
       "manual": true,
@@ -1448,20 +1788,20 @@
       "template": "{domain_name},{dnssec_key_id}",
       "docs": "terraform import aws_route53domains_delegation_signer_record.example example.com,40DE3534F5324DBDAC598ACEDB5B1E26A5368732D9C791D1347E4FBDDF6FC343",
       "docsSource": "terraform-provider-aws/website/docs/r/route53domains_delegation_signer_record.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/route53domains/delegation_signer_record_test.go:113 testAccDelegationSignerAssociationImportStateIDFunc"
+      "evidence": "terraform-provider-aws/internal/service/route53domains/delegation_signer_record_test.go:122 testAccDelegationSignerAssociationImportStateIDFunc"
     },
     "aws_route53domains_domain": {
       "template": "{domain_name}",
       "docs": "terraform import aws_route53domains_domain.example example.com",
       "docsSource": "terraform-provider-aws/website/docs/r/route53domains_domain.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/route53domains/domain_test.go:205 testAccDomainImportStateIDFunc"
+      "evidence": "terraform-provider-aws/internal/service/route53domains/domain_test.go:213 testAccDomainImportStateIDFunc"
     },
     "aws_route_table_association": {
       "manual": true,
       "snippet": "{\n\trs, ok := s.RootModule().Resources[resourceName]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"not found: %s\", resourceName)\n\t}\n\tvar target string\n\tif rs.Primary.Attributes[names.AttrSubnetID] != \"\" {\n\t\ttarget = rs.Primary.Attributes[names.AttrSubnetID]\n\t} else if rs.Primary.Attributes[\"gateway_id\"] != \"\" {\n\t\ttarget = rs.Primary.Attributes[\"gateway_id\"]\n\t}\n\treturn fmt.Sprintf(\"%s/%s\", target, rs.Primary.Attributes[\"route_table_id\"]), nil\n}",
       "docs": "terraform import aws_route_table_association.example subnet-6777656e646f6c796e/rtb-656c65616e6f72",
       "docsSource": "terraform-provider-aws/website/docs/r/route_table_association.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_route_table_association_test.go:257 testAccRouteTabAssocImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_route_table_association_test.go:290 testAccRouteTabAssocImportStateIdFunc"
     },
     "aws_s3_bucket_abac": {
       "template": "{bucket}",
@@ -1491,44 +1831,62 @@
       "template": "s3://{bucket}/{key}",
       "docs": "terraform import aws_s3_object.example some-bucket-name/some/key.txt",
       "docsSource": "terraform-provider-aws/website/docs/r/s3_object.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/s3/object_test.go:2278 testAccObjectImportByS3URL"
+      "evidence": "terraform-provider-aws/internal/service/s3/object_test.go:2302 testAccObjectImportByS3URL"
     },
     "aws_s3control_access_point_policy": {
       "template": "{access_point_arn}",
       "docs": "terraform import aws_s3control_access_point_policy.example arn:aws:s3:us-west-2:123456789012:accesspoint/example",
       "docsSource": "terraform-provider-aws/website/docs/r/s3control_access_point_policy.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/s3control/access_point_policy_test.go:39 acctest.AttrImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/s3control/access_point_policy_test.go:40 acctest.AttrImportStateIdFunc"
     },
     "aws_s3control_directory_bucket_access_point_scope": {
       "template": "{name},{account_id}",
       "docs": "terraform import aws_s3control_directory_bucket_access_point_scope.example example--zoneid--xa-s3,123456789012",
       "docsSource": "terraform-provider-aws/website/docs/r/s3control_directory_bucket_access_point_scope.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/s3control/directory_bucket_access_point_scope_test.go:133 directoryBucketAccessPointScopeStateImportFunc"
+      "evidence": "terraform-provider-aws/internal/service/s3control/directory_bucket_access_point_scope_test.go:142 directoryBucketAccessPointScopeStateImportFunc"
+    },
+    "aws_s3control_multi_region_access_point_routes": {
+      "template": "{mrap}",
+      "docs": "terraform import aws_s3control_multi_region_access_point_routes.example arn:aws:s3::0123456789012:accesspoint/example",
+      "docsSource": "terraform-provider-aws/website/docs/r/s3control_multi_region_access_point_routes.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/s3control/multi_region_access_point_routes_identity_gen_test.go:63 acctest.AttrImportStateIdFunc"
+    },
+    "aws_s3files_file_system_policy": {
+      "template": "{file_system_id}",
+      "docs": "terraform import aws_s3files_file_system_policy.example fs-1234567890abcdef0",
+      "docsSource": "terraform-provider-aws/website/docs/r/s3files_file_system_policy.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/s3files/file_system_policy_identity_gen_test.go:59 acctest.AttrImportStateIdFunc"
+    },
+    "aws_s3files_synchronization_configuration": {
+      "template": "{file_system_id}",
+      "docs": "terraform import aws_s3files_synchronization_configuration.example fs-1234567890abcdef0",
+      "docsSource": "terraform-provider-aws/website/docs/r/s3files_synchronization_configuration.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/s3files/synchronization_configuration_identity_gen_test.go:61 acctest.AttrImportStateIdFunc"
     },
     "aws_s3outposts_endpoint": {
       "template": "{id},{security_group_id},{subnet_id}",
       "docs": "terraform import aws_s3outposts_endpoint.example arn:aws:s3-outposts:us-east-1:123456789012:outpost/op-12345678/endpoint/0123456789abcdef,sg-12345678,subnet-12345678",
       "docsSource": "terraform-provider-aws/website/docs/r/s3outposts_endpoint.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/s3outposts/endpoint_test.go:197 testAccEndpointImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/s3outposts/endpoint_test.go:206 testAccEndpointImportStateIdFunc"
     },
     "aws_s3tables_namespace": {
       "template": "{table_bucket_arn};{namespace}",
       "docs": "terraform import aws_s3tables_namespace.example 'arn:aws:s3tables:us-west-2:123456789012:bucket/example-bucket;example-namespace'",
       "docsSource": "terraform-provider-aws/website/docs/r/s3tables_namespace.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/s3tables/namespace_test.go:53 acctest.AttrsImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/s3tables/namespace_test.go:54 acctest.AttrsImportStateIdFunc"
     },
     "aws_s3tables_table": {
       "manual": true,
       "snippet": "{\n\trs, ok := s.RootModule().Resources[resourceName]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"not found: %s\", resourceName)\n\t}\n\n\tidentifier := tfs3tables.TableIdentifier{\n\t\tTableBucketARN:\trs.Primary.Attributes[\"table_bucket_arn\"],\n\t\tNamespace:\trs.Primary.Attributes[names.AttrNamespace],\n\t\tName:\t\trs.Primary.Attributes[names.AttrName],\n\t}\n\n\treturn identifier.String(), nil\n}",
       "docs": "terraform import aws_s3tables_table.example 'arn:aws:s3tables:us-west-2:123456789012:bucket/example-bucket;example-namespace;example-table'",
       "docsSource": "terraform-provider-aws/website/docs/r/s3tables_table.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/s3tables/table_test.go:646 testAccTableImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/s3tables/table_test.go:686 testAccTableImportStateIdFunc"
     },
     "aws_s3tables_table_bucket": {
       "template": "{arn}",
       "docs": "terraform import aws_s3tables_table_bucket.example arn:aws:s3tables:us-west-2:123456789012:bucket/example-bucket",
       "docsSource": "terraform-provider-aws/website/docs/r/s3tables_table_bucket.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/s3tables/table_bucket_test.go:415 testAccTableBucketImportStateIdFunc -> acctest.AttrImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/s3tables/table_bucket_test.go:424 testAccTableBucketImportStateIdFunc -> acctest.AttrImportStateIdFunc"
     },
     "aws_s3tables_table_bucket_policy": {
       "template": "{table_bucket_arn}",
@@ -1547,7 +1905,7 @@
       "snippet": "{\n\trs, ok := s.RootModule().Resources[resourceName]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"not found: %s\", resourceName)\n\t}\n\n\tidentifier := tfs3tables.TableIdentifier{\n\t\tTableBucketARN:\trs.Primary.Attributes[\"table_bucket_arn\"],\n\t\tNamespace:\trs.Primary.Attributes[names.AttrNamespace],\n\t\tName:\t\trs.Primary.Attributes[names.AttrName],\n\t}\n\n\treturn identifier.String(), nil\n}",
       "docs": "terraform import aws_s3tables_table_policy.example 'arn:aws:s3tables:us-west-2:123456789012:bucket/example-bucket;example-namespace;example-table'",
       "docsSource": "terraform-provider-aws/website/docs/r/s3tables_table_policy.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/s3tables/table_policy_test.go:146 testAccTablePolicyImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/s3tables/table_policy_test.go:155 testAccTablePolicyImportStateIdFunc"
     },
     "aws_s3tables_table_replication": {
       "template": "{table_arn}",
@@ -1579,6 +1937,18 @@
       "docsSource": "terraform-provider-aws/website/docs/r/sagemaker_algorithm.html.markdown",
       "evidence": "terraform-provider-aws/internal/service/sagemaker/algorithm_identity_gen_test.go:61 acctest.AttrImportStateIdFunc"
     },
+    "aws_sagemaker_hub_content_reference": {
+      "template": "{hub_name},{hub_content_name}",
+      "docs": "terraform import aws_sagemaker_hub_content_reference.example my-hub,my-content-reference",
+      "docsSource": "terraform-provider-aws/website/docs/r/sagemaker_hub_content_reference.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/sagemaker/hub_content_reference_test.go:254 testAccHubContentReferenceImportStateIDFunc -> acctest.AttrsImportStateIdFunc"
+    },
+    "aws_sagemaker_hyper_parameter_tuning_job": {
+      "template": "{name}",
+      "docs": "terraform import aws_sagemaker_hyper_parameter_tuning_job.example example-hyper-parameter-tuning-job",
+      "docsSource": "terraform-provider-aws/website/docs/r/sagemaker_hyper_parameter_tuning_job.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/sagemaker/hyper_parameter_tuning_job_identity_gen_test.go:61 acctest.AttrImportStateIdFunc"
+    },
     "aws_sagemaker_labeling_job": {
       "template": "{labeling_job_name}",
       "docs": "terraform import aws_sagemaker_labeling_job.example my-labeling-job",
@@ -1603,6 +1973,12 @@
       "docsSource": "terraform-provider-aws/website/docs/r/sagemaker_model_card_export_job.html.markdown",
       "evidence": "terraform-provider-aws/internal/service/sagemaker/model_card_export_job_test.go:51 acctest.AttrImportStateIdFunc"
     },
+    "aws_sagemaker_training_job": {
+      "template": "{training_job_name}",
+      "docs": "terraform import aws_sagemaker_training_job.example my-training-job",
+      "docsSource": "terraform-provider-aws/website/docs/r/sagemaker_training_job.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/sagemaker/training_job_identity_gen_test.go:72 acctest.AttrImportStateIdFunc"
+    },
     "aws_savingsplans_savings_plan": {
       "manual": true,
       "docs": "terraform import aws_savingsplans_savings_plan.example sp-12345678901234567",
@@ -1613,20 +1989,56 @@
       "template": "{secret_id}|{version_id}",
       "docs": "terraform import aws_secretsmanager_secret_version.example 'arn:aws:secretsmanager:us-east-1:123456789012:secret:example-123456|xxxxx-xxxxxxx-xxxxxxx-xxxxx'",
       "docsSource": "terraform-provider-aws/website/docs/r/secretsmanager_secret_version.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/secretsmanager/secret_version_test.go:472 testAccSecretVersionImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/secretsmanager/secret_version_test.go:1210 testAccSecretVersionImportStateIdFunc"
     },
     "aws_security_group_rule": {
       "manual": true,
       "snippet": "{\n\trs, ok := s.RootModule().Resources[resourceName]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"not found: %s\", resourceName)\n\t}\n\n\tsgID := rs.Primary.Attributes[\"security_group_id\"]\n\truleType := rs.Primary.Attributes[names.AttrType]\n\tprotocol := rs.Primary.Attributes[names.AttrProtocol]\n\tfromPort := rs.Primary.Attributes[\"from_port\"]\n\ttoPort := rs.Primary.Attributes[\"to_port\"]\n\n\tcidrs, err := testAccSecurityGroupRuleImportGetAttrs(rs.Primary.Attributes, \"cidr_blocks\")\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\n\tipv6CIDRs, err := testAccSecurityGroupRuleImportGetAttrs(rs.Primary.Attributes, \"ipv6_cidr_blocks\")\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\n\tprefixes, err := testAccSecurityGroupRuleImportGetAttrs(rs.Primary.Attributes, \"prefix_list_ids\")\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\n\tvar parts []string\n\tparts = append(parts, sgID)\n\tparts = append(parts, ruleType)\n\tparts = append(parts, protocol)\n\tparts = append(parts, fromPort)\n\tparts = append(parts, toPort)\n\tparts = append(parts, *cidrs...)\n\tparts = append(parts, *ipv6CIDRs...)\n\tparts = append(parts, *prefixes...)\n\n\tif sgSource, ok := rs.Primary.Attributes[\"source_security_group_id\"]; ok {\n\t\tparts = append(parts, sgSource)\n\t}\n\n\tif rs.Primary.Attributes[\"self\"] == acctest.CtTrue {\n\t\tparts = append(parts, \"self\")\n\t}\n\n\treturn strings.Join(parts, \"_\"), nil\n}",
       "docs": "terraform import aws_security_group_rule.example sg-6e616f6d69_ingress_tcp_8000_8000_10.0.3.0/24",
       "docsSource": "terraform-provider-aws/website/docs/r/security_group_rule.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_security_group_rule_test.go:1585 testAccSecurityGroupRuleImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_security_group_rule_test.go:1594 testAccSecurityGroupRuleImportStateIdFunc"
+    },
+    "aws_securityhub_account_v2": {
+      "template": "{arn}",
+      "docs": "terraform import aws_securityhub_account_v2.example arn:aws:securityhub:us-west-2:123456789012:hubv2/25054a12-7926-47bc-924f-368e03d43e94",
+      "docsSource": "terraform-provider-aws/website/docs/r/securityhub_account_v2.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/securityhub/account_v2_identity_gen_test.go:66 acctest.AttrImportStateIdFunc"
+    },
+    "aws_securityhub_aggregator_v2": {
+      "template": "{arn}",
+      "docs": "terraform import aws_securityhub_aggregator_v2.example arn:aws:securityhub:us-east-1:123456789012:aggregator/v2/example",
+      "docsSource": "terraform-provider-aws/website/docs/r/securityhub_aggregator_v2.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/securityhub/aggregator_v2_identity_gen_test.go:66 acctest.AttrImportStateIdFunc"
+    },
+    "aws_securityhub_automation_rule_v2": {
+      "template": "{arn}",
+      "docs": "terraform import aws_securityhub_automation_rule_v2.example arn:aws:securityhub:us-east-1:123456789012:automation-rulev2/3efb04f4-e19e-4458-a698-62364ab7b1a7",
+      "docsSource": "terraform-provider-aws/website/docs/r/securityhub_automation_rule_v2.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/securityhub/automation_rule_v2_identity_gen_test.go:69 acctest.AttrImportStateIdFunc"
+    },
+    "aws_securityhub_connector_v2": {
+      "template": "{connector_id}",
+      "docs": "terraform import aws_securityhub_connector_v2.example 8ecf045f-5a95-c24d-6769-5d52f6929563",
+      "docsSource": "terraform-provider-aws/website/docs/r/securityhub_connector_v2.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/securityhub/connector_v2_identity_gen_test.go:72 acctest.AttrImportStateIdFunc"
+    },
+    "aws_securityhub_feature_v2": {
+      "template": "{feature_name}",
+      "docs": "terraform import aws_securityhub_feature_v2.example NETWORK_SCANNING",
+      "docsSource": "terraform-provider-aws/website/docs/r/securityhub_feature_v2.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/securityhub/feature_v2_identity_gen_test.go:69 acctest.AttrImportStateIdFunc"
+    },
+    "aws_securityhub_standards_control_association": {
+      "template": "{security_control_id},{standards_arn}",
+      "docs": "terraform import aws_securityhub_standards_control_association.example IAM.1,arn:aws:securityhub:us-east-1:123456789012:control/cis-aws-foundations-benchmark/v/1.2.0/1.10",
+      "docsSource": "terraform-provider-aws/website/docs/r/securityhub_standards_control_association.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/securityhub/standards_control_association_test.go:74 testAccCheckStandardsControlAssociationImportStateIDFunc -> acctest.AttrsImportStateIdFunc"
     },
     "aws_serverlessapplicationrepository_cloudformation_stack": {
       "template": "{name}",
       "docs": "terraform import aws_serverlessapplicationrepository_cloudformation_stack.example serverlessrepo-postgres-rotator",
       "docsSource": "terraform-provider-aws/website/docs/r/serverlessapplicationrepository_cloudformation_stack.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/serverlessrepo/cloudformation_stack_test.go:71 acctest.AttrImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/serverlessrepo/cloudformation_stack_test.go:150 acctest.AttrImportStateIdFunc"
     },
     "aws_service_discovery_instance": {
       "template": "{service_id}/{instance_id}",
@@ -1638,13 +2050,13 @@
       "template": "{id}:{vpc}",
       "docs": "terraform import aws_service_discovery_private_dns_namespace.example 0123456789:vpc-123345",
       "docsSource": "terraform-provider-aws/website/docs/r/service_discovery_private_dns_namespace.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/servicediscovery/private_dns_namespace_test.go:349 testAccPrivateDNSNamespaceImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/servicediscovery/private_dns_namespace_test.go:358 testAccPrivateDNSNamespaceImportStateIdFunc"
     },
     "aws_servicecatalogappregistry_attribute_group_association": {
       "template": "{application_id},{attribute_group_id}",
       "docs": "terraform import aws_servicecatalogappregistry_attribute_group_association.example 12456778723424sdffsdfsdq34,12234t3564dsfsdf34asff4ww3",
       "docsSource": "terraform-provider-aws/website/docs/r/servicecatalogappregistry_attribute_group_association.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/servicecatalogappregistry/attribute_group_association_test.go:138 testAccCheckAttributeGroupAssociationImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/servicecatalogappregistry/attribute_group_association_test.go:147 testAccCheckAttributeGroupAssociationImportStateIdFunc"
     },
     "aws_servicequotas_service_quota": {
       "manual": true,
@@ -1663,13 +2075,13 @@
       "snippet": "ImportStateId: fmt.Sprintf(\"%s/%s\", rName1, rName2)",
       "docs": "terraform import aws_ses_event_destination.example some-configuration-set-test/event-destination-sns",
       "docsSource": "terraform-provider-aws/website/docs/r/ses_event_destination.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/ses/event_destination_test.go:71 "
+      "evidence": "terraform-provider-aws/internal/service/ses/event_destination_test.go:72 "
     },
     "aws_ses_receipt_rule": {
       "template": "{rule_set_name}:{name}",
       "docs": "terraform import aws_ses_receipt_rule.example my_rule_set:my_rule",
       "docsSource": "terraform-provider-aws/website/docs/r/ses_receipt_rule.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/ses/receipt_rule_test.go:465 testAccReceiptRuleImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/ses/receipt_rule_test.go:481 testAccReceiptRuleImportStateIdFunc"
     },
     "aws_sesv2_tenant": {
       "template": "{tenant_name}",
@@ -1693,38 +2105,38 @@
       "template": "{profile_name}/{statement_id}",
       "docs": "terraform import aws_signer_signing_profile_permission.example prod_profile_DdW3Mk1foYL88fajut4mTVFGpuwfd4ACO6ANL0D1uIj7lrn8adK/ProdAccountStartSigningJobStatementId",
       "docsSource": "terraform-provider-aws/website/docs/r/signer_signing_profile_permission.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/signer/signing_profile_permission_test.go:246 testAccSigningProfilePermissionImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/signer/signing_profile_permission_test.go:255 testAccSigningProfilePermissionImportStateIdFunc"
     },
     "aws_ssm_default_patch_baseline": {
       "template": "{baseline_id}",
       "docs": "terraform import aws_ssm_default_patch_baseline.example pb-1234567890abcdef1",
       "docsSource": "terraform-provider-aws/website/docs/r/ssm_default_patch_baseline.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/ssm/default_patch_baseline_test.go:55 acctest.AttrImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/ssm/default_patch_baseline_test.go:56 acctest.AttrImportStateIdFunc"
     },
     "aws_ssm_maintenance_window_target": {
       "template": "{window_id}/{id}",
       "docs": "terraform import aws_ssm_maintenance_window_target.example mw-0c50858d01EXAMPLE/23639a0b-ddbc-4bca-9e72-78d96EXAMPLE",
       "docsSource": "terraform-provider-aws/website/docs/r/ssm_maintenance_window_target.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/ssm/maintenance_window_target_test.go:450 testAccMaintenanceWindowTargetImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/ssm/maintenance_window_target_test.go:467 testAccMaintenanceWindowTargetImportStateIdFunc"
     },
     "aws_ssm_maintenance_window_task": {
       "template": "{window_id}/{id}",
       "docs": "terraform import aws_ssm_maintenance_window_task.example <window_id>/<window_task_id>",
       "docsSource": "terraform-provider-aws/website/docs/r/ssm_maintenance_window_task.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/ssm/maintenance_window_task_test.go:535 testAccMaintenanceWindowTaskImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/ssm/maintenance_window_task_test.go:544 testAccMaintenanceWindowTaskImportStateIdFunc"
     },
     "aws_ssm_parameter": {
       "manual": true,
       "snippet": "ImportStateId: name + \":1\"",
       "docs": "terraform import aws_ssm_parameter.example /my_path/my_paramname",
       "docsSource": "terraform-provider-aws/website/docs/r/ssm_parameter.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/ssm/parameter_test.go:67 "
+      "evidence": "terraform-provider-aws/internal/service/ssm/parameter_test.go:71 "
     },
     "aws_ssmquicksetup_configuration_manager": {
       "template": "{manager_arn}",
       "docs": "terraform import aws_ssmquicksetup_configuration_manager.example arn:aws:ssm-quicksetup:us-east-1:012345678901:configuration-manager/abcd-1234",
       "docsSource": "terraform-provider-aws/website/docs/r/ssmquicksetup_configuration_manager.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/ssmquicksetup/configuration_manager_test.go:52 acctest.AttrImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/ssmquicksetup/configuration_manager_test.go:53 acctest.AttrImportStateIdFunc"
     },
     "aws_ssoadmin_customer_managed_policy_attachments_exclusive": {
       "manual": true,
@@ -1740,11 +2152,18 @@
       "docsSource": "terraform-provider-aws/website/docs/r/ssoadmin_managed_policy_attachments_exclusive.html.markdown",
       "evidence": "terraform-provider-aws/internal/service/ssoadmin/managed_policy_attachments_exclusive_identity_gen_test.go:65 "
     },
+    "aws_ssoadmin_region": {
+      "manual": true,
+      "snippet": "acctest.AttrsImportStateIdFunc(resourceName, flex.ResourceIdSeparator, \"instance_arn\", \"region_name\")",
+      "docs": "terraform import aws_ssoadmin_region.example arn:aws:sso:::instance/ssoins-1234567890abcdef,us-east-1",
+      "docsSource": "terraform-provider-aws/website/docs/r/ssoadmin_region.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/ssoadmin/region_identity_gen_test.go:72 "
+    },
     "aws_timestreamquery_scheduled_query": {
       "template": "{arn}",
       "docs": "terraform import aws_timestreamquery_scheduled_query.example arn:aws:timestream:us-west-2:012345678901:scheduled-query/tf-acc-test-7774188528604787105-e13659544fe66c8d",
       "docsSource": "terraform-provider-aws/website/docs/r/timestreamquery_scheduled_query.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/timestreamquery/scheduled_query_test.go:170 testAccScheduledQueryImportStateIDFunc"
+      "evidence": "terraform-provider-aws/internal/service/timestreamquery/scheduled_query_test.go:179 testAccScheduledQueryImportStateIDFunc"
     },
     "aws_transfer_host_key": {
       "template": "{server_id},{host_key_id}",
@@ -1764,61 +2183,67 @@
       "docsSource": "terraform-provider-aws/website/docs/r/transfer_web_app_customization.html.markdown",
       "evidence": "terraform-provider-aws/internal/service/transfer/web_app_customization_test.go:53 acctest.AttrImportStateIdFunc"
     },
+    "aws_uxc_account_customizations": {
+      "template": "{account_color}",
+      "docs": "terraform import aws_uxc_account_customizations.example 123456789012",
+      "docsSource": "terraform-provider-aws/website/docs/r/uxc_account_customizations.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/uxc/account_customizations_identity_gen_test.go:61 acctest.AttrImportStateIdFunc"
+    },
     "aws_verifiedpermissions_identity_source": {
       "template": "{policy_store_id}:{id}",
       "docs": "terraform import aws_verifiedpermissions_identity_source.example policy-store-id-12345678:identity-source-id-12345678",
       "docsSource": "terraform-provider-aws/website/docs/r/verifiedpermissions_identity_source.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/verifiedpermissions/identity_source_test.go:483 testAccIdentitySourceImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/verifiedpermissions/identity_source_test.go:491 testAccIdentitySourceImportStateIdFunc"
     },
     "aws_volume_attachment": {
       "template": "{device_name}:{volume_id}:{instance_id}",
       "docs": "terraform import aws_volume_attachment.example /dev/sdh:vol-049df61146c4d7901:i-12345678",
       "docsSource": "terraform-provider-aws/website/docs/r/volume_attachment.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/ec2/ebs_volume_attachment_test.go:405 testAccVolumeAttachmentImportStateIDFunc"
+      "evidence": "terraform-provider-aws/internal/service/ec2/ebs_volume_attachment_test.go:414 testAccVolumeAttachmentImportStateIDFunc"
     },
     "aws_vpc_dhcp_options_association": {
       "template": "{vpc_id}",
       "docs": "terraform import aws_vpc_dhcp_options_association.example vpc-0f001273ec18911b1",
       "docsSource": "terraform-provider-aws/website/docs/r/vpc_dhcp_options_association.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_dhcp_options_association_test.go:36 acctest.AttrImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_dhcp_options_association_test.go:37 acctest.AttrImportStateIdFunc"
     },
     "aws_vpc_endpoint_private_dns": {
       "template": "{vpc_endpoint_id}",
       "docs": "terraform import aws_vpc_endpoint_private_dns.example vpce-abcd-1234",
       "docsSource": "terraform-provider-aws/website/docs/r/vpc_endpoint_private_dns.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_endpoint_private_dns_test.go:50 acctest.AttrImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_endpoint_private_dns_test.go:51 acctest.AttrImportStateIdFunc"
     },
     "aws_vpc_endpoint_route_table_association": {
       "template": "{vpc_endpoint_id}/{route_table_id}",
       "docs": "terraform import aws_vpc_endpoint_route_table_association.example vpce-aaaaaaaa/rtb-bbbbbbbb",
       "docsSource": "terraform-provider-aws/website/docs/r/vpc_endpoint_route_table_association.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_endpoint_route_table_association_test.go:112 testAccVPCEndpointRouteTableAssociationImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_endpoint_route_table_association_test.go:121 testAccVPCEndpointRouteTableAssociationImportStateIdFunc"
     },
     "aws_vpc_endpoint_security_group_association": {
       "template": "{vpc_endpoint_id}/{security_group_id}",
       "docs": "terraform import aws_vpc_endpoint_security_group_association.example vpce-aaaaaaaa/sg-bbbbbbbbbbbbbbbbb",
       "docsSource": "terraform-provider-aws/website/docs/r/vpc_endpoint_security_group_association.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_endpoint_security_group_association_test.go:188 testAccVPCEndpointSecurityGroupAssociationImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_endpoint_security_group_association_test.go:197 testAccVPCEndpointSecurityGroupAssociationImportStateIdFunc"
     },
     "aws_vpc_endpoint_subnet_association": {
       "template": "{vpc_endpoint_id}/{subnet_id}",
       "docs": "terraform import aws_vpc_endpoint_subnet_association.example vpce-aaaaaaaa/subnet-bbbbbbbbbbbbbbbbb",
       "docsSource": "terraform-provider-aws/website/docs/r/vpc_endpoint_subnet_association.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_endpoint_subnet_association_test.go:182 testAccVPCEndpointSubnetAssociationImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_endpoint_subnet_association_test.go:191 testAccVPCEndpointSubnetAssociationImportStateIdFunc"
     },
     "aws_vpc_ipv4_cidr_block_association": {
       "manual": true,
       "snippet": "func(s *terraform.State) (string, error) {\n\trs, ok := s.RootModule().Resources[resourceName]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"Not Found: %s\", resourceName)\n\t}\n\n\treturn fmt.Sprintf(\"%s,%s,%s\", rs.Primary.ID, rs.Primary.Attributes[\"ipv4_ipam_pool_id\"], rs.Primary.Attributes[\"ipv4_netmask_length\"]), nil\n}",
       "docs": "terraform import aws_vpc_ipv4_cidr_block_association.example vpc-cidr-assoc-021e8461d70ed08be",
       "docsSource": "terraform-provider-aws/website/docs/r/vpc_ipv4_cidr_block_association.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_ipv4_cidr_block_association_test.go:125 "
+      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_ipv4_cidr_block_association_test.go:133 "
     },
     "aws_vpc_ipv6_cidr_block_association": {
       "manual": true,
       "snippet": "func(s *terraform.State) (string, error) {\n\trs, ok := s.RootModule().Resources[resourceName]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"Not Found: %s\", resourceName)\n\t}\n\n\treturn fmt.Sprintf(\"%s,%s,%s\", rs.Primary.ID, rs.Primary.Attributes[\"ipv6_ipam_pool_id\"], rs.Primary.Attributes[\"ipv6_netmask_length\"]), nil\n}",
       "docs": "terraform import aws_vpc_ipv6_cidr_block_association.example vpc-cidr-assoc-0754129087e149dcd",
       "docsSource": "terraform-provider-aws/website/docs/r/vpc_ipv6_cidr_block_association.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_ipv6_cidr_block_association_test.go:128 "
+      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_ipv6_cidr_block_association_test.go:136 "
     },
     "aws_vpc_route_server": {
       "template": "{route_server_id}",
@@ -1842,13 +2267,13 @@
       "template": "{route_server_id},{route_table_id}",
       "docs": "terraform import aws_vpc_route_server_propagation.example rs-12345678,rtb-656c65616e6f72",
       "docsSource": "terraform-provider-aws/website/docs/r/vpc_route_server_propagation.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_route_server_propagation_test.go:129 testAccVPCRouteServerPropagationImportStateIDFunc"
+      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_route_server_propagation_test.go:138 testAccVPCRouteServerPropagationImportStateIDFunc"
     },
     "aws_vpc_route_server_vpc_association": {
       "template": "{route_server_id},{vpc_id}",
       "docs": "terraform import aws_vpc_route_server_vpc_association.example rs-12345678,vpc-0f001273ec18911b1",
       "docsSource": "terraform-provider-aws/website/docs/r/vpc_route_server_vpc_association.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_route_server_vpc_association_test.go:129 testAccVPCRouteServerVPCAssociationImportStateIDFunc"
+      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_route_server_vpc_association_test.go:138 testAccVPCRouteServerVPCAssociationImportStateIDFunc"
     },
     "aws_vpc_security_group_rules_exclusive": {
       "template": "{security_group_id}",
@@ -1860,7 +2285,7 @@
       "template": "{security_group_id},{vpc_id}",
       "docs": "terraform import aws_vpc_security_group_vpc_association.example sg-12345,vpc-67890",
       "docsSource": "terraform-provider-aws/website/docs/r/vpc_security_group_vpc_association.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_security_group_vpc_association_test.go:184 testAccSecurityGroupVPCAssociationImportStateIDFunc"
+      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_security_group_vpc_association_test.go:209 testAccSecurityGroupVPCAssociationImportStateIDFunc"
     },
     "aws_vpn_concentrator": {
       "template": "{vpn_concentrator_id}",
@@ -1881,25 +2306,25 @@
       "template": "{id}/{name}/{scope}",
       "docs": "terraform import aws_wafv2_ip_set.example a1b2c3d4-d5f6-7777-8888-9999aaaabbbbcccc/example/REGIONAL",
       "docsSource": "terraform-provider-aws/website/docs/r/wafv2_ip_set.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/wafv2/ip_set_test.go:589 testAccIPSetImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/wafv2/ip_set_test.go:598 testAccIPSetImportStateIdFunc"
     },
     "aws_wafv2_regex_pattern_set": {
       "template": "{id}/{name}/{scope}",
       "docs": "terraform import aws_wafv2_regex_pattern_set.example a1b2c3d4-d5f6-7777-8888-9999aaaabbbbcccc/example/REGIONAL",
       "docsSource": "terraform-provider-aws/website/docs/r/wafv2_regex_pattern_set.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/wafv2/regex_pattern_set_test.go:458 testAccRegexPatternSetImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/wafv2/regex_pattern_set_test.go:467 testAccRegexPatternSetImportStateIdFunc"
     },
     "aws_wafv2_rule_group": {
       "template": "{id}/{name}/{scope}",
       "docs": "terraform import aws_wafv2_rule_group.example a1b2c3d4-d5f6-7777-8888-9999aaaabbbbcccc/example/REGIONAL",
       "docsSource": "terraform-provider-aws/website/docs/r/wafv2_rule_group.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/wafv2/rule_group_test.go:2681 testAccRuleGroupImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/wafv2/rule_group_test.go:2746 testAccRuleGroupImportStateIdFunc"
     },
     "aws_wafv2_web_acl": {
       "template": "{id}/{name}/{scope}",
       "docs": "terraform import aws_wafv2_web_acl.example a1b2c3d4-d5f6-7777-8888-9999aaaabbbbcccc/example/REGIONAL",
       "docsSource": "terraform-provider-aws/website/docs/r/wafv2_web_acl.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/wafv2/web_acl_test.go:3926 testAccWebACLImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/wafv2/web_acl_test.go:4009 testAccWebACLImportStateIdFunc"
     },
     "aws_wafv2_web_acl_rule": {
       "manual": true,
@@ -1911,9 +2336,9 @@
     "aws_wafv2_web_acl_rule_group_association": {
       "manual": true,
       "snippet": "{\n\trs, ok := s.RootModule().Resources[resourceName]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"Not found: %s\", resourceName)\n\t}\n\n\twebACLARN := rs.Primary.Attributes[\"web_acl_arn\"]\n\truleGroupARN := rs.Primary.Attributes[\"rule_group_reference.0.arn\"]\n\truleName := rs.Primary.Attributes[\"rule_name\"]\n\n\treturn fmt.Sprintf(\"%s,%s,%s,%s\", webACLARN, ruleName, \"custom\", ruleGroupARN), nil\n}",
-      "docs": "terraform import aws_wafv2_web_acl_rule_group_association.example \"arn:aws:wafv2:us-east-1:123456789012:regional/webacl/example-web-acl/12345678-1234-1234-1234-123456789012,arn:aws:wafv2:us-east-1:123456789012:regional/rulegroup/example-rule-group/87654321-4321-4321-4321-210987654321,example-rule-group-rule\"",
+      "docs": "terraform import aws_wafv2_web_acl_rule_group_association.example \"arn:aws:wafv2:us-east-1:123456789012:regional/webacl/example-web-acl/12345678-1234-1234-1234-123456789012,example-rule-group-rule,custom,arn:aws:wafv2:us-east-1:123456789012:regional/rulegroup/example-rule-group/87654321-4321-4321-4321-210987654321\"",
       "docsSource": "terraform-provider-aws/website/docs/r/wafv2_web_acl_rule_group_association.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/wafv2/web_acl_rule_group_association_test.go:1086 testAccWebACLRuleGroupAssociationImportStateIDFunc"
+      "evidence": "terraform-provider-aws/internal/service/wafv2/web_acl_rule_group_association_test.go:1094 testAccWebACLRuleGroupAssociationImportStateIDFunc"
     },
     "aws_workmail_default_domain": {
       "template": "{organization_id}",
@@ -1927,11 +2352,29 @@
       "docsSource": "terraform-provider-aws/website/docs/r/workmail_domain.html.markdown",
       "evidence": "terraform-provider-aws/internal/service/workmail/domain_test.go:94 testAccDomainImportStateIdFunc"
     },
+    "aws_workmail_group": {
+      "template": "{organization_id},{group_id}",
+      "docs": "terraform import aws_workmail_group.example m-1234567890abcdef,S-1-1-12-1234567890-123456789-123456789-1234",
+      "docsSource": "terraform-provider-aws/website/docs/r/workmail_group.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/workmail/group_test.go:133 testAccGroupImportStateIDFunc"
+    },
     "aws_workmail_organization": {
       "template": "{organization_id}",
       "docs": "terraform import aws_workmail_organization.example m-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
       "docsSource": "terraform-provider-aws/website/docs/r/workmail_organization.html.markdown",
       "evidence": "terraform-provider-aws/internal/service/workmail/organization_identity_gen_test.go:59 acctest.AttrImportStateIdFunc"
+    },
+    "aws_workmail_user": {
+      "template": "{organization_id},{user_id}",
+      "docs": "terraform import aws_workmail_user.example m-1234567890abcdef1234567890abcdef,12345678-1234-1234-1234-123456789012",
+      "docsSource": "terraform-provider-aws/website/docs/r/workmail_user.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/workmail/user_test.go:172 testAccUserImportStateIDFunc"
+    },
+    "aws_workspaces_pool": {
+      "template": "{pool_id}",
+      "docs": "terraform import aws_workspaces_pool.example wspool-12345678",
+      "docsSource": "terraform-provider-aws/website/docs/r/workspaces_pool.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/workspaces/pool_identity_gen_test.go:72 acctest.AttrImportStateIdFunc"
     },
     "aws_workspacesweb_browser_settings": {
       "template": "{browser_settings_arn}",
@@ -1943,7 +2386,7 @@
       "template": "{browser_settings_arn},{portal_arn}",
       "docs": "terraform import aws_workspacesweb_browser_settings_association.example arn:aws:workspaces-web:us-west-2:123456789012:browserSettings/browser_settings-id-12345678,arn:aws:workspaces-web:us-west-2:123456789012:portal/portal-id-12345678",
       "docsSource": "terraform-provider-aws/website/docs/r/workspacesweb_browser_settings_association.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/workspacesweb/browser_settings_association_test.go:168 testAccBrowserSettingsAssociationImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/workspacesweb/browser_settings_association_test.go:177 testAccBrowserSettingsAssociationImportStateIdFunc"
     },
     "aws_workspacesweb_data_protection_settings": {
       "template": "{data_protection_settings_arn}",
@@ -1955,7 +2398,7 @@
       "template": "{data_protection_settings_arn},{portal_arn}",
       "docs": "terraform import aws_workspacesweb_data_protection_settings_association.example arn:aws:workspaces-web:us-west-2:123456789012:dataProtectionSettings/data_protection_settings-id-12345678,arn:aws:workspaces-web:us-west-2:123456789012:portal/portal-id-12345678",
       "docsSource": "terraform-provider-aws/website/docs/r/workspacesweb_data_protection_settings_association.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/workspacesweb/data_protection_settings_association_test.go:154 testAccDataProtectionSettingsAssociationImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/workspacesweb/data_protection_settings_association_test.go:163 testAccDataProtectionSettingsAssociationImportStateIdFunc"
     },
     "aws_workspacesweb_identity_provider": {
       "template": "{identity_provider_arn}",
@@ -1973,7 +2416,7 @@
       "template": "{ip_access_settings_arn},{portal_arn}",
       "docs": "terraform import aws_workspacesweb_ip_access_settings_association.example arn:aws:workspaces-web:us-west-2:123456789012:ipAccessSettings/ip_access_settings-id-12345678,arn:aws:workspaces-web:us-west-2:123456789012:portal/portal-id-12345678",
       "docsSource": "terraform-provider-aws/website/docs/r/workspacesweb_ip_access_settings_association.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/workspacesweb/ip_access_settings_association_test.go:154 testAccIPAccessSettingsAssociationImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/workspacesweb/ip_access_settings_association_test.go:163 testAccIPAccessSettingsAssociationImportStateIdFunc"
     },
     "aws_workspacesweb_network_settings": {
       "template": "{network_settings_arn}",
@@ -1985,7 +2428,7 @@
       "template": "{network_settings_arn},{portal_arn}",
       "docs": "terraform import aws_workspacesweb_network_settings_association.example arn:aws:workspaces-web:us-west-2:123456789012:networkSettings/network_settings-id-12345678,arn:aws:workspaces-web:us-west-2:123456789012:portal/portal-id-12345678",
       "docsSource": "terraform-provider-aws/website/docs/r/workspacesweb_network_settings_association.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/workspacesweb/network_settings_association_test.go:156 testAccNetworkSettingsAssociationImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/workspacesweb/network_settings_association_test.go:165 testAccNetworkSettingsAssociationImportStateIdFunc"
     },
     "aws_workspacesweb_portal": {
       "template": "{portal_arn}",
@@ -2003,7 +2446,7 @@
       "template": "{session_logger_arn},{portal_arn}",
       "docs": "terraform import aws_workspacesweb_session_logger_association.example arn:aws:workspaces-web:us-west-2:123456789012:sessionLogger/session_logger-id-12345678,arn:aws:workspaces-web:us-west-2:123456789012:portal/portal-id-12345678",
       "docsSource": "terraform-provider-aws/website/docs/r/workspacesweb_session_logger_association.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/workspacesweb/session_logger_association_test.go:156 testAccSessionLoggerAssociationImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/workspacesweb/session_logger_association_test.go:165 testAccSessionLoggerAssociationImportStateIdFunc"
     },
     "aws_workspacesweb_trust_store": {
       "template": "{trust_store_arn}",
@@ -2015,7 +2458,7 @@
       "template": "{trust_store_arn},{portal_arn}",
       "docs": "terraform import aws_workspacesweb_trust_store_association.example arn:aws:workspaces-web:us-west-2:123456789012:trustStore/trust_store-id-12345678,arn:aws:workspaces-web:us-west-2:123456789012:portal/portal-id-12345678",
       "docsSource": "terraform-provider-aws/website/docs/r/workspacesweb_trust_store_association.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/workspacesweb/trust_store_association_test.go:154 testAccTrustStoreAssociationImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/workspacesweb/trust_store_association_test.go:163 testAccTrustStoreAssociationImportStateIdFunc"
     },
     "aws_workspacesweb_user_access_logging_settings": {
       "template": "{user_access_logging_settings_arn}",
@@ -2027,7 +2470,7 @@
       "template": "{user_access_logging_settings_arn},{portal_arn}",
       "docs": "terraform import aws_workspacesweb_user_access_logging_settings_association.example arn:aws:workspaces-web:us-west-2:123456789012:userAccessLoggingSettings/user_access_logging_settings-id-12345678,arn:aws:workspaces-web:us-west-2:123456789012:portal/portal-id-12345678",
       "docsSource": "terraform-provider-aws/website/docs/r/workspacesweb_user_access_logging_settings_association.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/workspacesweb/user_access_logging_settings_association_test.go:156 testAccUserAccessLoggingSettingsAssociationImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/workspacesweb/user_access_logging_settings_association_test.go:165 testAccUserAccessLoggingSettingsAssociationImportStateIdFunc"
     },
     "aws_workspacesweb_user_settings": {
       "template": "{user_settings_arn}",
@@ -2039,13 +2482,19 @@
       "template": "{user_settings_arn},{portal_arn}",
       "docs": "terraform import aws_workspacesweb_user_settings_association.example arn:aws:workspaces-web:us-west-2:123456789012:userSettings/user_settings-id-12345678,arn:aws:workspaces-web:us-west-2:123456789012:portal/portal-id-12345678",
       "docsSource": "terraform-provider-aws/website/docs/r/workspacesweb_user_settings_association.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/workspacesweb/user_settings_association_test.go:154 testAccUserSettingsAssociationImportStateIdFunc"
+      "evidence": "terraform-provider-aws/internal/service/workspacesweb/user_settings_association_test.go:163 testAccUserSettingsAssociationImportStateIdFunc"
+    },
+    "aws_xray_indexing_rule": {
+      "template": "{name}",
+      "docs": "terraform import aws_xray_indexing_rule.example Default",
+      "docsSource": "terraform-provider-aws/website/docs/r/xray_indexing_rule.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/xray/indexing_rule_identity_gen_test.go:69 acctest.AttrImportStateIdFunc"
     },
     "aws_xray_resource_policy": {
       "template": "{policy_name}",
-      "docs": "terraform import aws_xray_resource_policy.example resource_policy-name",
+      "docs": "terraform import aws_xray_resource_policy.example example-policy",
       "docsSource": "terraform-provider-aws/website/docs/r/xray_resource_policy.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/xray/resource_policy_test.go:137 testAccResourcePolicyImportStateIDFunc"
+      "evidence": "terraform-provider-aws/internal/service/xray/resource_policy_identity_gen_test.go:62 acctest.AttrImportStateIdFunc"
     }
   }
 }

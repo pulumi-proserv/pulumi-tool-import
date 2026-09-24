@@ -16,9 +16,11 @@ package pkg
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
+	"github.com/pulumi-proserv/pulumi-tool-import/importids/catalog"
 	"github.com/pulumi-proserv/pulumi-tool-import/internal/tfaddr"
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/importid"
 )
@@ -478,18 +480,55 @@ type TranslateResult struct {
 	Notes      []string
 }
 
-// TranslateImportIDs composes Pulumi import IDs from the embedded formats
-// table. See TranslateImportIDsWith.
+// TranslateImportIDs selects catalogs from destination pins and reports unresolved IDs.
 func TranslateImportIDs(importFile *ImportFile, digest *ModuleMap) int {
-	return TranslateImportIDsWith(importFile, digest, importid.Embedded()).Translated
+	result := TranslateImportIDsForProviders(importFile, digest, nil)
+	for _, note := range result.Notes {
+		fmt.Fprintln(os.Stderr, note)
+	}
+	return result.Translated
+}
+
+// TranslateImportIDsForProviders prefers each import entry's explicit version;
+// otherwise it uses the digest's resolved Pulumi AWS pin. Missing/unsupported
+// pins produce a diagnostic and leave IDs untouched, without cross-major fallback.
+func TranslateImportIDsForProviders(importFile *ImportFile, digest *ModuleMap, override *importid.Formats) TranslateResult {
+	catalogs := map[string]*catalog.Catalog{}
+	return translateImportIDs(importFile, digest, func(entry *ImportEntry) (*catalog.Catalog, string, error) {
+		if !strings.HasPrefix(entry.Type, "aws:") {
+			return nil, "", nil
+		}
+		version := entry.Version
+		if version == "" {
+			var err error
+			version, err = importid.AWSVersion(digest.Providers)
+			if err != nil {
+				return nil, "", err
+			}
+		}
+		c := catalogs[version]
+		if c == nil {
+			var err error
+			c, err = importid.ForAWSVersion(version, override)
+			if err != nil {
+				return nil, "", err
+			}
+			catalogs[version] = c
+		}
+		return c, importid.VersionWarning(version, c), nil
+	})
 }
 
 // TranslateImportIDsWith rewrites each import-file entry's ID for Terraform
 // types whose import ID is not their state ID. Template entries expand over
-// the digest resource's attributes; manual entries use the composer in
-// importid.TFCustom, or leave the ID alone with a note quoting the
+// the digest resource's attributes; manual entries use the selected catalog's
+// composer, or leave the ID alone with a note quoting the
 // documented form. Types absent from the table keep the state ID.
-func TranslateImportIDsWith(importFile *ImportFile, digest *ModuleMap, formats *importid.Formats) TranslateResult {
+func TranslateImportIDsWith(importFile *ImportFile, digest *ModuleMap, c *catalog.Catalog) TranslateResult {
+	return translateImportIDs(importFile, digest, func(*ImportEntry) (*catalog.Catalog, string, error) { return c, "", nil })
+}
+
+func translateImportIDs(importFile *ImportFile, digest *ModuleMap, selectCatalog func(*ImportEntry) (*catalog.Catalog, string, error)) TranslateResult {
 	// A state ID that belongs to more than one managed resource cannot pick
 	// out the attributes to compose from: the import entry names the ID and
 	// nothing else. Whichever resource happened to be indexed last would
@@ -513,17 +552,37 @@ func TranslateImportIDsWith(importFile *ImportFile, digest *ModuleMap, formats *
 	for i := range digest.RootResources {
 		index(&digest.RootResources[i])
 	}
-	for _, entry := range digest.Modules {
-		for i := range entry.Resources {
-			index(&entry.Resources[i])
+	var indexModules func(map[string]*ModuleMapEntry)
+	indexModules = func(modules map[string]*ModuleMapEntry) {
+		for _, entry := range modules {
+			for i := range entry.Resources {
+				index(&entry.Resources[i])
+			}
+			indexModules(entry.Modules)
 		}
 	}
+	indexModules(digest.Modules)
 
 	var res TranslateResult
 	noted := map[string]bool{}
+	note := func(message string) {
+		if message != "" && !noted[message] {
+			res.Notes = append(res.Notes, message)
+			noted[message] = true
+		}
+	}
 	for i := range importFile.Resources {
 		entry := &importFile.Resources[i]
 		if entry.Component || entry.ID == "" || entry.ID == "<PLACEHOLDER>" {
+			continue
+		}
+		c, warning, err := selectCatalog(entry)
+		if err != nil {
+			note("AWS import IDs not composed: " + err.Error())
+			continue
+		}
+		note(warning)
+		if c == nil {
 			continue
 		}
 		if addrs := ambiguous[entry.ID]; len(addrs) > 0 {
@@ -541,7 +600,7 @@ func TranslateImportIDsWith(importFile *ImportFile, digest *ModuleMap, formats *
 			continue
 		}
 		typ := tfaddr.ResourceType(tf.TerraformAddress)
-		format, ok := formats.Types[typ]
+		format, ok := c.Formats.Types[typ]
 		if !ok {
 			continue
 		}
@@ -556,8 +615,8 @@ func TranslateImportIDsWith(importFile *ImportFile, digest *ModuleMap, formats *
 				continue
 			}
 			newID = id
-		case importid.TFCustom[typ] != nil:
-			id, ok := importid.TFCustom[typ](tf.Attributes, tf.ImportID)
+		case c.Composers[typ] != nil:
+			id, ok := c.Composers[typ](tf.Attributes, tf.ImportID)
 			if !ok {
 				res.Notes = append(res.Notes, fmt.Sprintf("%s: cannot compose import ID from state attributes; documented form: %s",
 					tf.TerraformAddress, format.Docs))

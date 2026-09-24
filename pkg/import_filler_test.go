@@ -17,6 +17,9 @@ package pkg
 import (
 	"testing"
 
+	aws6 "github.com/pulumi-proserv/pulumi-tool-import/importids/aws/v6"
+	aws7 "github.com/pulumi-proserv/pulumi-tool-import/importids/aws/v7"
+	"github.com/pulumi-proserv/pulumi-tool-import/importids/catalog"
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg/importid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -568,6 +571,7 @@ func TestTranslateImportIDs(t *testing.T) {
 		},
 	}
 
+	digest.Providers = map[string]string{"registry.terraform.io/hashicorp/aws": "aws@v7.24.0"}
 	translated := TranslateImportIDs(importFile, digest)
 
 	assert.Equal(t, 5, translated)
@@ -624,7 +628,7 @@ func TestTranslateImportIDsWithNotes(t *testing.T) {
 		{Type: "aws:x/docsonly:DocsOnly", Name: "d", ID: "id-6"},
 	}}
 
-	res := TranslateImportIDsWith(importFile, digest, formats)
+	res := TranslateImportIDsWith(importFile, digest, &catalog.Catalog{Formats: formats, Composers: aws7.Load().Composers})
 
 	assert.Equal(t, 2, res.Translated)
 	assert.Equal(t, "g:n", importFile.Resources[0].ID)
@@ -660,7 +664,7 @@ func TestTranslateImportIDsAmbiguousStateID(t *testing.T) {
 		{Type: "aws:x/thing:Thing", Name: "c", ID: "solo"},
 	}}
 
-	res := TranslateImportIDsWith(importFile, digest, formats)
+	res := TranslateImportIDsWith(importFile, digest, &catalog.Catalog{Formats: formats})
 
 	assert.Equal(t, 1, res.Translated)
 	assert.Equal(t, "shared", importFile.Resources[0].ID, "an ambiguous ID must be left for a human")
@@ -879,7 +883,7 @@ func TestTranslateImportIDsOldSwitchParity(t *testing.T) {
 				{Type: tc.pulumi, Name: "test", ID: tc.stateID},
 			}}
 
-			TranslateImportIDsWith(importFile, digest, importid.Embedded())
+			TranslateImportIDsWith(importFile, digest, aws7.Load())
 
 			assert.Equal(t, tc.want, importFile.Resources[0].ID)
 		})
@@ -909,11 +913,44 @@ func TestTranslateImportIDsInIndexedModules(t *testing.T) {
 			imports := &ImportFile{Resources: []ImportEntry{{
 				Type: "aws:ec2/route:Route", Name: "default", ID: "r-opaque",
 			}}}
-			result := TranslateImportIDsWith(imports, digest, importid.Embedded())
+			result := TranslateImportIDsWith(imports, digest, aws7.Load())
 			assert.Equal(t, "rtb-123_0.0.0.0/0", imports.Resources[0].ID)
 			assert.Equal(t, 1, result.Translated)
 			assert.Empty(t, result.Notes)
 		})
+	}
+}
+
+func TestTranslateImportIDsSelectsDestinationCatalog(t *testing.T) {
+	digest := &ModuleMap{
+		Providers: map[string]string{"registry.opentofu.org/hashicorp/aws": "aws@v7.24.0"},
+		Modules: map[string]*ModuleMapEntry{"outer": {Modules: map[string]*ModuleMapEntry{"inner": {
+			Resources: []ModuleResource{{Mode: "managed", TerraformAddress: `module.outer["0"].module.inner.aws_route.route`, ImportID: "r-opaque",
+				Attributes: map[string]interface{}{"route_table_id": "rtb-1", "destination_cidr_block": "0.0.0.0/0"}}},
+		}}}},
+	}
+	for _, version := range []string{"", "v6.83.4", "v7.48.0"} {
+		file := &ImportFile{Resources: []ImportEntry{{Type: "aws:ec2/route:Route", Name: "route", ID: "r-opaque", Version: version}}}
+		result := TranslateImportIDsForProviders(file, digest, nil)
+		assert.Equal(t, 1, result.Translated)
+		assert.Equal(t, "rtb-1_0.0.0.0/0", file.Resources[0].ID)
+		assert.Empty(t, result.Notes)
+	}
+	// An entry's destination version wins over the digest; the v6 table may
+	// never be paired with the v7 composers, even for an explicit override.
+	file := &ImportFile{Resources: []ImportEntry{{Type: "aws:ec2/route:Route", Name: "route", ID: "r-opaque", Version: "7.48.0"}}}
+	result := TranslateImportIDsForProviders(file, digest, aws6.Load().Formats)
+	assert.Zero(t, result.Translated)
+	assert.Equal(t, "r-opaque", file.Resources[0].ID)
+	require.Len(t, result.Notes, 1)
+	assert.Contains(t, result.Notes[0], "major 7")
+	for _, providers := range []map[string]string{nil, {"hashicorp/aws": "aws@v8.0.0"}, {"hashicorp/aws": "dynamic@6.66.0"}} {
+		digest.Providers = providers
+		file.Resources[0].Version = ""
+		result := TranslateImportIDsForProviders(file, digest, nil)
+		assert.Zero(t, result.Translated)
+		assert.NotEmpty(t, result.Notes)
+		assert.Equal(t, "r-opaque", file.Resources[0].ID)
 	}
 }
 

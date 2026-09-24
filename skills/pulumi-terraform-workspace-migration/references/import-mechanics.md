@@ -82,15 +82,16 @@ high. Common causes of a low rate:
 - **Unsupported import-ID format.** When an import fails with "resource does not
   exist", first treat it as a *wrong ID format*, not a missing resource: check
   the type's documented format (`pulumi package get-schema aws`, the `## Import`
-  section). Composition is table-driven: the embedded
-  `pkg/importid/aws-import-id-formats.json` (generated from the provider's own
-  acceptance tests via `make update-import-id-formats`) covers most divergent
-  types automatically, and `resolve tf` prints the documented form for types it
-  leaves manual. A conditional shape (the ID depends on another attribute, not
-  just concatenation) needs a `TFCustom` composer in `pkg/importid/tf_custom.go`
-  instead of a table entry. If neither covers the type, set the ID via a
-  resource mapping. The same message also appears when the type has no importer
-  at all — see below.
+  section). Composition uses the destination **Pulumi AWS major**: the modules
+  `importids/aws/v6` and `importids/aws/v7` each own an embedded `formats.json`
+  and `composers.go`. Tables are generated from the upstream revision recorded
+  in that module's `source.json` via `make update-import-id-formats`. A conditional
+  shape needs a composer in the matching major's module. `resolve tf` reports
+  manual entries without a composer and missing/unsupported destination pins;
+  it never substitutes another major's catalog. An explicit import entry
+  `version` takes precedence over the digest's `aws@version` pin. If neither
+  templates nor composers cover the type, set the ID by hand. The same message
+  also appears when the type has no importer at all — see below.
 - **Non-importable types.** Some Terraform resource types declare no importer,
   so no ID can ever import them; the attempt fails with the same misleading
   "resource '<id>' does not exist". `digest tf` detects these by asking the

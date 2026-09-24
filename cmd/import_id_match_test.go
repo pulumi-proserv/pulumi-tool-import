@@ -1,4 +1,4 @@
-// Copyright 2016-2025, Pulumi Corporation.
+// Copyright 2016-2026, Pulumi Corporation.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,53 +15,43 @@
 package cmd
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/pulumi-proserv/pulumi-tool-import/pkg"
-	"github.com/pulumi-proserv/pulumi-tool-import/pkg/importid"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestFormatsVersionWarning(t *testing.T) {
-	formats := &importid.Formats{Provider: "hashicorp/aws", Version: "v6.38.0"}
-
-	// Digest pinned to a Pulumi version whose upstream is older or equal: quiet.
-	// digest.Providers holds "<identifier>@<version>" for a statically bridged
-	// provider (pkg.ResolvedPulumi), not a bare version.
-	older := &pkg.ModuleMap{Providers: map[string]string{"registry.terraform.io/hashicorp/aws": "aws@v7.24.0"}}
-	assert.Equal(t, "", formatsVersionWarning(older, formats))
-
-	// No aws provider at all: quiet.
-	assert.Equal(t, "", formatsVersionWarning(&pkg.ModuleMap{}, formats))
-
-	// A dynamic pin (no static "aws@" identifier): quiet, never looked up.
-	dyn := &pkg.ModuleMap{Providers: map[string]string{"registry.terraform.io/hashicorp/aws": "dynamic@1.2.3"}}
-	assert.Equal(t, "", formatsVersionWarning(dyn, formats))
-
-	// Table older than the digest's upstream: warn, naming both and the make target.
-	stale := &importid.Formats{Provider: "hashicorp/aws", Version: "v6.0.0"}
-	got := formatsVersionWarning(older, stale)
-	assert.Contains(t, got, "v6.0.0")
-	assert.Contains(t, got, "v6.38.0")
-	assert.Contains(t, got, "make update-import-id-formats")
-}
-
-func TestFormatsVersionWarningEquivalentProviders(t *testing.T) {
-	t.Parallel()
-	formats := &importid.Formats{Provider: "hashicorp/aws", Version: "v6.0.0"}
-	for _, addr := range []string{
-		"registry.terraform.io/hashicorp/aws",
-		"registry.opentofu.org/hashicorp/aws",
-		"hashicorp/aws",
+func TestResolveTFSelectsCatalogFromDestinationVersion(t *testing.T) {
+	for _, tc := range []struct{ version, want string }{
+		{"6.83.4", "events"}, {"7.48.0", "events"}, {"8.0.0", "arn:aws:kinesis:us-east-1:123:stream/events"},
 	} {
-		t.Run(addr, func(t *testing.T) {
-			digest := &pkg.ModuleMap{Providers: map[string]string{addr: "aws@v7.24.0"}}
-			got := formatsVersionWarning(digest, formats)
-			assert.Contains(t, got, "v6.38.0")
-			assert.Contains(t, got, "v6.0.0")
-			assert.Contains(t, got, "make update-import-id-formats")
+		t.Run(tc.version, func(t *testing.T) {
+			dir := t.TempDir()
+			const stateID = "arn:aws:kinesis:us-east-1:123:stream/events"
+			digest := &pkg.ModuleMap{RootResources: []pkg.ModuleResource{{
+				Mode: "managed", TerraformAddress: "aws_kinesis_stream.events", ImportID: stateID,
+				Attributes: map[string]interface{}{"name": "events"},
+			}}}
+			imports := &pkg.ImportFile{Resources: []pkg.ImportEntry{{Type: "aws:kinesis/stream:Stream", Name: "events", ID: stateID, Version: tc.version}}}
+			for name, value := range map[string]interface{}{"digest.json": digest, "imports.json": imports} {
+				data, err := json.Marshal(value)
+				require.NoError(t, err)
+				require.NoError(t, os.WriteFile(filepath.Join(dir, name), data, 0o600))
+			}
+			out := filepath.Join(dir, "out.json")
+			cmd := buildImportIDMatchCommand("tf", false)
+			cmd.SetArgs([]string{"--digest", filepath.Join(dir, "digest.json"), "--import-file", filepath.Join(dir, "imports.json"), "--out", out})
+			require.NoError(t, cmd.Execute())
+			data, err := os.ReadFile(out)
+			require.NoError(t, err)
+			var result pkg.ImportFile
+			require.NoError(t, json.Unmarshal(data, &result))
+			require.Len(t, result.Resources, 1)
+			assert.Equal(t, tc.want, result.Resources[0].ID)
 		})
 	}
-	foreign := &pkg.ModuleMap{Providers: map[string]string{"example.com/hashicorp/aws": "aws@v7.24.0"}}
-	assert.Empty(t, formatsVersionWarning(foreign, formats))
 }

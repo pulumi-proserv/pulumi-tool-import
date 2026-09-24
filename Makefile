@@ -20,17 +20,32 @@ GO      ?= go
 BINARY  ?= pulumi-tool-import
 PKG     ?= ./...
 E2E_TIMEOUT ?= 40m
+CATALOG_MODULES := importids/catalog importids/aws/v6 importids/aws/v7
+AWS_CATALOG_MAJORS ?= 6 7
 
 .PHONY: all build test test-e2e test-e2e-remote lint lint-e2e fmt fmt-check vet vet-e2e tidy check clean \
-	update-import-id-formats import-id-formats-check
+	update-import-id-formats import-id-formats-check test-catalogs vet-catalogs lint-catalogs lint-module
 
 all: build
 
 build:
 	$(GO) build -o bin/$(BINARY) .
 
-test:
+test: test-catalogs
 	$(GO) test $(PKG)
+
+test-catalogs:
+	@for module in $(CATALOG_MODULES); do GOWORK=off $(GO) -C $$module test ./... || exit $$?; done
+
+vet-catalogs:
+	@for module in $(CATALOG_MODULES); do GOWORK=off $(GO) -C $$module vet ./... || exit $$?; done
+
+lint-catalogs:
+	@for module in $(CATALOG_MODULES); do \
+	    $(MAKE) --no-print-directory -C $$module -f $(CURDIR)/Makefile lint-module || exit $$?; done
+
+lint-module:
+	GOWORK=off golangci-lint run
 
 # test-e2e creates and destroys real AWS infrastructure (a VPN gateway,
 # route tables, a VPN connection) to prove non-importable resources go from
@@ -68,7 +83,7 @@ test-e2e:
 test-e2e-remote:
 	$(GO) test -count=1 -tags e2e ./test/e2e/ -run TestRemoteState -v -timeout 10m
 
-lint: lint-e2e
+lint: lint-e2e lint-catalogs
 	golangci-lint run
 
 # The e2e files are behind "//go:build e2e", so the untagged run above does not
@@ -96,7 +111,7 @@ fmt-check:
 		exit 1; \
 	fi
 
-vet: vet-e2e
+vet: vet-e2e vet-catalogs
 	$(GO) vet $(PKG)
 
 # Type-check and vet the e2e build. "go vet" fully type-checks, so this is what
@@ -109,26 +124,19 @@ vet-e2e:
 
 tidy:
 	$(GO) mod tidy
+	@for module in $(CATALOG_MODULES); do GOWORK=off $(GO) -C $$module mod tidy || exit $$?; done
 
-# Regenerates the import-ID composition table from terraform-provider-aws at
-# the version the providermap recommends. The diff is the review surface: a
-# type gaining or losing an entry, or a template changing, is a provider
-# behaviour change that "resolve tf" must follow.
+# Each Pulumi major pins its upstream revision and verified helper hashes in source.json.
 update-import-id-formats:
-	$(GO) run ./internal/tools/importidscrape \
-	    --provider-version $$($(GO) run ./internal/tools/providermapversion aws) \
-	    --out pkg/importid/aws-import-id-formats.json
+	@for major in $(AWS_CATALOG_MAJORS); do \
+	    $(GO) run ./internal/tools/importidscrape --source importids/aws/v$$major/source.json \
+	        --out importids/aws/v$$major/formats.json || exit $$?; done
 
-# Fails when the committed table is not what the scraper produces at the
-# version providermapversion reports — the same source update-import-id-formats
-# uses, and the version the table records, which TestEmbeddedTableMatchesProvidermap
-# keeps in step. Needs network for the first sparse clone.
+# Re-scrape both exact source pins without rewriting the committed artifacts.
 import-id-formats-check:
-	@tmp=$$(mktemp) && trap 'rm -f "$$tmp"' EXIT && \
-	ver=$$($(GO) run ./internal/tools/providermapversion aws) && \
-	$(GO) run ./internal/tools/importidscrape --provider-version $$ver --out $$tmp && \
-	if ! diff -u pkg/importid/aws-import-id-formats.json $$tmp; then \
-	    echo "pkg/importid/aws-import-id-formats.json is stale; run: make update-import-id-formats"; exit 1; fi
+	@for major in $(AWS_CATALOG_MAJORS); do \
+	    $(GO) run ./internal/tools/importidscrape --source importids/aws/v$$major/source.json \
+	        --out importids/aws/v$$major/formats.json --check || exit $$?; done
 
 check: fmt-check vet lint import-id-formats-check
 
