@@ -301,8 +301,23 @@ Tips:
 ## Phase 4 — Import mechanics
 
 Generating the import skeleton, writing `mappings.yaml`, filling IDs with
-`import-id-match`, multi-provider setup, and batched imports:
+`import-id-match`, multi-provider setup, and the import run itself:
 **`references/import-mechanics.md`**.
+
+**Run every import with the tool's `import` command, not bare `pulumi import`.**
+It imports the file in batches, isolates every bad import ID in one run instead
+of one per run, and skips resources already in state, so re-running after a fix
+or an interruption resumes rather than starts over:
+
+    pulumi plugin run import -- import \
+      --file .import/imports-ready.json \
+      --project-dir . --stack <org>/<project>/<stack> --dry-run   # inspect the plan
+    pulumi plugin run import -- import \
+      --file .import/imports-ready.json \
+      --project-dir . --stack <org>/<project>/<stack>
+
+Resources are imported unprotected and without generated code. If it reports
+failures, fix those IDs and run the same command again.
 
 **Resources that cannot be imported.** `import-id-match` drops any resource the
 digest flagged `nonImportable` and records it in a `*.non-importable.json`

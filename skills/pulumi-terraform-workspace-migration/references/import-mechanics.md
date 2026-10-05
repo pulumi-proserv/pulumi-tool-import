@@ -143,33 +143,29 @@ When TF uses multiple provider aliases (e.g. `aws` and `aws.useast2`):
 
 ## Run the import
 
-For small stacks (< ~100 resources):
-
-```bash
-pulumi import --file .import/imports-ready.json --yes --protect=false --generate-code=false
-```
-
-Both flags are required: `--protect` defaults to true, so omitting it leaves
-every imported resource protected and produces a permanent `~protect` diff on
-every subsequent preview; `--generate-code=false` matches the hand-authored
-migration workflow, which explicitly forbids generated code.
-
-For larger stacks, use the tool's `import` command. It batches the file, puts
+Use the tool's `import` command at every stack size. It batches the file, puts
 **all** `component: true` entries in every batch so parent references resolve,
 and — when a batch does not fully land — re-imports that batch's resources
-individually to identify exactly which import IDs are bad:
+individually to identify exactly which import IDs are bad. A bare
+`pulumi import` stops at the first bad ID and leaves a partial import whose
+error does not say which resources landed.
 
 ```bash
 # Inspect the plan first
 pulumi plugin run import -- import \
   --file .import/imports-ready.json \
-  --project-dir . --stack <stack-name> --dry-run
+  --project-dir . --stack <org>/<project>/<stack> --dry-run
 
 # Import (wrap in `pulumi env run <esc-env> --` if you use ESC for credentials)
 pulumi plugin run import -- import \
   --file .import/imports-ready.json \
-  --project-dir . --stack <stack-name> --batch-size 100
+  --project-dir . --stack <org>/<project>/<stack> --batch-size 100
 ```
+
+Pass `--stack` fully qualified: a bare stack name resolves against your
+default org, which may not be the stack's org. The command always imports unprotected
+and without code generation, so there is no `--protect=false` or
+`--generate-code=false` to remember.
 
 The run ends with a summary and, if anything failed, a table naming each failed
 resource, the import ID attempted, and the error. Fix those IDs and re-run:
