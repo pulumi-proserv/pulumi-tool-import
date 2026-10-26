@@ -58,6 +58,40 @@ pulumi stack import --file .import/patched.json
 Afterwards, run `pulumi preview` to confirm the diff count dropped, and classify
 what's left with `diff-taxonomy.md`.
 
+### Lambda ZIP reconciliation
+
+`FileArchive` fields preserve the selected ZIP bytes; the tool does not unpack
+binary entries into `StringAsset` values. The program should reference the
+deployed ZIP with `new pulumi.asset.FileArchive(...)`.
+
+- Stack mode reads the program's archive path from its baseline preview. In file
+  mode, provide `--preview-json <preview.json> --project-dir <program-dir>` to use
+  that path instead of the Terraform digest's build path. This matters when the
+  original local ZIP is stale but the program points to separately recovered bytes.
+- If imported outputs have `codeSha256`, local ZIP bytes must match it. A mismatch
+  is an error, not permission to adopt a changed local build. Recover the deployed
+  ZIP and point the program/digest at it; do not fabricate a hash or remove `code`
+  merely to obtain a clean preview.
+- Without that hash, reconstruction is explicitly unverified. A conflicting
+  already-populated archive is not silently overwritten without hash evidence.
+- Missing artifacts can be downloaded from Lambda into
+  `<config-dir>/.pulumi-import-artifacts/<sha256>.zip`. Keep or copy these files to
+  a durable project artifact location and reference them in the program. Ignore
+  temporary migration backups, not the artifacts the final program needs.
+  If a missing artifact prevents the program from previewing, start with file
+  mode to recover it; stack mode needs a runnable baseline preview.
+- A corrected, hash-verified archive can repair old inputs and outputs. Rerunning
+  a successful repair is a no-op. Embedded program archives are not implicitly
+  equivalent to an original deployed ZIP; they require a different explicit
+  artifact contract rather than silent representation conversion.
+
+The hash is checked against the **imported state snapshot**, not a fresh AWS read
+when a local ZIP is available. Keep that snapshot current if the deployment has
+changed. Downloads are checked against the hash returned by `GetFunction`.
+Neither a successful state-file write nor a non-regressing stack patch substitutes
+for the final full preview. See `docs/archive-reconciliation.md` for the scenario
+matrix, provider-backed evidence and limitations.
+
 ## How it works
 
 For each resource in state whose type appears in the fields file:

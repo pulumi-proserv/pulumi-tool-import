@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Archive reconciliation preserves file-archive semantics.** Terraform ZIPs
+  declared as `FileArchive` are no longer expanded into text-based embedded
+  archives. Stack-mode `patch-state tf` uses the program's archive path from its
+  baseline preview; file mode can supply `--preview-json` and `--project-dir`.
+  Selected embedded/non-file program archives are diagnosed rather than silently
+  converted. A local Lambda ZIP that disagrees with the imported `codeSha256`
+  now fails explicitly; missing hashes are reported as unverified reconstruction.
+
 - **`digest tf` remote-backend errors changed shape.** HTTP failures now
   name the request, status, and server message
   (`GET https://… → 401 Unauthorized: …`) instead of one identical
@@ -35,6 +43,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of the token.
 
 ### Fixed
+
+- **ZIP/state repair could retain stale or corrupt artifacts.** Correct, verified
+  ZIP bytes can now repair a populated archive and inconsistent inputs/outputs.
+  Binary ZIP entries and metadata remain opaque bytes, explicit ZIPs take priority
+  over same-stem directories, and absolute artifact paths are no longer rebased.
+  Failed asset conversion no longer writes a raw path string into an archive field.
+  Output-only repairs are counted and validated with bridge Recover; patching one
+  field no longer enables overwriting an unrelated unchanged output.
+- **Recovered Lambda ZIPs now survive command exit.** Downloads use durable,
+  content-addressed file archives, validate HTTP status, ZIP structure and AWS's
+  returned checksum, and preserve an existing destination on download failure.
 
 - **Every dynamic-bridge mapping lookup left a Terraform provider process
   running forever.** The `terraform-provider` plugin starts the real

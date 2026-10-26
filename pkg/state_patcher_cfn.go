@@ -183,9 +183,6 @@ func PatchStateFromCFN(
 				AssetKind:               meta.AssetKind,
 				ArchiveFormat:           meta.ArchiveFormat,
 				HashField:               meta.HashField,
-				// CFN Lambda code is authored as FileArchive("<fn>.zip"); emit the
-				// matching file-based archive sentinel (not the TF embedded form).
-				ZipAsFileArchive: true,
 			})
 		}
 

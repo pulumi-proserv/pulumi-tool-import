@@ -18,23 +18,26 @@ import (
 	"archive/zip"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
+	"time"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/lambda"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	pulumiarchive "github.com/pulumi/pulumi/sdk/v3/go/common/resource/archive"
-	pulumiasset "github.com/pulumi/pulumi/sdk/v3/go/common/resource/asset"
 )
 
 // FieldsFile represents the patch-state fields file.
@@ -117,11 +120,6 @@ type patchFieldDescriptor struct {
 	AssetKind               *int
 	ArchiveFormat           *int
 	HashField               string
-	// ZipAsFileArchive: when true, a .zip source is emitted as a file-based
-	// FileArchive sentinel (matching a program's FileArchive("x.zip")); when
-	// false (the TF default) a .zip is emitted as an embedded AssetArchive. Set
-	// only by the CFN patcher — the TF path is unchanged.
-	ZipAsFileArchive bool
 }
 
 // tfToPulumiField maps TF snake_case attribute names to Pulumi camelCase field names
@@ -583,6 +581,7 @@ func patchResourceFields(
 		}
 
 		inputVal := inputsRaw[pulumiField]
+		verifiedArchive := false
 		inputEmpty := isEmptyValue(inputVal)
 		outputVal := outputsRaw[pulumiField]
 		outputEmpty := isEmptyValue(outputVal)
@@ -591,26 +590,42 @@ func patchResourceFields(
 		digEmpty := digVal == nil || digVal == "" || digSensitive
 
 		// For asset fields, convert TF source path to Pulumi asset sentinel.
-		if fd.AssetType != "" && configDir != "" && !digEmpty && !digSensitive {
+		if fd.AssetType != "" && !digEmpty && !digSensitive {
 			if pathStr, ok := digVal.(string); ok {
-				absPath := filepath.Join(configDir, pathStr)
-				if _, err := os.Stat(absPath); err != nil && filepath.IsAbs(pathStr) {
-					base := strings.TrimSuffix(filepath.Base(pathStr), ".zip")
-					absPath = filepath.Join(configDir, base)
+				absPath := pathStr
+				if !filepath.IsAbs(pathStr) {
+					if configDir == "" {
+						return nil, fmt.Errorf("archive/asset field %s needs --config-dir to resolve %q", pulumiField, pathStr)
+					}
+					absPath = filepath.Join(configDir, pathStr)
 				}
 				absPath, _ = filepath.Abs(absPath)
-				sentinel, err := buildAssetSentinel(absPath, fd.AssetType, fd.ZipAsFileArchive)
+				sentinel, err := buildAssetSentinel(absPath, fd.AssetType)
 				if err != nil && fd.AssetType == "FileArchive" && digResource != nil {
 					if fnName, ok := digResource.Attributes["function_name"].(string); ok && fnName != "" {
 						fnArn, _ := digResource.Attributes["arn"].(string)
 						fmt.Fprintf(os.Stderr, "  Downloading Lambda code for %s (%s)...\n", pulumiField, fnName)
-						sentinel, err = downloadLambdaCodeAsArchive(fnName, fnArn)
+						sentinel, err = downloadLambdaCodeAsArchive(fnName, fnArn, configDir)
 					}
 				}
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "  WARNING: could not build asset sentinel for %s (%s): %v\n",
-						pulumiField, absPath, err)
+					return nil, fmt.Errorf("cannot reconstruct %s archive/asset from %s: %w", pulumiField, absPath, err)
 				} else {
+					if fd.AssetType == "FileArchive" && pulumiField == "code" {
+						expected, _ := unwrapSecretSentinel(outputsRaw["codeSha256"]).(string)
+						if expected != "" {
+							decoded, decodeErr := base64.StdEncoding.DecodeString(expected)
+							if decodeErr != nil || len(decoded) != sha256.Size {
+								return nil, fmt.Errorf("invalid deployed codeSha256 for %s; cannot verify artifact identity", pulumiField)
+							}
+							if sentinel["hash"] != hex.EncodeToString(decoded) {
+								return nil, fmt.Errorf("archive %s does not match deployed codeSha256; recover the deployed ZIP and point --config-dir/digest filename at those bytes before retrying", absPath)
+							}
+							verifiedArchive = true
+						} else {
+							fmt.Fprintf(os.Stderr, "  WARNING: %s has no deployed codeSha256; local archive reconstruction is unverified.\n", pulumiField)
+						}
+					}
 					digVal = sentinel
 				}
 			}
@@ -638,9 +653,17 @@ func patchResourceFields(
 
 		isAssetSent := isAssetOrArchiveSentinel(digVal)
 		inputIsBadAsset := isAssetSent && inputVal != nil && !isAssetOrArchiveSentinel(inputVal)
+		repairArchive := verifiedArchive && (!equalValues(inputVal, digVal) || !equalValues(outputVal, digVal))
+		if fd.AssetType == "FileArchive" && pulumiField == "code" && !verifiedArchive && isAssetSent &&
+			((isAssetOrArchiveSentinel(inputVal) && !equalValues(inputVal, digVal)) ||
+				(isAssetOrArchiveSentinel(outputVal) && !equalValues(outputVal, digVal))) {
+			return nil, fmt.Errorf("existing code archive differs from reconstructed artifact without a deployed codeSha256; refusing an unverified archive replacement")
+		}
 
 		// Patch inputs.
-		if inputEmpty || inputIsBadPlain || inputIsBadAsset {
+		inputPatched := false
+		outputPatched := false
+		if inputEmpty || inputIsBadPlain || inputIsBadAsset || repairArchive {
 			// Skip digest values that match a suppressed falsy default. The TF SDK
 			// stores schema defaults in state, so the digest value for a bridge_default
 			// field is always the default itself. Patching it would cause the same
@@ -651,32 +674,21 @@ func patchResourceFields(
 				inputsRaw[pulumiField] = digVal
 				res.fieldsFromDigest++
 				res.patched = true
-				if isAssetSent && fd.AssetKind != nil {
-					format := 0
-					if fd.ArchiveFormat != nil {
-						format = *fd.ArchiveFormat
-					}
-					res.patchedAssetFields = append(res.patchedAssetFields, assetFieldDeltaInfo{
-						pulumiField: pulumiField,
-						tfField:     tfAttr,
-						kind:        *fd.AssetKind,
-						format:      format,
-						hashField:   fd.HashField,
-					})
-				}
+				inputPatched = true
 			} else if digSensitive {
 				res.skippedSensitive++
 			} else if fd.HasDefault && !fd.SuppressDefaultFallback && fd.Default != nil {
 				inputsRaw[pulumiField] = fd.Default
 				res.fieldsFromDefaults++
 				res.patched = true
+				inputPatched = true
 			}
 		}
 
 		// Patch outputs for simple values and asset sentinels only.
 		outputIsBadPlain := isSentinel && outputVal != nil && !isSecretSentinel(outputVal)
 		outputIsNullSentinel := isSentinel && isNullSentinel(outputVal)
-		outputStale := res.patched && !digEmpty && outputVal != nil && !outputEmpty && !equalValues(outputVal, digVal)
+		outputStale := inputPatched && !digEmpty && outputVal != nil && !outputEmpty && !equalValues(outputVal, digVal)
 		if outputEmpty || outputIsBadPlain || outputIsNullSentinel || outputStale {
 			var newOutputVal interface{}
 			if !digEmpty {
@@ -686,10 +698,22 @@ func patchResourceFields(
 			}
 			if newOutputVal != nil {
 				rawOutput := unwrapSecretSentinel(newOutputVal)
-				if isSimpleValue(rawOutput) || isAssetOrArchiveSentinel(rawOutput) {
+				if (isSimpleValue(rawOutput) || isAssetOrArchiveSentinel(rawOutput)) && !equalValues(outputVal, rawOutput) {
 					outputsRaw[pulumiField] = rawOutput
+					res.patched = true
+					outputPatched = true
 				}
 			}
+		}
+		if (inputPatched || outputPatched) && isAssetSent && fd.AssetKind != nil {
+			format := 0
+			if fd.ArchiveFormat != nil {
+				format = *fd.ArchiveFormat
+			}
+			res.patchedAssetFields = append(res.patchedAssetFields, assetFieldDeltaInfo{
+				pulumiField: pulumiField, tfField: tfAttr, kind: *fd.AssetKind,
+				format: format, hashField: fd.HashField,
+			})
 		}
 	}
 
@@ -785,6 +809,26 @@ func PatchState(
 	configSecrets map[string]string,
 	configDir string,
 ) ([]byte, *PatchStateResult, error) {
+	return PatchStateWithArchiveOptions(stateData, digest, fieldsFile, moduleMappings, resourceMappings, configSecrets, configDir, ArchiveOptions{})
+}
+
+// ArchiveOptions supplies optional program evidence for artifact selection.
+type ArchiveOptions struct {
+	Preview    *PreviewDigest
+	ProjectDir string
+}
+
+// PatchStateWithArchiveOptions uses known program FileArchive paths from a preview
+// in preference to Terraform build paths. The digest itself is never rewritten.
+func PatchStateWithArchiveOptions(
+	stateData []byte,
+	digest *ModuleMap,
+	fieldsFile *FieldsFile,
+	moduleMappings, resourceMappings map[string]string,
+	configSecrets map[string]string,
+	configDir string,
+	archiveOptions ArchiveOptions,
+) ([]byte, *PatchStateResult, error) {
 	var state map[string]interface{}
 	dec := json.NewDecoder(strings.NewReader(string(stateData)))
 	dec.UseNumber()
@@ -841,6 +885,16 @@ func PatchState(
 	nameMap := BuildDigestNameMap(digest, moduleMappings, resourceMappings, nil, stateInfos)
 
 	result := &PatchStateResult{DigestMapped: len(nameMap)}
+	programGoals := map[string]PreviewStep{}
+	if archiveOptions.Preview != nil {
+		for _, step := range archiveOptions.Preview.Steps {
+			urn := step.URN
+			if urn == "" {
+				urn, _ = step.NewState["urn"].(string)
+			}
+			programGoals[urn] = step
+		}
+	}
 
 	// Patch resources.
 	for i, raw := range resourcesRaw {
@@ -863,6 +917,26 @@ func PatchState(
 		}
 
 		digResource := nameMap[name]
+		archiveRequested := resType == "aws:lambda/function:Function" && notReadFields["code"].Asset == "FileArchive"
+		archiveSourcePresent := digResource != nil && digResource.Attributes["filename"] != nil && digResource.Attributes["filename"] != ""
+		if goal, ok := programGoals[urn]; ok && goal.NewState != nil && archiveRequested && archiveSourcePresent {
+			preview := PreviewDigest{Steps: []PreviewStep{goal}}
+			paths, err := preview.LambdaArchivePaths(archiveOptions.ProjectDir)
+			if err != nil {
+				return nil, nil, err
+			}
+			path, hasPath := paths[urn]
+			if !hasPath {
+				return nil, nil, fmt.Errorf("lambda %s does not declare a local code archive in the preview; omit code from the fields file for an image/S3-based program, or wire the deployed ZIP into the program", urn)
+			}
+			resourceCopy := *digResource
+			resourceCopy.Attributes = make(map[string]interface{}, len(digResource.Attributes))
+			for key, value := range digResource.Attributes {
+				resourceCopy.Attributes[key] = value
+			}
+			resourceCopy.Attributes["filename"] = path
+			digResource = &resourceCopy
+		}
 
 		inputsRaw, _ := rMap["inputs"].(map[string]interface{})
 		outputsRaw, _ := rMap["outputs"].(map[string]interface{})
@@ -956,16 +1030,15 @@ const (
 //
 // For FileAsset: reads the file and computes SHA256 hash.
 //
-// For FileArchive: tries these in order:
-//  1. Directory (strip .zip) → path-only sentinel, engine computes hash
-//  2. Zip file → extracts contents into an AssetArchive sentinel with
-//     StringAsset text entries for each file. The engine hashes both the
-//     state-side and program-side archives identically.
-func buildAssetSentinel(absPath, assetType string, zipAsFileArchive bool) (map[string]interface{}, error) {
+// For FileArchive, preserve the selected ZIP or directory representation. ZIPs
+// remain opaque bytes: extracting/repacking can change both contents and hashes.
+func buildAssetSentinel(absPath, assetType string) (map[string]interface{}, error) {
 	if assetType == "FileArchive" {
-		// Try directory first (strip .zip).
+		// A same-stem directory is a legacy fallback for a missing ZIP, not
+		// permission to override an explicitly selected existing artifact.
 		dirPath := strings.TrimSuffix(absPath, ".zip")
-		if info, err := os.Stat(dirPath); err == nil && info.IsDir() {
+		info, sourceErr := os.Stat(absPath)
+		if info, err := os.Stat(dirPath); os.IsNotExist(sourceErr) && err == nil && info.IsDir() {
 			hash, err := hashFileArchive(dirPath)
 			if err != nil {
 				return nil, fmt.Errorf("hashing directory %s: %w", dirPath, err)
@@ -976,33 +1049,32 @@ func buildAssetSentinel(absPath, assetType string, zipAsFileArchive bool) (map[s
 				"path": dirPath,
 			}, nil
 		}
+		if sourceErr != nil {
+			return nil, fmt.Errorf("reading archive path %s: %w", absPath, sourceErr)
+		}
 
-		// Zip file handling. Two shapes, depending on how the program declares it:
-		//   - zipAsFileArchive (CFN path): file-based FileArchive sentinel
-		//     archive(file:<hash>){path}, matching a program's FileArchive("x.zip").
-		//     The hash is Pulumi's own archive hash of the zip, identical to what
-		//     the program computes, so preview is zero-diff.
-		//   - default (TF path, unchanged): embedded AssetArchive with a
-		//     StringAsset per zip entry, matching AssetArchive({file: StringAsset}).
-		if strings.HasSuffix(absPath, ".zip") {
-			if _, err := os.Stat(absPath); err == nil {
-				if zipAsFileArchive {
-					hash, err := hashFileArchive(absPath)
-					if err != nil {
-						return nil, fmt.Errorf("hashing zip %s: %w", absPath, err)
-					}
-					return map[string]interface{}{
-						sigKey: archiveSig,
-						"hash": hash,
-						"path": absPath,
-					}, nil
-				}
-				return buildAssetArchiveFromZip(absPath)
+		// ZIP content need not have a .zip suffix (Java Lambdas commonly use .jar).
+		if info.Mode().IsRegular() {
+			reader, err := zip.OpenReader(absPath)
+			if err != nil {
+				return nil, fmt.Errorf("opening ZIP %s: %w", absPath, err)
 			}
+			if err := reader.Close(); err != nil {
+				return nil, err
+			}
+			hash, err := hashFileArchive(absPath)
+			if err != nil {
+				return nil, fmt.Errorf("hashing zip %s: %w", absPath, err)
+			}
+			return map[string]interface{}{
+				sigKey: archiveSig,
+				"hash": hash,
+				"path": absPath,
+			}, nil
 		}
 
 		// Plain directory path.
-		if info, err := os.Stat(absPath); err == nil && info.IsDir() {
+		if info.IsDir() {
 			hash, err := hashFileArchive(absPath)
 			if err != nil {
 				return nil, fmt.Errorf("hashing directory %s: %w", absPath, err)
@@ -1014,7 +1086,7 @@ func buildAssetSentinel(absPath, assetType string, zipAsFileArchive bool) (map[s
 			}, nil
 		}
 
-		return nil, fmt.Errorf("archive path not found: %s", absPath)
+		return nil, fmt.Errorf("archive path is not a regular file or directory: %s", absPath)
 	}
 
 	// FileAsset: hash the file contents. This branch is shared by TF and CFN and
@@ -1042,85 +1114,10 @@ func buildAssetSentinel(absPath, assetType string, zipAsFileArchive bool) (map[s
 	}, nil
 }
 
-// buildAssetArchiveFromZip reads a zip file and constructs an AssetArchive
-// sentinel with StringAsset text entries for each file in the zip.
-// This matches how Pulumi's AssetArchive({"file": StringAsset(content)})
-// is serialized, allowing the engine to hash both sides identically.
-func buildAssetArchiveFromZip(zipPath string) (map[string]interface{}, error) {
-	r, err := zip.OpenReader(zipPath)
-	if err != nil {
-		return nil, fmt.Errorf("opening zip %s: %w", zipPath, err)
-	}
-	defer r.Close()
-
-	assets := make(map[string]interface{})
-	for _, f := range r.File {
-		if f.FileInfo().IsDir() {
-			continue
-		}
-		rc, err := f.Open()
-		if err != nil {
-			return nil, fmt.Errorf("reading %s from zip: %w", f.Name, err)
-		}
-		content, err := io.ReadAll(rc)
-		rc.Close()
-		if err != nil {
-			return nil, fmt.Errorf("reading %s from zip: %w", f.Name, err)
-		}
-
-		// Compute hash of the individual file.
-		h := sha256.New()
-		h.Write(content)
-		hash := hex.EncodeToString(h.Sum(nil))
-
-		assets[f.Name] = map[string]interface{}{
-			sigKey: assetSig,
-			"hash": hash,
-			"text": string(content),
-		}
-	}
-
-	// Compute overall archive hash using the Pulumi SDK, matching what the
-	// engine computes for AssetArchive({"file": StringAsset(content)}).
-	archiveAssets := make(map[string]interface{})
-	for _, f := range r.File {
-		if f.FileInfo().IsDir() {
-			continue
-		}
-		rc, err := f.Open()
-		if err != nil {
-			continue
-		}
-		content, err := io.ReadAll(rc)
-		rc.Close()
-		if err != nil {
-			continue
-		}
-		a, err := pulumiasset.FromText(string(content))
-		if err != nil {
-			continue
-		}
-		archiveAssets[f.Name] = a
-	}
-	arch, err := pulumiarchive.FromAssets(archiveAssets)
-	if err != nil {
-		return nil, fmt.Errorf("creating archive for hash: %w", err)
-	}
-	if err := arch.EnsureHash(); err != nil {
-		return nil, fmt.Errorf("computing archive hash: %w", err)
-	}
-
-	return map[string]interface{}{
-		sigKey:   archiveSig,
-		"hash":   arch.Hash,
-		"assets": assets,
-	}, nil
-}
-
 // lambdaCodeLocation calls Lambda GetFunction and returns the presigned
-// download URL for the function's deployed code. The region is extracted
+// download URL and expected hash for the function's deployed code. The region is extracted
 // from the function ARN (arn:aws:lambda:REGION:...) when provided.
-func lambdaCodeLocation(ctx context.Context, functionName, arn, fallbackRegion string) (string, error) {
+func lambdaCodeLocation(ctx context.Context, functionName, arn, fallbackRegion string) (string, string, error) {
 	var optFns []func(*awsconfig.LoadOptions) error
 	// Prefer the function's OWN region from its ARN (arn:aws:lambda:REGION:...)
 	// so each Lambda is fetched from where it actually lives. Fall back to
@@ -1143,7 +1140,7 @@ func lambdaCodeLocation(ctx context.Context, functionName, arn, fallbackRegion s
 
 	cfg, err := awsconfig.LoadDefaultConfig(ctx, optFns...)
 	if err != nil {
-		return "", fmt.Errorf("loading AWS config: %w", err)
+		return "", "", fmt.Errorf("loading AWS config: %w", err)
 	}
 
 	client := lambda.NewFromConfig(cfg)
@@ -1151,48 +1148,70 @@ func lambdaCodeLocation(ctx context.Context, functionName, arn, fallbackRegion s
 		FunctionName: &functionName,
 	})
 	if err != nil {
-		return "", fmt.Errorf("getting function %s: %w", functionName, err)
+		return "", "", fmt.Errorf("getting function %s: %w", functionName, err)
 	}
 
 	if result.Code == nil || result.Code.Location == nil {
-		return "", fmt.Errorf("no code location for function %s", functionName)
+		return "", "", fmt.Errorf("no code location for function %s", functionName)
 	}
-
-	return *result.Code.Location, nil
+	if result.Configuration == nil || result.Configuration.CodeSha256 == nil || *result.Configuration.CodeSha256 == "" {
+		return "", "", fmt.Errorf("no deployed code hash for function %s", functionName)
+	}
+	return *result.Code.Location, *result.Configuration.CodeSha256, nil
 }
 
-// downloadLambdaCodeAsArchive downloads a Lambda function's deployed code from AWS,
-// extracts the zip, and constructs an AssetArchive sentinel with StringAsset entries.
+// downloadLambdaCodeAsArchive preserves the deployed ZIP in durable, content-addressed
+// storage and returns a FileArchive. It never converts binary entries through text.
 // The region is extracted from the function ARN (arn:aws:lambda:REGION:...).
-func downloadLambdaCodeAsArchive(functionName, arn string) (map[string]interface{}, error) {
+func downloadLambdaCodeAsArchive(functionName, arn, artifactRoot string) (map[string]interface{}, error) {
+	if artifactRoot == "" {
+		return nil, fmt.Errorf("recovering Lambda code requires --config-dir for durable artifact storage")
+	}
 	ctx := context.Background()
-
-	location, err := lambdaCodeLocation(ctx, functionName, arn, "")
+	directory, err := filepath.Abs(filepath.Join(artifactRoot, ".pulumi-import-artifacts"))
 	if err != nil {
 		return nil, err
 	}
-
-	// Download the zip from the presigned URL.
-	resp, err := http.Get(location)
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return nil, err
+	}
+	temporary, err := os.CreateTemp(directory, ".recover-*.zip")
 	if err != nil {
-		return nil, fmt.Errorf("downloading code for %s: %w", functionName, err)
+		return nil, err
 	}
-	defer resp.Body.Close()
-
-	// Write to temp file (zip.OpenReader needs a file).
-	tmpFile, err := os.CreateTemp("", "lambda-code-*.zip")
+	if err := temporary.Close(); err != nil {
+		return nil, err
+	}
+	defer os.Remove(temporary.Name())
+	if err := DownloadLambdaCodeToFile(ctx, functionName, arn, "", temporary.Name()); err != nil {
+		return nil, err
+	}
+	archive, err := buildAssetSentinel(temporary.Name(), "FileArchive")
 	if err != nil {
-		return nil, fmt.Errorf("creating temp file: %w", err)
+		return nil, err
 	}
-	defer os.Remove(tmpFile.Name())
-
-	if _, err := io.Copy(tmpFile, resp.Body); err != nil {
-		tmpFile.Close()
-		return nil, fmt.Errorf("writing code zip: %w", err)
+	destination := filepath.Join(directory, archive["hash"].(string)+".zip")
+	if info, err := os.Lstat(destination); err == nil {
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("recovered artifact path is not a regular file: %s", destination)
+		}
+		existing, err := buildAssetSentinel(destination, "FileArchive")
+		if err != nil {
+			return nil, err
+		}
+		if existing["hash"] != archive["hash"] {
+			return nil, fmt.Errorf("existing recovered artifact content does not match its address: %s", destination)
+		}
+	} else if os.IsNotExist(err) {
+		if err := os.Rename(temporary.Name(), destination); err != nil {
+			return nil, err
+		}
+	} else {
+		return nil, err
 	}
-	tmpFile.Close()
-
-	return buildAssetArchiveFromZip(tmpFile.Name())
+	archive["path"] = destination
+	fmt.Fprintf(os.Stderr, "  Recovered Lambda ZIP at %s; retain it and reference it from the program.\n", destination)
+	return archive, nil
 }
 
 // DownloadLambdaCodeToFile downloads a Lambda function's deployed code zip
@@ -1200,32 +1219,55 @@ func downloadLambdaCodeAsArchive(functionName, arn string) (map[string]interface
 // Used by `patch-state cfn` Tier 2 to pre-download deployed Lambda code so
 // it can be referenced as a local FileArchive asset.
 func DownloadLambdaCodeToFile(ctx context.Context, functionName, arn, region, destPath string) error {
-	location, err := lambdaCodeLocation(ctx, functionName, arn, region)
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	location, expectedHash, err := lambdaCodeLocation(ctx, functionName, arn, region)
 	if err != nil {
 		return err
 	}
 
-	resp, err := http.Get(location)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, location, nil)
 	if err != nil {
+		return fmt.Errorf("invalid Lambda code download URL for %s", functionName)
+	}
+	resp, err := http.DefaultClient.Do(request)
+	if err != nil {
+		var urlError *url.Error
+		if errors.As(err, &urlError) {
+			err = urlError.Err
+		}
 		return fmt.Errorf("downloading code for %s: %w", functionName, err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("downloading code for %s: HTTP %d", functionName, resp.StatusCode)
+	}
 
 	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
 		return fmt.Errorf("creating directory for %s: %w", destPath, err)
 	}
 
-	f, err := os.Create(destPath)
+	f, err := os.CreateTemp(filepath.Dir(destPath), ".lambda-download-*.zip")
 	if err != nil {
 		return fmt.Errorf("creating %s: %w", destPath, err)
 	}
+	defer os.Remove(f.Name())
 	defer f.Close()
 
-	if _, err := io.Copy(f, resp.Body); err != nil {
+	hash := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(f, hash), resp.Body); err != nil {
 		return fmt.Errorf("writing code zip to %s: %w", destPath, err)
 	}
-
-	return nil
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if base64.StdEncoding.EncodeToString(hash.Sum(nil)) != expectedHash {
+		return fmt.Errorf("downloaded Lambda ZIP does not match GetFunction CodeSha256; destination left unchanged")
+	}
+	if _, err := buildAssetSentinel(f.Name(), "FileArchive"); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), destPath)
 }
 
 // assetFieldDeltaInfo holds info needed to inject an asset delta entry.
