@@ -86,7 +86,7 @@ jobs:
           mkdir -p "$HOME/.terraform.d/plugin-cache"
 
       - name: Authenticate with Pulumi Cloud via OIDC
-        uses: pulumi/auth-actions@141415910c3beb54e03b48e9057c204c97b956f2 # v2
+        uses: pulumi/auth-actions@159c3e431aab767d4519b96f3f784d7d3d725622 # v2
         with:
           organization: team-ce
           requested-token-type: urn:pulumi:token-type:access_token:organization
@@ -169,7 +169,7 @@ jobs:
       # then destroy best-effort before the runner (and the state) vanish.
       - name: Upload leaked fixture state
         if: always() && steps.e2e.outcome != 'success' && steps.e2e.outcome != 'skipped'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-tf-fixtures
           path: /tmp/pulumi-tool-import-e2e-tf-*
