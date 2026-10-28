@@ -185,6 +185,12 @@ type fixtureResourceIDs struct {
 	eachIoTCertificateIDs []string
 
 	moduleIoTCertificateID string
+
+	kinesisStreamName string
+	logGroupName      string
+
+	rpaRoleName  string
+	rpaPolicyArn string
 }
 
 func loadFixtureResourceIDs(tfDir string) (fixtureResourceIDs, error) {
@@ -258,6 +264,13 @@ func loadFixtureResourceIDs(tfDir string) (fixtureResourceIDs, error) {
 			ids.lambdaFunctionName = attrString(attrs, "function_name")
 		case r.Type == "aws_iam_role" && r.Name == "lambda":
 			ids.iamRoleName = attrString(attrs, "name")
+		case r.Type == "aws_kinesis_stream" && r.Name == "stream":
+			ids.kinesisStreamName = attrString(attrs, "name")
+		case r.Type == "aws_cloudwatch_log_group" && r.Name == "lg":
+			ids.logGroupName = attrString(attrs, "name")
+		case r.Type == "aws_iam_role_policy_attachment" && r.Name == "rpa":
+			ids.rpaRoleName = attrString(attrs, "role")
+			ids.rpaPolicyArn = attrString(attrs, "policy_arn")
 		}
 	}
 	return ids, nil

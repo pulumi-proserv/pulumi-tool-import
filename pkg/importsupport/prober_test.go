@@ -158,6 +158,115 @@ func TestProberDiscardsTheDeadProvider(t *testing.T) {
 	assert.Empty(t, p.providers, "the dead provider should not stay cached")
 }
 
+// crashyOnceProvider crashes on every call to ImportResourceState for one
+// designated type and answers normally for everything else, so it stands in
+// for a provider where a single resource type (e.g. aws_kinesis_stream) takes
+// the plugin process down.
+type crashyOnceProvider struct {
+	providers.Interface
+	crashType string
+	closed    bool
+}
+
+func (c *crashyOnceProvider) Name() string    { return "crashy" }
+func (c *crashyOnceProvider) Version() string { return "0.0.0" }
+
+func (c *crashyOnceProvider) Close(context.Context) error {
+	c.closed = true
+	return nil
+}
+
+func (c *crashyOnceProvider) ImportResourceState(
+	_ context.Context, req providers.ImportResourceStateRequest,
+) providers.ImportResourceStateResponse {
+	var diags tfdiags.Diagnostics
+	if req.TypeName == c.crashType {
+		return providers.ImportResourceStateResponse{
+			Diagnostics: diags.Append(errors.New("rpc error: code = Unavailable desc = Plugin did not respond")),
+		}
+	}
+	return providers.ImportResourceStateResponse{}
+}
+
+// A crash on one type must not poison the types probed after it: the
+// provider is reloaded and answers the rest for real, rather than falling
+// back to the curated list for everything.
+func TestProberRestartsAfterASingleCrashingType(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	var loads int
+	var instances []*crashyOnceProvider
+	warnings := &[]string{}
+	p := NewProber(map[string]string{awsProvider: "5.100.0"})
+	p.loadProvider = func(context.Context, string, string) (tfprovider.Provider, error) {
+		loads++
+		inst := &crashyOnceProvider{crashType: "crashy"}
+		instances = append(instances, inst)
+		return inst, nil
+	}
+	p.Warn = func(msg string) { *warnings = append(*warnings, msg) }
+	defer p.Close(ctx)
+
+	a := p.Check(ctx, awsProvider, "a")
+	crashy := p.Check(ctx, awsProvider, "crashy")
+	b := p.Check(ctx, awsProvider, "b")
+
+	assert.Equal(t, Supported, a)
+	assert.Equal(t, Supported, b, "the type after the crash should get a real verdict from the reloaded provider")
+	assert.Equal(t, Unknown, crashy, "the crashed type falls back since the curated list does not cover it")
+	assert.Equal(t, 2, loads, "the provider should be reloaded once after the crash")
+	require.Len(t, instances, 2)
+	assert.True(t, instances[0].closed, "the crashed instance should be shut down")
+	assert.NotEmpty(t, *warnings)
+}
+
+// Once a provider has crashed maxProviderRestarts times, it is given up on:
+// remaining types are answered from the fallback without paying for another
+// reload.
+func TestProberGivesUpAfterRestartBudgetExhausted(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	var loads int
+	p := NewProber(map[string]string{awsProvider: "5.100.0"})
+	p.loadProvider = func(context.Context, string, string) (tfprovider.Provider, error) {
+		loads++
+		return &alwaysCrashesProvider{}, nil
+	}
+	p.Warn = func(string) {}
+	defer p.Close(ctx)
+
+	verdicts := make([]Support, 0, 5)
+	for _, tfType := range []string{"crash1", "crash2", "crash3", "crash4", "crash5"} {
+		verdicts = append(verdicts, p.Check(ctx, awsProvider, tfType))
+	}
+
+	for _, v := range verdicts {
+		assert.Equal(t, Unknown, v)
+	}
+	assert.Equal(t, maxProviderRestarts, loads,
+		"the provider should be loaded once per crash up to the restart budget, then never again")
+}
+
+// alwaysCrashesProvider crashes on ImportResourceState for every type.
+type alwaysCrashesProvider struct {
+	providers.Interface
+}
+
+func (alwaysCrashesProvider) Name() string                { return "always-crashes" }
+func (alwaysCrashesProvider) Version() string             { return "0.0.0" }
+func (alwaysCrashesProvider) Close(context.Context) error { return nil }
+
+func (alwaysCrashesProvider) ImportResourceState(
+	context.Context, providers.ImportResourceStateRequest,
+) providers.ImportResourceStateResponse {
+	var diags tfdiags.Diagnostics
+	return providers.ImportResourceStateResponse{
+		Diagnostics: diags.Append(errors.New("rpc error: code = Unavailable desc = Plugin did not respond")),
+	}
+}
+
 func TestProberResolvesEquivalentRegistryHosts(t *testing.T) {
 	t.Parallel()
 

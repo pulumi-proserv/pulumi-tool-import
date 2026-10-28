@@ -21,13 +21,14 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/pulumi-proserv/pulumi-tool-import/internal/tfaddr"
 	"github.com/pulumi/opentofu/addrs"
 )
 
 // moduleSegment represents a single module in a Terraform address path.
 type moduleSegment struct {
-	name string // e.g., "vpc"
-	key  string // e.g., "0" or "us-east-1" for indexed/keyed modules, empty for non-indexed
+	name string
+	key  addrs.InstanceKey
 }
 
 // deriveComponentTypeToken generates a Pulumi type token from a module name.
@@ -67,82 +68,26 @@ func sanitizeModuleInstanceName(moduleName, key string) string {
 	return moduleName + "-" + sanitized
 }
 
-// moduleIndexRegex matches module indices like [0] or ["us-east-1"]
-var moduleIndexRegex = regexp.MustCompile(`^([^\[]+)\[(?:"([^"]+)"|(\d+))\]$`)
-
 // parseModuleSegments extracts module path segments from a Terraform resource address.
 // Example: "module.vpc.module.subnets.aws_subnet.this" -> [{name:"vpc"}, {name:"subnets"}]
 // Returns nil for root-level resources (no module prefix).
 // Handles dots inside quoted for_each keys (e.g., module.region["ap.southeast.2"]).
 func parseModuleSegments(address string) []moduleSegment {
-	// Split on dots that are NOT inside square brackets to handle keys with dots.
-	parts := splitAddressParts(address)
-	var segments []moduleSegment
-
-	for i := 0; i < len(parts); i++ {
-		if parts[i] != "module" {
-			break
-		}
-		if i+1 >= len(parts) {
-			break
-		}
-		i++
-		raw := parts[i]
-
-		seg := moduleSegment{}
-		if m := moduleIndexRegex.FindStringSubmatch(raw); m != nil {
-			seg.name = m[1]
-			if m[2] != "" {
-				seg.key = m[2] // string key
-			} else {
-				seg.key = m[3] // numeric index
-			}
-		} else {
-			seg.name = raw
-		}
-		segments = append(segments, seg)
+	instance, err := tfaddr.ParseResource(address)
+	if err != nil {
+		return nil
 	}
-
-	return segments
-}
-
-// splitAddressParts splits a TF address on dots, respecting quoted brackets.
-// "module.region[\"ap.southeast.2\"].random_pet.this" splits correctly into
-// ["module", "region[\"ap.southeast.2\"]", "random_pet", "this"].
-func splitAddressParts(address string) []string {
-	var parts []string
-	var current strings.Builder
-	inBrackets := false
-
-	for _, ch := range address {
-		switch {
-		case ch == '[':
-			inBrackets = true
-			current.WriteRune(ch)
-		case ch == ']':
-			inBrackets = false
-			current.WriteRune(ch)
-		case ch == '.' && !inBrackets:
-			parts = append(parts, current.String())
-			current.Reset()
-		default:
-			current.WriteRune(ch)
-		}
-	}
-	if current.Len() > 0 {
-		parts = append(parts, current.String())
-	}
-	return parts
+	return moduleSegmentsFromAddr(instance.Module)
 }
 
 // componentNode represents a component resource in the tree.
 type componentNode struct {
-	name         string           // module name (e.g., "vpc")
-	key          string           // index/key if present
-	resourceName string           // Pulumi resource name (e.g., "vpc" or "vpc-0")
-	typeToken    string           // Pulumi type token
-	modulePath   string           // full TF module path (e.g., "module.vpc.module.subnets")
-	children     []*componentNode // child components
+	name         string            // module name (e.g., "vpc")
+	key          addrs.InstanceKey // index/key if present
+	resourceName string            // Pulumi resource name (e.g., "vpc" or "vpc-0")
+	typeToken    string            // Pulumi type token
+	modulePath   string            // full TF module path (e.g., "module.vpc.module.subnets")
+	children     []*componentNode  // child components
 }
 
 // buildComponentTree constructs a tree of component nodes from TF resource addresses.
@@ -188,8 +133,8 @@ func buildComponentTree(resourceAddresses []string, typeOverrides map[string]str
 	for _, info := range allPaths {
 		lastSeg := info.segments[len(info.segments)-1]
 		resName := lastSeg.name
-		if lastSeg.key != "" {
-			resName = sanitizeModuleInstanceName(lastSeg.name, lastSeg.key)
+		if lastSeg.key != addrs.NoKey {
+			resName = sanitizeModuleInstanceName(lastSeg.name, tfaddr.KeyValue(lastSeg.key))
 		}
 
 		// Determine type token: check override using base path (without index)
@@ -264,15 +209,7 @@ func buildComponentTree(resourceAddresses []string, typeOverrides map[string]str
 // buildModulePath constructs a full module path string from segments.
 // Example: [{name:"vpc"}, {name:"subnets"}] -> "module.vpc.module.subnets"
 func buildModulePath(segments []moduleSegment) string {
-	var parts []string
-	for _, seg := range segments {
-		if seg.key != "" {
-			parts = append(parts, fmt.Sprintf("module.%s[%s]", seg.name, formatKey(seg.key)))
-		} else {
-			parts = append(parts, "module."+seg.name)
-		}
-	}
-	return strings.Join(parts, ".")
+	return moduleAddrFromSegments(segments).String()
 }
 
 // buildModuleBasePath constructs a module path without indices/keys for type override matching.
@@ -285,25 +222,22 @@ func buildModuleBasePath(segments []moduleSegment) string {
 	return strings.Join(parts, ".")
 }
 
-func formatKey(key string) string {
-	if _, err := fmt.Sscanf(key, "%d", new(int)); err == nil {
-		return key
+func moduleAddrFromSegments(segments []moduleSegment) addrs.ModuleInstance {
+	addr := addrs.RootModuleInstance
+	for _, seg := range segments {
+		addr = addr.Child(seg.name, seg.key)
 	}
-	return `"` + key + `"`
+	return addr
 }
 
 // moduleSegmentsFromAddr converts an addrs.ModuleInstance to a slice of moduleSegment.
 func moduleSegmentsFromAddr(addr addrs.ModuleInstance) []moduleSegment {
+	if len(addr) == 0 {
+		return nil
+	}
 	segments := make([]moduleSegment, len(addr))
 	for i, step := range addr {
-		seg := moduleSegment{name: step.Name}
-		switch k := step.InstanceKey.(type) {
-		case addrs.IntKey:
-			seg.key = fmt.Sprintf("%d", int(k))
-		case addrs.StringKey:
-			seg.key = string(k)
-		}
-		segments[i] = seg
+		segments[i] = moduleSegment{name: step.Name, key: step.InstanceKey}
 	}
 	return segments
 }

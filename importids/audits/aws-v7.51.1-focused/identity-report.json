@@ -1,0 +1,116 @@
+{
+  "reportVersion": 1,
+  "destination": {"repository": "https://github.com/pulumi/pulumi-aws", "release": "v7.51.1", "commit": "ca34048d18e00d42c77ea43fa758568b3051fa0d", "upstreamCommit": "d0cb9698b41b21c587043949fde0bac0459e335a"},
+  "historicalSources": [{"repository": "https://github.com/hashicorp/terraform-provider-aws", "release": "v3.74.3", "commit": "dbf2b9c4d6a7fd3355d4e9931b34f0de89070217"}],
+  "sources": {
+    "destination": {"repository": "https://github.com/pulumi/pulumi-aws", "release": "v7.51.1", "commit": "ca34048d18e00d42c77ea43fa758568b3051fa0d"},
+    "upstream": {"repository": "https://github.com/hashicorp/terraform-provider-aws", "release": "v6.69.1", "commit": "d0cb9698b41b21c587043949fde0bac0459e335a"},
+    "historical": {"repository": "https://github.com/hashicorp/terraform-provider-aws", "release": "v3.74.3", "commit": "dbf2b9c4d6a7fd3355d4e9931b34f0de89070217"}
+  },
+  "coverage": {
+    "selectedResources": ["aws_cloudtrail", "aws_iam_user_policy_attachment", "aws_iam_group_policy_attachment", "aws_iam_role_policy_attachment", "aws_cloudwatch_event_target"],
+    "processedResources": ["aws_cloudtrail", "aws_iam_user_policy_attachment", "aws_iam_group_policy_attachment", "aws_iam_role_policy_attachment", "aws_cloudwatch_event_target"],
+    "unprocessedResources": [], "complete": true, "fullProviderBaseline": false, "liveImportsPerformed": false
+  },
+  "incremental": {
+    "dependencyClosureComplete": false,
+    "sharedWatchPaths": {"upstream": ["internal/provider/", "internal/types/", "internal/acctest/", "go.mod", "go.sum"], "destination": ["provider/", "patches/", "upstream"]},
+    "invalidation": "Re-audit resources whose evidence or dependency paths change, plus additions and removals. Shared dependency, prompt, schema, or unknown-impact changes require broader review. This focused report is not sufficient to skip resources in a full-provider baseline."
+  },
+  "resources": [
+    {
+      "terraformType": "aws_cloudtrail", "pulumiTypes": ["aws:cloudtrail/trail:Trail"], "decision": "composer",
+      "destinationContract": {"acceptedForms": ["Trail ARN"], "contextRequirements": ["AWS credentials for the intended account", "Explicit import region must match ARN region; otherwise the SDK importer derives it from the ARN"], "normalization": "Current Create stores ARN. Native ARN import preserves that ID.", "evidence": ["trail-register", "trail-import", "trail-create", "trail-doc", "trail-test"]},
+      "sourceRepresentations": [
+        {"commit": "dbf2b9c4d6a7fd3355d4e9931b34f0de89070217", "schemaVersion": 0, "idShape": "trail name", "identityAttributes": ["name", "arn"], "compatibility": "Normalize a matching name to arn; do not assume an old name passes the destination ARN parser.", "evidence": ["trail-old-create", "trail-old-read", "trail-upgrade", "trail-old-doc"]},
+        {"commit": "d0cb9698b41b21c587043949fde0bac0459e335a", "schemaVersion": 1, "idShape": "trail ARN", "identityAttributes": ["name", "arn"], "compatibility": "Pass-through works for current ARN IDs.", "evidence": ["trail-create", "trail-upgrade"]}
+      ],
+      "resolution": {"template": null, "composer": "composeCloudTrail", "preconditions": ["Structurally valid cloudtrail ARN with nonempty region/account and trail resource", "Historical name agrees with ARN trail name", "Present arn is a string and is not redacted"], "inputPrecedence": ["Preserve valid ID when arn is absent or agrees", "Otherwise use arn for a matching historical name"], "failureBehavior": "Retain original ID and emit cannot-compose diagnostic on malformed, conflicting, or insufficient identity."},
+      "uncertainties": ["No live import or original customer-state inspection", "No exhaustive historical release boundary", "ARN shape checks do not validate cloud existence or caller permissions"],
+      "changesFromExistingCatalog": ["Strengthen prefix-only ARN acceptance and reject conflicts/name mismatches"],
+      "dependencyWatchPaths": {"upstream": ["internal/service/cloudtrail/", "website/docs/r/cloudtrail.html.markdown"], "historical": ["internal/service/cloudtrail/", "website/docs/r/cloudtrail.html.markdown"]},
+      "evidence": [
+        {"id": "trail-register", "source": "upstream", "path": "internal/service/cloudtrail/service_package_gen.go", "startLine": 48, "endLine": 63, "symbol": "SDKResources", "observation": "Managed resource has regional ARN identity and wrapped import.", "kind": "implementation"},
+        {"id": "trail-import", "source": "upstream", "path": "internal/provider/sdkv2/importer/arn.go", "startLine": 16, "endLine": 37, "symbol": "RegionalARN", "observation": "Parses ARN before reading; validates explicit region or derives it.", "kind": "implementation"},
+        {"id": "trail-create", "source": "upstream", "path": "internal/service/cloudtrail/trail.go", "startLine": 337, "endLine": 337, "symbol": "resourceTrailCreate", "observation": "Sets ID to CreateTrail output TrailARN.", "kind": "implementation"},
+        {"id": "trail-upgrade", "source": "upstream", "path": "internal/service/cloudtrail/trail.go", "startLine": 1120, "endLine": 1129, "symbol": "trailUpgradeV0", "observation": "Replaces non-ARN state ID with arn attribute.", "kind": "upgrader"},
+        {"id": "trail-old-create", "source": "historical", "path": "internal/service/cloudtrail/cloudtrail.go", "startLine": 314, "endLine": 314, "symbol": "resourceCloudTrailCreate", "observation": "Sets ID to returned trail Name.", "kind": "implementation"},
+        {"id": "trail-old-read", "source": "historical", "path": "internal/service/cloudtrail/cloudtrail.go", "startLine": 352, "endLine": 395, "symbol": "resourceCloudTrailRead", "observation": "Looks up trail and stores arn separately from name ID.", "kind": "implementation"},
+        {"id": "trail-old-doc", "source": "historical", "path": "website/docs/r/cloudtrail.html.markdown", "startLine": 365, "endLine": 370, "symbol": "Import", "observation": "Documents name-based import.", "kind": "documentation"},
+        {"id": "trail-doc", "source": "upstream", "path": "website/docs/r/cloudtrail.html.markdown", "startLine": 413, "endLine": 416, "symbol": "Import", "observation": "Documents ARN import.", "kind": "documentation"},
+        {"id": "trail-test", "source": "upstream", "path": "internal/service/cloudtrail/trail_test.go", "startLine": 37, "endLine": 55, "symbol": "testAccTrail_basic", "observation": "Create followed by default state-ID import; current ID is ARN.", "kind": "test"},
+        {"id": "trail-bridge", "source": "destination", "path": "provider/resource_overrides.go", "startLine": 417, "endLine": 418, "symbol": "resource overrides", "observation": "Maps aws_cloudtrail to Trail; no per-resource import-ID override.", "kind": "implementation"}
+      ]
+    },
+    {
+      "terraformType": "aws_iam_user_policy_attachment", "pulumiTypes": ["aws:iam/userPolicyAttachment:UserPolicyAttachment"], "decision": "composer",
+      "destinationContract": {"acceptedForms": ["user/policy_arn, split at the first slash"], "contextRequirements": ["IAM credentials for the account containing the user"], "normalization": "Current Create and import store slash form; Read uses user and policy_arn attributes.", "evidence": ["user-current", "user-parser", "user-doc", "user-test"]},
+      "sourceRepresentations": [{"commit": "dbf2b9c4d6a7fd3355d4e9931b34f0de89070217", "schemaVersion": 0, "idShape": "generated user-prefixed ID on create; user-policyARN after import", "identityAttributes": ["user", "policy_arn"], "compatibility": "Compose from attributes; do not split generated/hyphenated ID.", "evidence": ["user-old"]}],
+      "resolution": {"template": "{user}/{policy_arn}", "composer": "attachmentComposer(user)", "preconditions": ["Nonempty string user without slash", "IAM policy ARN", "No conflict with a valid slash import ID"], "inputPrecedence": ["Attributes, checked against valid import ID", "Valid import ID supplies absent components"], "failureBehavior": "Malformed, redacted, missing, or conflicting identity remains unresolved."},
+      "uncertainties": ["Opaque generated IDs cannot independently confirm the attribute identity", "No live import"],
+      "changesFromExistingCatalog": ["Keep generated template evidence; add runtime type/ARN/conflict checks and valid-ID fallback"],
+      "dependencyWatchPaths": {"upstream": ["internal/service/iam/", "website/docs/r/iam_user_policy_attachment.html.markdown"], "historical": ["internal/service/iam/", "website/docs/r/iam_user_policy_attachment.markdown"]},
+      "evidence": [
+        {"id": "user-current", "source": "upstream", "path": "internal/service/iam/user_policy_attachment.go", "startLine": 28, "endLine": 99, "symbol": "resourceUserPolicyAttachment", "observation": "Identity registration, slash-ID creation, and attribute-based read.", "kind": "implementation"},
+        {"id": "user-parser", "source": "upstream", "path": "internal/service/iam/user_policy_attachment.go", "startLine": 199, "endLine": 225, "symbol": "userPolicyAttachmentImportID", "observation": "SplitN on first slash, reject empty components, preserve import ID.", "kind": "implementation"},
+        {"id": "user-old", "source": "historical", "path": "internal/service/iam/user_policy_attachment.go", "startLine": 15, "endLine": 140, "symbol": "ResourceUserPolicyAttachment", "observation": "Generated ID on create; importer accepts slash input and stores hyphen ID.", "kind": "implementation"},
+        {"id": "user-doc", "source": "upstream", "path": "website/docs/r/iam_user_policy_attachment.html.markdown", "startLine": 83, "endLine": 86, "symbol": "Import", "observation": "Documents user/policy ARN.", "kind": "documentation"},
+        {"id": "user-test", "source": "upstream", "path": "internal/service/iam/user_policy_attachment_test.go", "startLine": 172, "endLine": 181, "symbol": "testAccUserPolicyAttachmentImportStateIdFunc", "observation": "Explicitly composes user/policy_arn even though current Create uses that form.", "kind": "test"},
+        {"id": "user-bridge", "source": "destination", "path": "provider/resource_overrides.go", "startLine": 1316, "endLine": 1324, "symbol": "resource overrides", "observation": "Renames policy_arn to policyArn and types user; no import grammar change.", "kind": "implementation"}
+      ]
+    },
+    {
+      "terraformType": "aws_iam_group_policy_attachment", "pulumiTypes": ["aws:iam/groupPolicyAttachment:GroupPolicyAttachment"], "decision": "composer",
+      "destinationContract": {"acceptedForms": ["group/policy_arn, split at the first slash"], "contextRequirements": ["IAM credentials for the account containing the group"], "normalization": "Create uses generated ID; import stores group-policyARN, unlike user/role.", "evidence": ["group-current", "group-parser", "group-doc", "group-test"]},
+      "sourceRepresentations": [{"commit": "dbf2b9c4d6a7fd3355d4e9931b34f0de89070217", "schemaVersion": 0, "idShape": "generated group-prefixed ID on create; group-policyARN after import", "identityAttributes": ["group", "policy_arn"], "compatibility": "Compose from attributes.", "evidence": ["group-old"]}],
+      "resolution": {"template": "{group}/{policy_arn}", "composer": "attachmentComposer(group)", "preconditions": ["Nonempty string group without slash", "IAM policy ARN", "No conflict with a valid slash import ID"], "inputPrecedence": ["Attributes, checked against valid import ID", "Valid import ID supplies absent components"], "failureBehavior": "Malformed, redacted, missing, or conflicting identity remains unresolved."},
+      "uncertainties": ["Opaque generated/hyphenated IDs are not parsed", "No live import"],
+      "changesFromExistingCatalog": ["Keep generated template evidence; add runtime type/ARN/conflict checks and valid-ID fallback"],
+      "dependencyWatchPaths": {"upstream": ["internal/service/iam/", "website/docs/r/iam_group_policy_attachment.html.markdown"], "historical": ["internal/service/iam/", "website/docs/r/iam_group_policy_attachment.markdown"]},
+      "evidence": [
+        {"id": "group-current", "source": "upstream", "path": "internal/service/iam/group_policy_attachment.go", "startLine": 28, "endLine": 105, "symbol": "resourceGroupPolicyAttachment", "observation": "Identity registration, generated-ID create, and attribute-based read.", "kind": "implementation"},
+        {"id": "group-parser", "source": "upstream", "path": "internal/service/iam/group_policy_attachment.go", "startLine": 202, "endLine": 218, "symbol": "groupPolicyAttachmentImportID", "observation": "Slash import syntax normalizes to hyphen state ID.", "kind": "implementation"},
+        {"id": "group-old", "source": "historical", "path": "internal/service/iam/group_policy_attachment.go", "startLine": 15, "endLine": 138, "symbol": "ResourceGroupPolicyAttachment", "observation": "Generated create ID and slash import syntax with hyphen normalization.", "kind": "implementation"},
+        {"id": "group-doc", "source": "upstream", "path": "website/docs/r/iam_group_policy_attachment.html.markdown", "startLine": 84, "endLine": 87, "symbol": "Import", "observation": "Documents group/policy ARN.", "kind": "documentation"},
+        {"id": "group-test", "source": "upstream", "path": "internal/service/iam/group_policy_attachment_test.go", "startLine": 169, "endLine": 178, "symbol": "testAccGroupPolicyAttachmentImportStateIdFunc", "observation": "Composes group/policy_arn from state attributes.", "kind": "test"},
+        {"id": "group-bridge", "source": "destination", "path": "provider/resource_overrides.go", "startLine": 1179, "endLine": 1192, "symbol": "resource overrides", "observation": "Field mapping and delete-before-replace; no import grammar change.", "kind": "implementation"}
+      ]
+    },
+    {
+      "terraformType": "aws_iam_role_policy_attachment", "pulumiTypes": ["aws:iam/rolePolicyAttachment:RolePolicyAttachment"], "decision": "composer",
+      "destinationContract": {"acceptedForms": ["role/policy_arn, split at the first slash"], "contextRequirements": ["IAM credentials for the account containing the role"], "normalization": "Current Create and import store slash form; Read uses role and policy_arn attributes.", "evidence": ["role-current", "role-parser", "role-doc", "role-test"]},
+      "sourceRepresentations": [{"commit": "dbf2b9c4d6a7fd3355d4e9931b34f0de89070217", "schemaVersion": 0, "idShape": "generated role-prefixed ID on create; role-policyARN after import", "identityAttributes": ["role", "policy_arn"], "compatibility": "Compose from attributes.", "evidence": ["role-old"]}],
+      "resolution": {"template": "{role}/{policy_arn}", "composer": "attachmentComposer(role)", "preconditions": ["Nonempty string role without slash", "IAM policy ARN", "No conflict with a valid slash import ID"], "inputPrecedence": ["Attributes, checked against valid import ID", "Valid import ID supplies absent components"], "failureBehavior": "Malformed, redacted, missing, or conflicting identity remains unresolved."},
+      "uncertainties": ["Opaque generated/hyphenated IDs are not parsed", "No live import"],
+      "changesFromExistingCatalog": ["Keep generated template evidence; add runtime type/ARN/conflict checks and valid-ID fallback"],
+      "dependencyWatchPaths": {"upstream": ["internal/service/iam/", "website/docs/r/iam_role_policy_attachment.html.markdown"], "historical": ["internal/service/iam/", "website/docs/r/iam_role_policy_attachment.markdown"]},
+      "evidence": [
+        {"id": "role-current", "source": "upstream", "path": "internal/service/iam/role_policy_attachment.go", "startLine": 29, "endLine": 100, "symbol": "resourceRolePolicyAttachment", "observation": "Identity registration, slash-ID create, and attribute-based read.", "kind": "implementation"},
+        {"id": "role-parser", "source": "upstream", "path": "internal/service/iam/role_policy_attachment.go", "startLine": 195, "endLine": 220, "symbol": "rolePolicyAttachmentImportID", "observation": "Slash syntax parsed at first slash and preserved as state ID.", "kind": "implementation"},
+        {"id": "role-old", "source": "historical", "path": "internal/service/iam/role_policy_attachment.go", "startLine": 15, "endLine": 144, "symbol": "ResourceRolePolicyAttachment", "observation": "Generated create ID; slash import normalized to hyphen ID.", "kind": "implementation"},
+        {"id": "role-doc", "source": "upstream", "path": "website/docs/r/iam_role_policy_attachment.html.markdown", "startLine": 107, "endLine": 110, "symbol": "Import", "observation": "Documents role/policy ARN.", "kind": "documentation"},
+        {"id": "role-test", "source": "upstream", "path": "internal/service/iam/role_policy_attachment_test.go", "startLine": 207, "endLine": 216, "symbol": "testAccRolePolicyAttachmentImportStateIdFunc", "observation": "Explicit role/policy_arn helper still supplies the import ID.", "kind": "test"},
+        {"id": "role-bridge", "source": "destination", "path": "provider/resource_overrides.go", "startLine": 1240, "endLine": 1253, "symbol": "resource overrides", "observation": "Field mapping and replacement semantics; no import grammar change.", "kind": "implementation"}
+      ]
+    },
+    {
+      "terraformType": "aws_cloudwatch_event_target", "pulumiTypes": ["aws:cloudwatch/eventTarget:EventTarget"], "decision": "composer",
+      "destinationContract": {"acceptedForms": ["rule/target", "bus/rule/target", "bus ARN or partner-bus path followed by /rule/target"], "contextRequirements": ["EventBridge account/region credentials", "Absent or empty bus means default"], "normalization": "Import parses slash components and stores hyphen-joined ID; default bus is omitted from that stored ID.", "evidence": ["event-parser", "event-patterns", "event-doc"]},
+      "sourceRepresentations": [{"commit": "dbf2b9c4d6a7fd3355d4e9931b34f0de89070217", "schemaVersion": null, "idShape": "rule-target or bus-rule-target; separator is ambiguous", "identityAttributes": ["event_bus_name", "rule", "target_id"], "compatibility": "Compose from explicit attributes, never split on dashes.", "evidence": ["event-old", "event-old-id"]}],
+      "resolution": {"template": null, "composer": "composeEventTarget", "preconditions": ["Nonempty string rule and target without slash", "Optional bus is a non-redacted string or absent/null", "Slash-bearing buses match the destination ARN/partner patterns", "Existing import-form ID does not conflict with attributes"], "inputPrecedence": ["Explicit attributes", "Default bus when missing/empty/default"], "failureBehavior": "Reject unusable components and conflicting slash IDs; opaque hyphen IDs are not decoded."},
+      "uncertainties": ["Opaque hyphen IDs cannot independently establish identity", "Missing rule/target are unresolved even if ID resembles an import form", "No live import"],
+      "changesFromExistingCatalog": ["Add string/redaction/delimiter checks, bus-pattern validation, and explicit slash-ID conflict handling"],
+      "dependencyWatchPaths": {"upstream": ["internal/service/events/", "website/docs/r/cloudwatch_event_target.html.markdown"], "historical": ["internal/service/events/", "website/docs/r/cloudwatch_event_target.html.markdown"]},
+      "evidence": [
+        {"id": "event-parser", "source": "upstream", "path": "internal/service/events/target.go", "startLine": 1397, "endLine": 1466, "symbol": "targetParseImportID/targetImportID", "observation": "Slash parser, default handling, accepted bus paths, and hyphenated state-ID normalization.", "kind": "implementation"},
+        {"id": "event-patterns", "source": "upstream", "path": "internal/service/events/rule.go", "startLine": 339, "endLine": 340, "symbol": "eventBusARNPattern/partnerEventBusPattern", "observation": "Restricts slash-bearing bus prefixes.", "kind": "implementation"},
+        {"id": "event-region", "source": "upstream", "path": "internal/types/aws_region.go", "startLine": 10, "endLine": 18, "symbol": "CanonicalRegionPatternNoAnchors", "observation": "Region syntax used by the bus patterns.", "kind": "implementation"},
+        {"id": "event-old", "source": "historical", "path": "internal/service/events/target.go", "startLine": 390, "endLine": 448, "symbol": "resourceTargetCreate/resourceTargetRead", "observation": "Persists generated target_id and explicit bus/rule/target attributes alongside state ID.", "kind": "implementation"},
+        {"id": "event-old-id", "source": "historical", "path": "internal/service/events/id.go", "startLine": 82, "endLine": 120, "symbol": "TargetCreateResourceID/TargetParseImportID", "observation": "Hyphenated stored identity and slash import format.", "kind": "implementation"},
+        {"id": "event-test", "source": "upstream", "path": "internal/service/events/target_test.go", "startLine": 1303, "endLine": 1323, "symbol": "testAccTargetImportStateIdFunc/testAccTargetNoBusNameImportStateIdFunc", "observation": "Acceptance helpers explicitly compose both bus-qualified and default forms.", "kind": "test"},
+        {"id": "event-doc", "source": "upstream", "path": "website/docs/r/cloudwatch_event_target.html.markdown", "startLine": 726, "endLine": 738, "symbol": "Import", "observation": "Documents optional bus prefix and default behavior.", "kind": "documentation"},
+        {"id": "event-bridge", "source": "destination", "path": "provider/resource_overrides.go", "startLine": 426, "endLine": 430, "symbol": "resource overrides", "observation": "Autonames target_id for creation; migration must preserve the source assignment ID.", "kind": "implementation"}
+      ]
+    }
+  ]
+}

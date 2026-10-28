@@ -19,8 +19,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
+	"github.com/pulumi-proserv/pulumi-tool-import/internal/tfaddr"
+	"github.com/pulumi/opentofu/addrs"
 	"github.com/pulumi/pulumi/sdk/v3/go/auto"
 )
 
@@ -48,10 +51,14 @@ func ParseSecretMapping(s string) (SecretMapping, error) {
 	if colonIdx < 0 {
 		return SecretMapping{}, fmt.Errorf("invalid mapping %q: expected format configKey=terraformAddress:attribute", s)
 	}
+	instance, err := tfaddr.ParseResource(rest[:colonIdx])
+	if err != nil {
+		return SecretMapping{}, fmt.Errorf("invalid mapping %q: %w", s, err)
+	}
 
 	return SecretMapping{
 		ConfigKey:        configKey,
-		TerraformAddress: rest[:colonIdx],
+		TerraformAddress: instance.String(),
 		Attribute:        rest[colonIdx+1:],
 	}, nil
 }
@@ -114,31 +121,38 @@ func extractSecretValues(data []byte, mappings []SecretMapping) (auto.ConfigMap,
 	// "module.foo.aws_ssm_parameter.bar[\"key\"]"
 	attrsByAddress := make(map[string]map[string]interface{})
 	for _, res := range stateFile.Resources {
+		module, err := tfaddr.ParseModule(res.Module)
+		if err != nil {
+			return nil, fmt.Errorf("parsing module address %q: %w", res.Module, err)
+		}
 		for _, inst := range res.Instances {
-			// Build the full address.
-			addr := ""
-			if res.Module != "" {
-				addr = res.Module + "."
-			}
+			resource := addrs.Resource{Mode: addrs.ManagedResourceMode, Type: res.Type, Name: res.Name}
 			if res.Mode == "data" {
-				addr += "data."
+				resource.Mode = addrs.DataResourceMode
 			}
-			addr += res.Type + "." + res.Name
-			if inst.IndexKey != nil {
-				switch key := inst.IndexKey.(type) {
-				case string:
-					addr += fmt.Sprintf("[%q]", key)
-				case json.Number:
-					addr += fmt.Sprintf("[%s]", key.String())
+			key := addrs.NoKey
+			switch value := inst.IndexKey.(type) {
+			case string:
+				key = addrs.StringKey(value)
+			case json.Number:
+				index, err := strconv.Atoi(value.String())
+				if err != nil {
+					return nil, fmt.Errorf("invalid instance index for %s: %w", resource.String(), err)
 				}
+				key = addrs.IntKey(index)
 			}
-			attrsByAddress[addr] = inst.Attributes
+			addr := resource.Instance(key).Absolute(module)
+			attrsByAddress[addr.String()] = inst.Attributes
 		}
 	}
 
 	configMap := make(auto.ConfigMap, len(mappings))
 	for _, m := range mappings {
-		attrs, ok := attrsByAddress[m.TerraformAddress]
+		instance, err := tfaddr.ParseResource(m.TerraformAddress)
+		if err != nil {
+			return nil, fmt.Errorf("invalid Terraform address %q: %w", m.TerraformAddress, err)
+		}
+		attrs, ok := attrsByAddress[instance.String()]
 		if !ok {
 			return nil, fmt.Errorf("terraform address %q not found in state", m.TerraformAddress)
 		}

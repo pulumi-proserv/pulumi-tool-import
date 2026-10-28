@@ -7,7 +7,7 @@ map[string]string{
 	"aws:apigateway/resource:Resource (native)":                      "api|res",
 	"aws:apigateway/stage:Stage":                                     "api/prod",
 	"aws:apigateway/usagePlanKey:UsagePlanKey":                       "up/key",
-	"aws:appautoscaling/policy:Policy":                               "cpu/dim/svc/rid",
+	"aws:appautoscaling/policy:Policy":                               "dim/svc/rid/cpu",
 	"aws:appautoscaling/target:Target":                               "dim/svc/rid",
 	"aws:cloudwatch/eventBus:EventBus":                               "bus",
 	"aws:cloudwatch/eventRule:EventRule":                             "rule",

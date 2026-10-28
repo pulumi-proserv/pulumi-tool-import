@@ -1,0 +1,45 @@
+# Explicit pairing of every Terraform resource in testdata/tf with its entry in
+# the import skeleton pulumi generates from testdata/pulumi-ts. The value is
+# the skeleton entry's name — the program's logical name, unless pulumi
+# renamed the entry to break a name collision (see #83).
+#
+# aws_kms_key.secrets and aws_kms_alias.secrets are harness infrastructure
+# (the awskms secrets-provider scenario) and have no Pulumi counterpart, so
+# they are deliberately unmapped; "resolve tf" reports them as unmatched.
+modules:
+  "module.certs": "certs"
+
+resources:
+  "aws_vpc.main": "main"
+  "aws_route_table.rt[0]": "rt[0]"
+  "aws_route_table.rt[1]": "rt[1]"
+  "aws_route_table.rt[2]": "rt[2]"
+  "aws_vpn_gateway.vgw": "vgw"
+  "aws_vpn_gateway_route_propagation.prop[0]": "prop[0]"
+  "aws_vpn_gateway_route_propagation.prop[1]": "prop[1]"
+  "aws_vpn_gateway_route_propagation.prop[2]": "prop[2]"
+  "aws_customer_gateway.cgw": "cgw"
+  "aws_vpn_connection.vpn": "vpn"
+  "aws_vpn_connection_route.route": "route"
+  "aws_iot_certificate.cert": "cert"
+  "aws_iam_role.lambda": "lambda"
+  "aws_lambda_function.target": "target"
+  "aws_lambda_permission.vpclattice": "vpclattice"
+  "aws_vpclattice_target_group.tg": "tg"
+  "aws_vpclattice_target_group_attachment.attach": "attach"
+  "aws_iot_certificate.east": "east"
+  "aws_iot_policy.policy": "policy"
+  "aws_iot_policy_attachment.policy_attach": "policy_attach"
+  "aws_iot_certificate.each[\"alpha\"]": "each[\"alpha\"]"
+  "aws_iot_certificate.each[\"beta\"]": "each[\"beta\"]"
+  "aws_internet_gateway.igw": "igw"
+  "aws_route.igw_route": "igw_route"
+  "aws_security_group.sg": "sg"
+  "aws_security_group_rule.sgrule": "sgrule"
+  "aws_subnet.subnet": "subnet"
+  "aws_route_table_association.assoc": "assoc"
+  "aws_kinesis_stream.stream": "stream"
+  "aws_cloudwatch_log_group.lg": "lg"
+  "aws_cloudwatch_log_stream.ls": "ls"
+  "aws_iam_role_policy_attachment.rpa": "rpa"
+  "module.certs.aws_iot_certificate.inmodule": "inmodule"

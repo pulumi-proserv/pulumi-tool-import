@@ -22,7 +22,7 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          version: v2.11.3
+          version: v2.15.0
 
       # The e2e sources are behind "//go:build e2e", so the run above does not
       # see them and neither does "go test ./..." — 2,500+ lines that no job
@@ -34,8 +34,24 @@ jobs:
       - name: golangci-lint (e2e build)
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          version: v2.11.3
+          version: v2.15.0
           args: --build-tags e2e ./test/e2e/...
+
+  catalog-lint:
+    name: catalog-lint (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        module: [importids/catalog, importids/aws/v6, importids/aws/v7]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.15.0
+          working-directory: ${{ matrix.module }}
 
   vet:
     name: vet
@@ -58,6 +74,9 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      - name: go vet (provider catalog modules)
+        run: make vet-catalogs
+
       # "go vet" fully type-checks, so this is what catches a compile error in
       # an e2e-tagged file — otherwise the first thing to notice is a run that
       # has already spent ~16 minutes and real AWS spend. See the e2e lint step
@@ -78,5 +97,22 @@ jobs:
       - name: Run govulncheck
         uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1
         with:
+          go-version-input: ''
           go-version-file: go.mod
           repo-checkout: false
+
+  import-id-formats-check:
+    name: import-id-formats-check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # Verify both Pulumi-major tables against their exact upstream source pins.
+      # Needs network on a cold cache for the provider's acceptance-test sources.
+      - name: import-id-formats-check
+        run: make import-id-formats-check
