@@ -22,7 +22,10 @@ import (
 
 func TestCatalogAndComposers(t *testing.T) {
 	c := Load()
-	if c.Formats.PulumiVersion != "v7.48.0" || c.Formats.Version != "v6.66.0" {
+	if err := c.Formats.Validate(); err != nil {
+		t.Fatalf("runtime additions must retain valid source evidence: %v", err)
+	}
+	if c.Formats.PulumiVersion != "v7.51.1" || c.Formats.Version != "v6.69.1" {
 		t.Fatal("wrong generation pin")
 	}
 	for typ := range c.Composers {

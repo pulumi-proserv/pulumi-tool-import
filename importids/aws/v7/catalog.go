@@ -34,7 +34,16 @@ func Load() *catalog.Catalog {
 	c.Formats.Types["aws_cloudtrail"] = catalog.FormatEntry{
 		Manual:   true,
 		Docs:     "CloudTrail trail ARN (from arn for historical name-based state IDs)",
-		Evidence: "https://registry.terraform.io/providers/hashicorp/aws/6.66.0/docs/resources/cloudtrail#import",
+		Evidence: "https://github.com/hashicorp/terraform-provider-aws/blob/d0cb9698b41b21c587043949fde0bac0459e335a/internal/provider/sdkv2/importer/arn.go#L16-L37",
+	}
+	// Preserve the generated evidence while adding validation and conflict
+	// handling that plain template expansion cannot express.
+	for _, principal := range []string{"user", "group", "role"} {
+		typ := "aws_iam_" + principal + "_policy_attachment"
+		entry := c.Formats.Types[typ]
+		entry.Template = ""
+		entry.Manual = true
+		c.Formats.Types[typ] = entry
 	}
 	return c
 }

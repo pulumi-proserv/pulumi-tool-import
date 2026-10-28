@@ -24,7 +24,7 @@ import (
 func TestSelectAWSByPulumiMajor(t *testing.T) {
 	for _, tc := range []struct{ requested, pulumi, upstream string }{
 		{"v6.83.2", "v6.83.4", "v5.100.0"},
-		{"7.24.0", "v7.48.0", "v6.66.0"},
+		{"7.24.0", "v7.51.1", "v6.69.1"},
 	} {
 		c, err := ForAWSVersion(tc.requested, nil)
 		require.NoError(t, err)
@@ -71,7 +71,7 @@ func TestCatalogOverrideCannotCrossMajors(t *testing.T) {
 	fresh, err := ForAWSVersion("7.24.0", nil)
 	require.NoError(t, err)
 	assert.NotContains(t, fresh.Formats.Types, "aws_test")
-	assert.Contains(t, VersionWarning("7.99.0", fresh), "v7.48.0")
+	assert.Contains(t, VersionWarning("7.99.0", fresh), "v7.51.1")
 	assert.Contains(t, VersionWarning("7.99.0", fresh), "update-import-id-formats")
 	assert.NotNil(t, v6.Composers["aws_kinesis_stream"])
 	assert.Nil(t, fresh.Composers["aws_kinesis_stream"])

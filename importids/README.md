@@ -7,7 +7,7 @@ the **Pulumi provider major**, not the upstream Terraform major.
 | Module | Generated for Pulumi | Upstream version | Upstream revision |
 |---|---|---|---|
 | `aws/v6` | `v6.83.4` | `v5.100.0` | `f7a3b98da589ab1d52756b0dcee0dbf2de83d635` |
-| `aws/v7` | `v7.48.0` | `v6.66.0` | `351a07f09bffcde77bddcc35060e3da3e9a591ee` |
+| `aws/v7` | `v7.51.1` | `v6.69.1` | `d0cb9698b41b21c587043949fde0bac0459e335a` |
 
 These revisions are the `upstream` submodule commits in the corresponding
 `pulumi/pulumi-aws` release tags. `catalog` is a small, standard-library-only Go
@@ -55,12 +55,16 @@ supports pass-through for that representation. Historical name-based IDs require
 separate evidence and normalization. The prompt requires this distinction rather
 than assuming all pass-through resources need conversion.
 
+The [first focused execution](audits/aws-v7.51.1-focused/README.md) audits five
+resources against AWS 7.51.1 and Terraform AWS 3.74.3. It includes evidence and
+executable regression vectors; it is not a full-provider baseline.
+
 ## Regenerating
 
 1. Choose a new Pulumi provider release within the major. Inspect its exact
    upstream source pin:
    ```sh
-   gh api 'repos/pulumi/pulumi-aws/contents/upstream?ref=v7.48.0' --jq .sha
+    gh api 'repos/pulumi/pulumi-aws/contents/upstream?ref=v7.51.1' --jq .sha
    ```
 2. Update that module's `source.json` with the Pulumi release, upstream version,
    and full upstream commit. This generation pin is independent of the CLI's
@@ -91,6 +95,11 @@ from that major's module. For example, v7 now derives the Kinesis stream name
 from a template, while v6 retains its own composer. Conversely, v7's API Gateway
 method test now delegates to an upstream helper; v7 carries a verified custom
 composer for its `rest_api_id/resource_id/http_method` format.
+
+A composer can also validate identity or resolve historical representations beyond
+plain expansion. The audited v7 IAM attachment rules retain generated template
+evidence but select composers via `catalog.go` to reject malformed/conflicting
+identities. Those composers are not made obsolete merely by an equivalent template.
 
 When tests prove multiple distinct templates, generation records all alternatives
 and their source evidence in a **manual** entry. Later tests cannot silently

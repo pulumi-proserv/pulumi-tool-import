@@ -250,7 +250,7 @@ provider major**, preferring an import entry's `version` and otherwise using
 the digest's resolved `aws@version` pin. The separate Go modules
 `importids/aws/v6` and `importids/aws/v7` each embed their generated table and
 own their custom composers. They currently target Pulumi AWS **v6.83.4**
-(Terraform AWS v5.100.0) and **v7.48.0** (Terraform AWS v6.66.0).
+(Terraform AWS v5.100.0) and **v7.51.1** (Terraform AWS v6.69.1).
 
 Missing, dynamic, conflicting, or unsupported destination pins produce a
 diagnostic and leave the affected AWS IDs untouched; there is no cross-major

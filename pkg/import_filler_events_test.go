@@ -43,9 +43,7 @@ func TestTranslateEventTargetAlternatives(t *testing.T) {
 				assert.Equal(t, tc.want, file.Resources[0].ID)
 				assert.Equal(t, 1, result.Translated)
 				assert.Zero(t, result.Unverified)
-				if version != "v7.51.1" {
-					assert.Empty(t, result.Notes)
-				}
+				assert.Empty(t, result.Notes)
 			})
 		}
 	}

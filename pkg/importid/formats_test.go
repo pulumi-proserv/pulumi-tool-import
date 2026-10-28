@@ -92,6 +92,6 @@ func TestEmbeddedTableIsValid(t *testing.T) {
 func TestCatalogsTrackPulumiMajors(t *testing.T) {
 	assert.Equal(t, "v6.83.4", aws6.Load().Formats.PulumiVersion)
 	assert.Equal(t, "v5.100.0", aws6.Load().Formats.Version)
-	assert.Equal(t, "v7.48.0", aws7.Load().Formats.PulumiVersion)
-	assert.Equal(t, "v6.66.0", aws7.Load().Formats.Version)
+	assert.Equal(t, "v7.51.1", aws7.Load().Formats.PulumiVersion)
+	assert.Equal(t, "v6.69.1", aws7.Load().Formats.Version)
 }

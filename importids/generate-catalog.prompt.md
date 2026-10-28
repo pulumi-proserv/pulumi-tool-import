@@ -21,6 +21,7 @@ upstream:
   commit: <full upstream commit SHA>
   checkout: <local checkout at that commit>
 historicalSources: [] # Optional entries with repository, release, commit, checkout.
+baselineReport: null # Optional complete prior audit with a dependency manifest.
 resources: all       # Or an explicit list of Terraform resource types.
 outputDirectory: <directory for the evidence report and regression vectors>
 ```
@@ -230,3 +231,24 @@ historical coverage limits. List actual checks and their outcomes, including
 skipped or blocked tests. Static analysis and unit fixtures establish evidence
 and composition behavior; claim live import validation only if it was explicitly
 authorized and actually performed.
+
+## Incremental provider updates
+
+After a full-provider baseline, compare immutable old/new snapshots and re-audit
+the affected resource set. Record dependency paths (and preferably blob hashes)
+per resource, including implementation, import/read helpers, registration and
+identity metadata, docs, tests/helpers, Pulumi overrides/patches, and SDK/bridge
+dependency versions. Preserve historical source pins as independent inputs.
+
+Compute impact through shared dependencies, not just resource filenames. Include
+new resources; retire removed resources explicitly; resolve renames and mapping
+changes. A shared parser or bridge change can invalidate many resources. Changes
+to this prompt, the catalog schema, or analyzer semantics also require explicit
+invalidation decisions. Unknown dependency impact widens the audit.
+
+Only carry a prior result forward when its dependency closure was recorded as
+complete and all inputs remain unchanged. Mark it as reused from its original
+evidence snapshot, not freshly audited. Reconcile reused and re-audited entries
+against the full new inventory. Continue running deterministic catalog generation
+and regression checks across the complete catalog even for a small semantic delta.
+A focused/partial report cannot serve as a full-provider baseline.

@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `resolve tf`: generated import-ID catalogs replace the hand-written switch
   (#70). Separate Go modules for **Pulumi AWS v6 and v7** embed their own JSON
   and custom composers, generated against Pulumi v6.83.4 / Terraform v5.100.0
-  and Pulumi v7.48.0 / Terraform v6.66.0 respectively. The import entry's version
+  and Pulumi v7.51.1 / Terraform v6.69.1 respectively. The import entry's version
   takes precedence over the digest pin. Missing or unsupported pins leave IDs
   untouched with a diagnostic; newer same-major releases warn. Overrides must
   declare a compatible `pulumiVersion` and upstream `version`.
@@ -49,6 +49,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Audited five AWS v7 import-identity contracts against Pulumi AWS 7.51.1 and
+  historical Terraform AWS 3.74.3, with source evidence and executable regression
+  vectors. Reject malformed/conflicting CloudTrail, IAM attachment, and EventTarget
+  identities rather than composing a different resource's ID. Regenerated the v7
+  catalog from the destination's exact Terraform AWS 6.69.1 pin.
 - `resolve tf` converts historical CloudTrail name IDs to the state's ARN,
   preserves already-ARN IDs, and reports missing ARN attributes. Regression
   coverage includes IAM user/group policy attachments and EventTarget bus variants.

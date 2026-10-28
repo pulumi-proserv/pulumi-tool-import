@@ -23,38 +23,55 @@ import (
 
 func composers() map[string]catalog.Composer {
 	return map[string]catalog.Composer{
-		"aws_cloudtrail":              composeCloudTrail,
-		"aws_cloudwatch_event_target": composeEventTarget,
-		"aws_route":                   composeTFRoute,
-		"aws_security_group_rule":     composeTFSecurityGroupRule,
-		"aws_ecs_service":             composeTFEcsService,
-		"aws_route_table_association": composeTFRouteTableAssociation,
-		"aws_lambda_permission":       composeTFLambdaPermission,
-		"aws_api_gateway_method":      composeAPIGatewayMethod,
+		"aws_iam_user_policy_attachment":  attachmentComposer("user"),
+		"aws_iam_group_policy_attachment": attachmentComposer("group"),
+		"aws_iam_role_policy_attachment":  attachmentComposer("role"),
+		"aws_cloudtrail":                  composeCloudTrail,
+		"aws_cloudwatch_event_target":     composeEventTarget,
+		"aws_route":                       composeTFRoute,
+		"aws_security_group_rule":         composeTFSecurityGroupRule,
+		"aws_ecs_service":                 composeTFEcsService,
+		"aws_route_table_association":     composeTFRouteTableAssociation,
+		"aws_lambda_permission":           composeTFLambdaPermission,
+		"aws_api_gateway_method":          composeAPIGatewayMethod,
 	}
 }
 
 // Historical Terraform state stores a trail name; current importers need its ARN.
 func composeCloudTrail(attrs map[string]interface{}, stateID string) (string, bool) {
-	if strings.HasPrefix(stateID, "arn:") {
-		return stateID, true
+	id, ok := identityAttribute(attrs, "arn")
+	if !ok {
+		return "", false
 	}
-	id := str(attrs, "arn")
-	return id, strings.HasPrefix(id, "arn:")
+	if strings.HasPrefix(stateID, "arn:") {
+		return stateID, identityARN(stateID, "cloudtrail", "trail/") && (id == "" || id == stateID)
+	}
+	return id, identityARN(id, "cloudtrail", "trail/") && strings.HasSuffix(id, ":trail/"+stateID)
 }
 
 // The upstream importer accepts rule/target for the default bus and
 // bus/rule/target for named buses, including ARN and partner-bus prefixes.
-func composeEventTarget(attrs map[string]interface{}, _ string) (string, bool) {
-	rule, target := str(attrs, "rule"), str(attrs, "target_id")
-	if rule == "" || target == "" {
+func composeEventTarget(attrs map[string]interface{}, stateID string) (string, bool) {
+	rule, ruleOK := identityAttribute(attrs, "rule")
+	target, targetOK := identityAttribute(attrs, "target_id")
+	if !ruleOK || !targetOK || rule == "" || target == "" || strings.ContainsAny(rule+target, "/") {
 		return "", false
 	}
-	bus := str(attrs, "event_bus_name")
-	if bus == "" || bus == "default" {
-		return rule + "/" + target, true
+	bus, busOK := identityAttribute(attrs, "event_bus_name")
+	if !busOK || (strings.Contains(bus, "/") && !eventBusARN.MatchString(bus) && !partnerEventBus.MatchString(bus)) {
+		return "", false
 	}
-	return bus + "/" + rule + "/" + target, true
+	id := rule + "/" + target
+	legacyID := rule + "-" + target
+	if bus != "" && bus != "default" {
+		id = bus + "/" + id
+		legacyID = bus + "-" + legacyID
+	}
+	defaultBusID := (bus == "" || bus == "default") && stateID == "default/"+id
+	if strings.Contains(stateID, "/") && stateID != legacyID && stateID != id && !defaultBusID {
+		return "", false
+	}
+	return id, true
 }
 
 func str(attrs map[string]interface{}, k string) string {
