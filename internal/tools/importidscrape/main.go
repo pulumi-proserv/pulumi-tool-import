@@ -146,7 +146,7 @@ func ensureCheckout(tag string) (string, error) {
 	// older sparse set has internal/service but no names/, and reusing it would
 	// silently classify every names.Attr* lookup as manual.
 	complete := true
-	for _, p := range [][]string{{"internal", "service"}, {"internal", "acctest"}, {"website", "docs", "r"}, {"names"}} {
+	for _, p := range [][]string{{"internal", "service"}, {"internal", "acctest"}, {"internal", "flex"}, {"website", "docs", "r"}, {"names"}} {
 		if _, err := os.Stat(filepath.Join(dest, filepath.Join(p...))); err != nil {
 			complete = false
 			break
@@ -164,7 +164,7 @@ func ensureCheckout(tag string) (string, error) {
 		{"git", "-C", dest, "remote", "add", "origin", "https://github.com/hashicorp/terraform-provider-aws.git"},
 		{"git", "-C", dest, "fetch", "--quiet", "--depth", "1", "--filter=blob:none", "origin", tag},
 		// Include helper implementations so their hashes can be verified.
-		{"git", "-C", dest, "sparse-checkout", "set", "internal/service", "internal/acctest", "website/docs/r", "names"},
+		{"git", "-C", dest, "sparse-checkout", "set", "internal/service", "internal/acctest", "internal/flex", "website/docs/r", "names"},
 		{"git", "-C", dest, "checkout", "--quiet", "--detach", "FETCH_HEAD"},
 	}
 	for _, args := range steps {

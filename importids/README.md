@@ -28,6 +28,11 @@ minor. Newer destination versions warn; maintainers should retain regression
 cases for older releases they support and add version-specific behavior when
 upstream import semantics actually differ. There is no fallback across majors.
 
+[Issue #102](https://github.com/pulumi-proserv/pulumi-tool-import/issues/102)
+investigates whether additional historical-minor coverage is warranted. The
+preferred migration target is generally the latest suitable provider release;
+broad compatibility coverage is not assumed.
+
 `--import-id-formats` overrides JSON only, not Go composers. It must declare
 `provider: hashicorp/aws`, `pulumiVersion` in the destination major, and an upstream
 `version` in the corresponding upstream major. A mismatched override leaves that
@@ -50,7 +55,10 @@ entry unresolved with a diagnostic. The chosen module always supplies composers.
    ```
    Update `helpers` only after checking the corresponding Go bodies against the
    classifier's semantics. Only helpers in that pin's verified profile can
-   establish a template. v6 currently models one helper; v7 models four.
+   establish a template. v6 currently models one helper; v7 models five,
+   including `CrossRegionAttrsImportStateIdFunc`. Separators may be literals or
+   the provider's `internal/flex.ResourceIdSeparator` literal constant, read
+   from the pinned source; foreign packages and shadowed imports are rejected.
 4. Regenerate and review the resulting table and composers together:
    ```sh
    make update-import-id-formats AWS_CATALOG_MAJORS=7
@@ -66,6 +74,25 @@ from that major's module. For example, v7 now derives the Kinesis stream name
 from a template, while v6 retains its own composer. Conversely, v7's API Gateway
 method test now delegates to an upstream helper; v7 carries a verified custom
 composer for its `rest_api_id/resource_id/http_method` format.
+
+When tests prove multiple distinct templates, generation records all alternatives
+and their source evidence in a **manual** entry. Later tests cannot silently
+promote it back to a template. Both majors carry an EventBridge target composer:
+`rule/target` for the default bus and `bus/rule/target` for named, ARN, and partner
+buses. Multiple accepted forms are resolved explicitly rather than by file order.
+
+Current-provider tests cannot establish the importability of IDs saved by older
+Terraform releases. Each major therefore adds a reviewed CloudTrail migration
+rule in `catalog.go`: preserve an existing ARN, otherwise use the state's `arn`
+attribute, and diagnose a missing ARN. This rule is deliberately outside the
+generated table so regeneration cannot erase historical-state compatibility.
+
+The CLI's `Filled` count means an ID matched the digest, not that import will
+succeed. `Unverified` counts populated IDs for which no catalog template or
+composer succeeded (including pass-through types). Successful composition checks
+the documented format; it does not contact the destination provider. Regression
+tests include the reported Terraform AWS 3.74.3 state shapes with destination
+AWS 7.51.1, but do not imply live validation of every provider minor.
 
 ## Modules, tests, and releases
 

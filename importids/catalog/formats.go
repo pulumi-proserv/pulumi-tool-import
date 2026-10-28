@@ -25,13 +25,21 @@ import (
 // FormatEntry is one divergent Terraform type: either a template over state
 // attribute names, or manual with the provider's own composition as evidence.
 type FormatEntry struct {
-	Template   string   `json:"template,omitempty"`
-	Manual     bool     `json:"manual,omitempty"`
-	Snippet    string   `json:"snippet,omitempty"`
-	Sensitive  []string `json:"sensitive,omitempty"`
-	Docs       string   `json:"docs,omitempty"`
-	DocsSource string   `json:"docsSource,omitempty"`
-	Evidence   string   `json:"evidence"`
+	Alternatives []TemplateEvidence `json:"alternatives,omitempty"`
+	Template     string             `json:"template,omitempty"`
+	Manual       bool               `json:"manual,omitempty"`
+	Snippet      string             `json:"snippet,omitempty"`
+	Sensitive    []string           `json:"sensitive,omitempty"`
+	Docs         string             `json:"docs,omitempty"`
+	DocsSource   string             `json:"docsSource,omitempty"`
+	Evidence     string             `json:"evidence"`
+}
+
+// TemplateEvidence retains each distinct proven format when tests disagree.
+// Such entries are manual until a provider-major composer chooses the format.
+type TemplateEvidence struct {
+	Template string `json:"template"`
+	Evidence string `json:"evidence"`
 }
 
 // DocsOnly reports whether the entry is manual because the provider's
@@ -42,7 +50,8 @@ func (e FormatEntry) DocsOnly() bool {
 }
 
 // Formats is the import-ID composition table for one upstream provider
-// version. Absence of a type means its state ID is its import ID.
+// version. Absent types retain their state IDs, but this is not proof that
+// historical state IDs are accepted by the destination provider.
 type Formats struct {
 	Provider         string                 `json:"provider"`
 	Version          string                 `json:"version"`
@@ -80,6 +89,16 @@ var placeholderRe = regexp.MustCompile(`\{([^{}]*)\}`)
 // Validate enforces the table's invariants.
 func (f *Formats) Validate() error {
 	for typ, e := range f.Types {
+		if len(e.Alternatives) > 0 {
+			if !e.Manual || len(e.Alternatives) < 2 {
+				return fmt.Errorf("%s: alternatives require a manual entry with at least two formats", typ)
+			}
+			for _, alternative := range e.Alternatives {
+				if alternative.Template == "" || alternative.Evidence == "" {
+					return fmt.Errorf("%s: alternative is missing a template or evidence", typ)
+				}
+			}
+		}
 		switch {
 		case e.Template != "" && e.Manual:
 			return fmt.Errorf("%s: template and manual are exclusive", typ)

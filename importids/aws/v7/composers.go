@@ -23,6 +23,8 @@ import (
 
 func composers() map[string]catalog.Composer {
 	return map[string]catalog.Composer{
+		"aws_cloudtrail":              composeCloudTrail,
+		"aws_cloudwatch_event_target": composeEventTarget,
 		"aws_route":                   composeTFRoute,
 		"aws_security_group_rule":     composeTFSecurityGroupRule,
 		"aws_ecs_service":             composeTFEcsService,
@@ -30,6 +32,29 @@ func composers() map[string]catalog.Composer {
 		"aws_lambda_permission":       composeTFLambdaPermission,
 		"aws_api_gateway_method":      composeAPIGatewayMethod,
 	}
+}
+
+// Historical Terraform state stores a trail name; current importers need its ARN.
+func composeCloudTrail(attrs map[string]interface{}, stateID string) (string, bool) {
+	if strings.HasPrefix(stateID, "arn:") {
+		return stateID, true
+	}
+	id := str(attrs, "arn")
+	return id, strings.HasPrefix(id, "arn:")
+}
+
+// The upstream importer accepts rule/target for the default bus and
+// bus/rule/target for named buses, including ARN and partner-bus prefixes.
+func composeEventTarget(attrs map[string]interface{}, _ string) (string, bool) {
+	rule, target := str(attrs, "rule"), str(attrs, "target_id")
+	if rule == "" || target == "" {
+		return "", false
+	}
+	bus := str(attrs, "event_bus_name")
+	if bus == "" || bus == "default" {
+		return rule + "/" + target, true
+	}
+	return bus + "/" + rule + "/" + target, true
 }
 
 func str(attrs map[string]interface{}, k string) string {

@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/pulumi-proserv/pulumi-tool-import/importids/catalog"
@@ -53,6 +54,10 @@ func buildFormats(providerRoot, version string, warn func(string), sources ...ca
 	if err != nil {
 		return nil, Summary{}, err
 	}
+	separator, err := loadResourceIDSeparator(providerRoot)
+	if err != nil {
+		return nil, Summary{}, err
+	}
 
 	f := &catalog.Formats{Provider: "hashicorp/aws", Version: version, Types: map[string]catalog.FormatEntry{}}
 	if source != nil {
@@ -67,10 +72,10 @@ func buildFormats(providerRoot, version string, warn func(string), sources ...ca
 	// note on a resource the provider's own tests import by its state ID.
 	provenPassthrough := map[string]bool{}
 
-	// A type with several import steps: any non-passthrough step wins, and a
-	// template beats a manual (a passthrough-looking step elsewhere is a
-	// different test's shortcut, not a contradiction).
+	// Prefer a proven template to an unclassified step, but retain distinct
+	// templates as manual alternatives rather than choosing by source order.
 	for _, step := range steps {
+		step.ResourceIDSeparator = &separator
 		if source != nil {
 			step.Helpers = source.Helpers
 		}
@@ -85,19 +90,7 @@ func buildFormats(providerRoot, version string, warn func(string), sources ...ca
 			continue
 		}
 		existing, seen := f.Types[step.TFType]
-		if seen && existing.Template != "" {
-			// Two of a type's import steps proving different templates is a
-			// real contradiction — one of them is a shape the whitelist reads
-			// wrongly, or the type's import ID depends on configuration. The
-			// first in sorted order still wins; the warning is so a human
-			// looks.
-			if c.Template != "" && c.Template != existing.Template {
-				warn(fmt.Sprintf("%s: import steps prove different templates %q and %q; keeping %q",
-					step.TFType, existing.Template, c.Template, existing.Template))
-			}
-			continue
-		}
-		if seen && c.Manual {
+		if seen && (c.Manual || existing.Template == c.Template || hasTemplate(existing.Alternatives, c.Template)) {
 			continue
 		}
 		e := catalog.FormatEntry{
@@ -107,13 +100,11 @@ func buildFormats(providerRoot, version string, warn func(string), sources ...ca
 			e.Template = c.Template
 			if s := sensitiveAttrs(providerRoot, step.TFType, c.Template, consts); len(s) > 0 {
 				e.Sensitive = s
-				sum.SensitiveHits++
-				warn(fmt.Sprintf("%s: template %q reads Sensitive attribute(s) %s", step.TFType, c.Template, strings.Join(s, ", ")))
 			}
 		} else {
 			e.Manual, e.Snippet = true, c.Snippet
 		}
-		f.Types[step.TFType] = e
+		f.Types[step.TFType] = mergeFormat(step.TFType, existing, e)
 	}
 
 	for typ, d := range docs {
@@ -132,7 +123,15 @@ func buildFormats(providerRoot, version string, warn func(string), sources ...ca
 		}
 	}
 
-	for _, e := range f.Types {
+	for _, typ := range sortedKeys(f.Types) {
+		e := f.Types[typ]
+		if len(e.Sensitive) > 0 {
+			sum.SensitiveHits++
+			warn(fmt.Sprintf("%s: import format reads Sensitive attribute(s) %s", typ, strings.Join(e.Sensitive, ", ")))
+		}
+		if len(e.Alternatives) > 0 {
+			warn(fmt.Sprintf("%s: %d distinct import templates retained as manual alternatives; use an explicit composer", typ, len(e.Alternatives)))
+		}
 		switch {
 		case e.Template != "":
 			sum.Templates++
@@ -146,6 +145,46 @@ func buildFormats(providerRoot, version string, warn func(string), sources ...ca
 		return nil, Summary{}, err
 	}
 	return f, sum, nil
+}
+
+func hasTemplate(alternatives []catalog.TemplateEvidence, template string) bool {
+	for _, alternative := range alternatives {
+		if alternative.Template == template {
+			return true
+		}
+	}
+	return false
+}
+
+func mergeFormat(typ string, existing, candidate catalog.FormatEntry) catalog.FormatEntry {
+	if existing.Evidence == "" {
+		return candidate
+	}
+	if candidate.Template == "" {
+		return existing
+	}
+	if len(existing.Alternatives) == 0 {
+		if existing.Template == "" {
+			return candidate
+		}
+		if existing.Template == candidate.Template {
+			return existing
+		}
+		existing.Alternatives = []catalog.TemplateEvidence{{Template: existing.Template, Evidence: existing.Evidence}}
+		existing.Template, existing.Snippet = "", ""
+		existing.Manual = true
+		existing.Evidence = fmt.Sprintf("multiple import templates for %s; see alternatives", typ)
+	}
+	if !hasTemplate(existing.Alternatives, candidate.Template) {
+		existing.Alternatives = append(existing.Alternatives, catalog.TemplateEvidence{Template: candidate.Template, Evidence: candidate.Evidence})
+	}
+	slices.SortFunc(existing.Alternatives, func(a, b catalog.TemplateEvidence) int {
+		return strings.Compare(a.Template, b.Template)
+	})
+	existing.Sensitive = append(existing.Sensitive, candidate.Sensitive...)
+	slices.Sort(existing.Sensitive)
+	existing.Sensitive = slices.Compact(existing.Sensitive)
+	return existing
 }
 
 // evidenceFile pairs with evidenceLine: the line is the resolved helper's, so

@@ -166,6 +166,10 @@ Examples:
 			if translated > 0 {
 				fmt.Fprintf(os.Stderr, "Translated: %d IDs\n", translated)
 			}
+			if translation.Unverified > 0 {
+				fmt.Fprintf(os.Stderr, "Unverified: %d IDs retained without successful catalog composition; verify their import formats before importing.\n", translation.Unverified)
+			}
+			fmt.Fprintln(os.Stderr, "Filled counts matched IDs, not verified imports; catalog composition does not validate against the live provider.")
 			for _, w := range result.Warnings {
 				fmt.Fprintf(os.Stderr, "  WARNING: %s\n", w)
 			}

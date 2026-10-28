@@ -49,6 +49,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `resolve tf` converts historical CloudTrail name IDs to the state's ARN,
+  preserves already-ARN IDs, and reports missing ARN attributes. Regression
+  coverage includes IAM user/group policy attachments and EventTarget bus variants.
+  The summary now distinguishes matched IDs (`Filled`) from IDs retained without
+  successful catalog composition (`Unverified`).
+- Import-ID generation recognizes `CrossRegionAttrsImportStateIdFunc` and the
+  pinned provider's `flex.ResourceIdSeparator` constant. Conflicting templates
+  retain their evidence as manual alternatives instead of choosing the first;
+  both AWS-major catalogs now compose EventBridge target IDs explicitly for
+  default, named, ARN, and partner event buses.
 - **The import-support prober restarts a crashed provider instead of
   abandoning it for the rest of a digest** (#84, evidence for #68). Live
   digests reliably crash the AWS provider on `aws_kinesis_stream`'s import

@@ -35,6 +35,12 @@ func TestCatalogAndComposers(t *testing.T) {
 		attrs map[string]interface{}
 		want  string
 	}{
+		{"aws_cloudwatch_event_target", map[string]interface{}{"rule": "daily", "target_id": "lambda"}, "daily/lambda"},
+		{"aws_cloudwatch_event_target", map[string]interface{}{"event_bus_name": "", "rule": "daily", "target_id": "lambda"}, "daily/lambda"},
+		{"aws_cloudwatch_event_target", map[string]interface{}{"event_bus_name": "default", "rule": "daily", "target_id": "lambda"}, "daily/lambda"},
+		{"aws_cloudwatch_event_target", map[string]interface{}{"event_bus_name": "prod", "rule": "daily", "target_id": "lambda"}, "prod/daily/lambda"},
+		{"aws_cloudwatch_event_target", map[string]interface{}{"event_bus_name": "arn:aws:events:us-east-1:123456789012:event-bus/prod", "rule": "daily", "target_id": "lambda"}, "arn:aws:events:us-east-1:123456789012:event-bus/prod/daily/lambda"},
+		{"aws_cloudwatch_event_target", map[string]interface{}{"event_bus_name": "aws.partner/example.com/account/events", "rule": "daily", "target_id": "lambda"}, "aws.partner/example.com/account/events/daily/lambda"},
 		{"aws_route", map[string]interface{}{"route_table_id": "rtb-1", "destination_cidr_block": "0.0.0.0/0"}, "rtb-1_0.0.0.0/0"},
 		{"aws_route", map[string]interface{}{"route_table_id": "rtb-1", "destination_ipv6_cidr_block": "::/0"}, "rtb-1_::/0"},
 		{"aws_route", map[string]interface{}{"route_table_id": "rtb-1", "destination_prefix_list_id": "pl-1"}, "rtb-1_pl-1"},
@@ -55,6 +61,11 @@ func TestCatalogAndComposers(t *testing.T) {
 	for typ, compose := range c.Composers {
 		if _, ok := compose(nil, "opaque"); ok {
 			t.Errorf("%s must reject missing attributes", typ)
+		}
+	}
+	for _, attrs := range []map[string]interface{}{{"rule": "daily"}, {"target_id": "lambda"}} {
+		if _, ok := c.Composers["aws_cloudwatch_event_target"](attrs, "daily-lambda"); ok {
+			t.Fatal("must not guess missing EventBridge attributes from an ambiguous state ID")
 		}
 	}
 	// The newer upstream proves this template; retaining the old composer

@@ -29,5 +29,13 @@ var source []byte
 
 // Load returns a fresh catalog so overrides cannot mutate the embedded defaults.
 func Load() *catalog.Catalog {
-	return catalog.LoadEmbedded(formats, source, composers())
+	c := catalog.LoadEmbedded(formats, source, composers())
+	// Current-provider tests cannot reveal historical name-based state IDs.
+	// Keep this migration rule separate from the generated import-test evidence.
+	c.Formats.Types["aws_cloudtrail"] = catalog.FormatEntry{
+		Manual:   true,
+		Docs:     "CloudTrail trail ARN (from arn for historical name-based state IDs)",
+		Evidence: "https://registry.terraform.io/providers/hashicorp/aws/5.100.0/docs/resources/cloudtrail#import",
+	}
+	return c
 }

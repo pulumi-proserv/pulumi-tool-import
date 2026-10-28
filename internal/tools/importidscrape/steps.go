@@ -39,12 +39,13 @@ func sortedKeys[V any](m map[string]V) []string {
 }
 
 type ImportStep struct {
-	Helpers    map[string]string // nil for fixture profile; otherwise only these helpers have verified semantics
-	TFType     string
-	Address    string // the step's full ResourceName, e.g. "aws_cloudwatch_event_target.test"
-	File       string
-	Line       int
-	IDFuncExpr ast.Expr
+	ResourceIDSeparator *string           // literal read from the pinned provider's internal/flex source
+	Helpers             map[string]string // nil for fixture profile; otherwise only these helpers have verified semantics
+	TFType              string
+	Address             string // the step's full ResourceName, e.g. "aws_cloudwatch_event_target.test"
+	File                string
+	Line                int
+	IDFuncExpr          ast.Expr
 	// IDFuncArgAddrs holds, for each positional argument at the
 	// ImportStateIdFunc call site (when it is a call to a closure-returning
 	// helper), the address that argument resolves to, or "" when it does not
@@ -90,7 +91,8 @@ func collectImportSteps(providerRoot string) ([]ImportStep, error) {
 		}
 		// Both maps must be walked in sorted order. A type often has several
 		// equally-classified import steps in different files (portal_test.go
-		// and portal_tags_gen_test.go, say); buildFormats keeps the first, so
+		// and portal_tags_gen_test.go, say); buildFormats keeps the first evidence
+		// for each equivalent format, so
 		// map order would otherwise pick a different evidence file:line on
 		// every run and make the generated table — and import-id-formats-check
 		// — nondeterministic.

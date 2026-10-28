@@ -260,6 +260,11 @@ import form. `--import-id-formats <file>` overrides the table for its declared
 major are rejected for the affected entries. The file must declare `provider`,
 `pulumiVersion`, and upstream `version`.
 
+The scraper handles the provider's verified cross-region attribute-join helpers
+and literal separator constants. Distinct proven templates are preserved as
+manual alternatives with source evidence; an explicit composer chooses the
+format. EventBridge targets use the default-bus or bus-qualified form accordingly.
+
 Each major retains its latest generated snapshot, not every historical minor.
 A newer destination release produces a staleness warning. Same-major selection
 does not prove all historical minor versions share identical import semantics.

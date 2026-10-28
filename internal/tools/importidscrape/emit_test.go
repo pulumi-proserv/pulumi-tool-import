@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/pulumi-proserv/pulumi-tool-import/importids/catalog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -61,4 +62,33 @@ func TestBuildFormatsGolden(t *testing.T) {
 	want, err := os.ReadFile(goldenPath)
 	require.NoError(t, err)
 	assert.Equal(t, string(want), string(got))
+}
+
+func TestConflictingTemplatesRemainManual(t *testing.T) {
+	a := catalog.FormatEntry{Template: "{rule}/{target_id}", Evidence: "default_test.go:1", Sensitive: []string{"target_id"}}
+	b := catalog.FormatEntry{Template: "{bus}/{rule}/{target_id}", Evidence: "named_test.go:2"}
+	c := catalog.FormatEntry{Template: "{arn}", Evidence: "arn_test.go:3"}
+	var want catalog.FormatEntry
+	for i, order := range [][]catalog.FormatEntry{{a, b, a, c}, {c, b, a, b}, {b, a, c, a}} {
+		var got catalog.FormatEntry
+		for _, entry := range order {
+			got = mergeFormat("aws_example", got, entry)
+		}
+		got = mergeFormat("aws_example", got, catalog.FormatEntry{Manual: true, Evidence: "unclassified_test.go:4"})
+		assert.True(t, got.Manual)
+		assert.Empty(t, got.Template)
+		require.Len(t, got.Alternatives, 3)
+		assert.Equal(t, []string{"target_id"}, got.Sensitive)
+		assert.Equal(t, []catalog.TemplateEvidence{
+			{Template: "{arn}", Evidence: "arn_test.go:3"},
+			{Template: "{bus}/{rule}/{target_id}", Evidence: "named_test.go:2"},
+			{Template: "{rule}/{target_id}", Evidence: "default_test.go:1"},
+		}, got.Alternatives)
+		if i == 0 {
+			want = got
+		} else {
+			assert.Equal(t, want, got, "source order must not choose the import format")
+		}
+		require.NoError(t, (&catalog.Formats{Types: map[string]catalog.FormatEntry{"aws_example": got}}).Validate())
+	}
 }

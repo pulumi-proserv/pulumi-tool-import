@@ -212,11 +212,11 @@ func acctestTemplate(call *ast.CallExpr, step ImportStep, consts map[string]stri
 			return "", "", false
 		}
 		return "{" + k + "}", symbol, true
-	case "AttrsImportStateIdFunc":
+	case "AttrsImportStateIdFunc", "CrossRegionAttrsImportStateIdFunc":
 		if len(args) < 3 {
 			return "", "", false
 		}
-		sep, ok := stringLit(args[1])
+		sep, ok := importIDSeparator(args[1], step)
 		if !ok {
 			return "", "", false
 		}
@@ -245,17 +245,18 @@ var acctestHelperNames = []string{
 	"AttrsImportStateIdFunc",
 	"CrossRegionAttrImportStateIdFunc",
 	"CrossRegionImportStateIdFunc",
+	"CrossRegionAttrsImportStateIdFunc",
 }
 
 // acctestHelpersSHA256 is hashAcctestHelpers' value for terraform-provider-aws
-// v6.38.0. It is the only thing tying acctestTemplate's hard-coded semantics
+// v6.38.0 fixture profile. It ties acctestTemplate's hard-coded semantics
 // to the source they claim to model: if a version bump rewrites one of these
 // helpers, the scrape fails here instead of silently composing wrong IDs.
-// Update it only after re-reading the four bodies and re-checking
+// Update it only after re-reading the modeled bodies and re-checking
 // acctestTemplate against them.
-const acctestHelpersSHA256 = "403d8802e5d3f5dfca07b4a8c9eb81eb742877b65ffe18a7ff342717061a27f7"
+const acctestHelpersSHA256 = "42f60a50e9e7947c1e8536270bd4086d132fd5f850658a8e3f807482222ce789"
 
-// hashAcctestHelpers parses internal/acctest/state_id.go and hashes the four
+// hashAcctestHelpers parses internal/acctest/state_id.go and hashes the
 // modelled FuncDecls, printed by go/printer without comments so the hash
 // covers their code and nothing else.
 func hashAcctestHelpers(providerRoot string) (string, error) {
@@ -368,6 +369,60 @@ func importsProviderAcctest(file *ast.File, name string) bool {
 		}
 	}
 	return false
+}
+
+// importIDSeparator accepts a literal or the provider's own literal flex constant.
+// A same-named local variable or a foreign package is not evidence of its value.
+func importIDSeparator(expr ast.Expr, step ImportStep) (string, bool) {
+	if value, ok := stringLit(expr); ok {
+		return value, true
+	}
+	sel, ok := expr.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "ResourceIdSeparator" || step.ResourceIDSeparator == nil || step.Syntax == nil {
+		return "", false
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	if !ok || pkg.Obj != nil {
+		return "", false
+	}
+	for _, imp := range step.Syntax.Imports {
+		path, err := strconv.Unquote(imp.Path.Value)
+		if err != nil || path != "github.com/hashicorp/terraform-provider-aws/internal/flex" {
+			continue
+		}
+		name := "flex"
+		if imp.Name != nil {
+			name = imp.Name.Name
+		}
+		if pkg.Name == name {
+			return *step.ResourceIDSeparator, true
+		}
+	}
+	return "", false
+}
+
+func loadResourceIDSeparator(providerRoot string) (string, error) {
+	path := filepath.Join(providerRoot, "internal", "flex", "flex.go")
+	file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+	if err != nil {
+		return "", fmt.Errorf("reading provider separator: %w", err)
+	}
+	for _, decl := range file.Decls {
+		group, ok := decl.(*ast.GenDecl)
+		if !ok || group.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range group.Specs {
+			value, ok := spec.(*ast.ValueSpec)
+			if !ok || len(value.Names) != 1 || value.Names[0].Name != "ResourceIdSeparator" || len(value.Values) != 1 {
+				continue
+			}
+			if separator, ok := stringLit(value.Values[0]); ok {
+				return separator, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("%s: ResourceIdSeparator is not a literal string constant", path)
 }
 
 func stringLit(e ast.Expr) (string, bool) {

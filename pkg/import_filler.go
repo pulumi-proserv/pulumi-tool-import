@@ -477,6 +477,9 @@ func normalizeInstanceKey(s string) string {
 // TranslateResult is what composing import IDs from the formats table did.
 type TranslateResult struct {
 	Translated int
+	// Unverified counts populated IDs not successfully checked by a catalog
+	// template or composer. A matched state ID alone is not proof of importability.
+	Unverified int
 	Notes      []string
 }
 
@@ -576,6 +579,7 @@ func translateImportIDs(importFile *ImportFile, digest *ModuleMap, selectCatalog
 		if entry.Component || entry.ID == "" || entry.ID == "<PLACEHOLDER>" {
 			continue
 		}
+		res.Unverified++
 		c, warning, err := selectCatalog(entry)
 		if err != nil {
 			note("AWS import IDs not composed: " + err.Error())
@@ -635,6 +639,9 @@ func translateImportIDs(importFile *ImportFile, digest *ModuleMap, selectCatalog
 			continue
 		}
 
+		if newID != "" {
+			res.Unverified--
+		}
 		if newID != "" && newID != entry.ID {
 			entry.ID = newID
 			res.Translated++

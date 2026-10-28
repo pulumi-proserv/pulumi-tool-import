@@ -75,7 +75,7 @@ func TestClassifyResolvesNamesConstants(t *testing.T) {
 	assert.Empty(t, c.Template)
 }
 
-// acctestTemplate hard-codes four helpers' semantics. The hash is what makes
+// acctestTemplate hard-codes helper semantics. The hash is what makes
 // that safe across a provider bump, so it must match the checked-in copy of
 // the helpers — which is therefore proven byte-faithful to the tag.
 func TestAcctestHelperHashPinsTheFixture(t *testing.T) {
@@ -291,25 +291,6 @@ import "fmt"
 func TestAccExample() {
  resource.Test(resource.TestCase{Steps: []resource.TestStep{{ResourceName: "aws_example.test", ImportState: true, ImportStateIdFunc: importID}}})
 }
-
-func TestPinnedHelperProfiles(t *testing.T) {
-	root := fixtureRoot(t)
-	hashes, err := helperHashes(root)
-	require.NoError(t, err)
-	legacy := map[string]string{"AttrImportStateIdFunc": hashes["AttrImportStateIdFunc"]}
-	require.NoError(t, checkPinnedHelpers(root, legacy))
-	step := stepsByType(t)["aws_acc_attrs"]
-	step.Helpers = legacy
-	assert.True(t, classify2(t, step).Manual, "a helper outside this major's verified profile must not produce a template")
-	step.Helpers = hashes
-	assert.Equal(t, "{group}:{name}", classify2(t, step).Template)
-	step = stepsByType(t)["aws_acc_attr"]
-	step.Helpers = legacy
-	assert.Equal(t, "{arn}", classify2(t, step).Template)
-	require.Error(t, checkPinnedHelpers(root, nil))
-	require.Error(t, checkPinnedHelpers(root, map[string]string{"MissingHelper": ""}))
-	require.ErrorContains(t, checkPinnedHelpers(root, map[string]string{"AttrImportStateIdFunc": "changed"}), "changed")
-}
 func importID(s *terraform.State) (string, error) {
  rs, ok := s.RootModule().Resources["aws_example.test"]
  if !ok { return "", fmt.Errorf("not found") }
@@ -328,4 +309,23 @@ func importID(s *terraform.State) (string, error) {
 			assert.Contains(t, c.Snippet, "rs.Primary")
 		})
 	}
+}
+
+func TestPinnedHelperProfiles(t *testing.T) {
+	root := fixtureRoot(t)
+	hashes, err := helperHashes(root)
+	require.NoError(t, err)
+	legacy := map[string]string{"AttrImportStateIdFunc": hashes["AttrImportStateIdFunc"]}
+	require.NoError(t, checkPinnedHelpers(root, legacy))
+	step := stepsByType(t)["aws_acc_attrs"]
+	step.Helpers = legacy
+	assert.True(t, classify2(t, step).Manual, "a helper outside this major's verified profile must not produce a template")
+	step.Helpers = hashes
+	assert.Equal(t, "{group}:{name}", classify2(t, step).Template)
+	step = stepsByType(t)["aws_acc_attr"]
+	step.Helpers = legacy
+	assert.Equal(t, "{arn}", classify2(t, step).Template)
+	require.Error(t, checkPinnedHelpers(root, nil))
+	require.Error(t, checkPinnedHelpers(root, map[string]string{"MissingHelper": ""}))
+	require.ErrorContains(t, checkPinnedHelpers(root, map[string]string{"AttrImportStateIdFunc": "changed"}), "changed")
 }

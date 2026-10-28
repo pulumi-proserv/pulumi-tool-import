@@ -65,8 +65,6 @@ func CrossRegionAttrImportStateIdFunc(resourceName, attrName string) resource.Im
 
 // CrossRegionAttrsImportStateIdFunc is a resource.ImportStateIdFunc that returns the values
 // of the specified attributes concatenated with a separator and appends the region
-//
-// NOT recognized by the scraper: it is outside the whitelist Task 9 fixed.
 func CrossRegionAttrsImportStateIdFunc(resourceName, sep string, attrNames ...string) resource.ImportStateIdFunc {
 	return func(s *terraform.State) (string, error) {
 		rs, ok := s.RootModule().Resources[resourceName]

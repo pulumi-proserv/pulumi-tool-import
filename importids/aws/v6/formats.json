@@ -338,10 +338,20 @@
       "evidence": "terraform-provider-aws/internal/service/events/rule_test.go:233 acctest.AttrImportStateIdFunc"
     },
     "aws_cloudwatch_event_target": {
-      "template": "{event_bus_name}/{rule}/{target_id}",
+      "alternatives": [
+        {
+          "template": "{event_bus_name}/{rule}/{target_id}",
+          "evidence": "terraform-provider-aws/internal/service/events/target_test.go:1285 testAccTargetImportStateIdFunc"
+        },
+        {
+          "template": "{rule}/{target_id}",
+          "evidence": "terraform-provider-aws/internal/service/events/target_test.go:1296 testAccTargetNoBusNameImportStateIdFunc"
+        }
+      ],
+      "manual": true,
       "docs": "terraform import aws_cloudwatch_event_target.example rule-name/target-id",
       "docsSource": "terraform-provider-aws/website/docs/r/cloudwatch_event_target.html.markdown",
-      "evidence": "terraform-provider-aws/internal/service/events/target_test.go:1285 testAccTargetImportStateIdFunc"
+      "evidence": "multiple import templates for aws_cloudwatch_event_target; see alternatives"
     },
     "aws_cloudwatch_log_account_policy": {
       "manual": true,
