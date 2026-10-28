@@ -38,6 +38,23 @@ broad compatibility coverage is not assumed.
 `version` in the corresponding upstream major. A mismatched override leaves that
 entry unresolved with a diagnostic. The chosen module always supplies composers.
 
+## Prompt-assisted catalog generation
+
+Use [`generate-catalog.prompt.md`](generate-catalog.prompt.md) to analyze a pinned
+provider release's code, documentation, and acceptance tests and produce a
+reviewable catalog-generation patch. Supply exact destination/upstream commits,
+optional historical source commits, and a resource selection. The prompt specifies
+resource coverage, evidence reports, deterministic rules, and regression vectors.
+
+This is a maintainer workflow, not a migration-time LLM call or a new automated
+Make target. It feeds improvements into the existing scraper and provider-major
+composers; generated tables still pass the deterministic regeneration checks below.
+
+In particular, a current provider that stores an ARN and imports by that ID already
+supports pass-through for that representation. Historical name-based IDs require
+separate evidence and normalization. The prompt requires this distinction rather
+than assuming all pass-through resources need conversion.
+
 ## Regenerating
 
 1. Choose a new Pulumi provider release within the major. Inspect its exact
