@@ -1,6 +1,6 @@
 module github.com/pulumi-proserv/pulumi-tool-import
 
-go 1.26.6
+go 1.27.3
 
 require (
 	github.com/apparentlymart/go-versions v1.0.3
