@@ -432,8 +432,8 @@ func matchResources(
 						mr.NonImportable = verdict == importsupport.Unsupported
 						if verdict == importsupport.Unknown {
 							fmt.Fprintf(os.Stderr, "Warning: import support for %s (%s) is unknown — it stays "+
-								"in the import file; if \"pulumi import\" fails with \"resource does not exist\", "+
-								"it is not importable and belongs in the sidecar\n", address, resourceType)
+								"in the import file. If import fails, verify the import ID, provider account/region, "+
+								"resource existence, and provider import support before classifying it as non-importable\n", address, resourceType)
 						}
 						if mr.NonImportable && attrs != nil {
 							populateInjectionState(ctx, &mr, importChecker, pulumiProviders, providerName, resourceType, attrs)
