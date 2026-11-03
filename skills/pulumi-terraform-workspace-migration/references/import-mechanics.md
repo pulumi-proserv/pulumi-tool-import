@@ -161,12 +161,12 @@ error does not say which resources landed.
 # Inspect the plan first
 pulumi plugin run import -- import \
   --file .import/imports-ready.json \
-  --project-dir . --stack <org>/<project>/<stack> --dry-run
+  --project-dir . --stack "<org>/<project>/<stack>" --dry-run
 
 # Import (wrap in `pulumi env run <esc-env> --` if you use ESC for credentials)
 pulumi plugin run import -- import \
   --file .import/imports-ready.json \
-  --project-dir . --stack <org>/<project>/<stack> --batch-size 100
+  --project-dir . --stack "<org>/<project>/<stack>" --batch-size 100
 ```
 
 Pass `--stack` fully qualified: a bare stack name resolves against your

@@ -59,15 +59,20 @@ After patching, re-import the state with: pulumi stack import --file <output>
 
 Example:
 
-  pulumi stack export > state.json
+  pulumi stack export --stack my-org/myproject/dev --show-secrets > state.json
   pulumi plugin run import -- patch-state cfn \
     --state state.json \
     --digest cfn-digest.json \
     --fields data/aws-import-diff-fields.json \
+    --project-dir . --stack my-org/myproject/dev \
     --region us-east-1 \
     --artifacts-dir ./artifacts \
     --out patched-state.json
-  pulumi stack import --file patched-state.json
+  pulumi stack import --stack my-org/myproject/dev --file patched-state.json
+  pulumi preview --stack my-org/myproject/dev
+
+Unlike patch-state tf, this command has no direct-stack mode. --project-dir and
+--stack only read config secrets; --state and --out are still required.
 `,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			stateData, err := os.ReadFile(statePath)
