@@ -1,17 +1,33 @@
 ---
 name: pulumi-terraform-workspace-migration
-description: Orchestrate a full Terraform workspace migration (state + HCL config) to a hand-authored Pulumi TypeScript program, driven node-by-node to a zero-diff preview. Covers digesting TF state safely with `tf-digest`, mapping modules to Pulumi components, generating and filling the import file with `import-id-match`, handling resource types that cannot be imported at all, importing (including batched imports), eliminating post-import diffs with `patch-state`, classifying the diffs that remain, migrating secrets to encrypted stack config and ESC, and staging the first `pulumi up`. Use when migrating a Terraform workspace to Pulumi, importing Terraform-managed resources into Pulumi state, investigating a post-import diff, or replacing `terraform_remote_state` cross-stack references. Companion skills - pulumi-terraform-module-to-component and pulumi-component-authoring.
+description: Orchestrate a full Terraform workspace migration (state + HCL config) to a hand-authored Pulumi program in the target language (TypeScript, Python, Go, C#, Java, or YAML), driven node-by-node to a zero-diff preview. Covers digesting TF state safely with `tf-digest`, mapping modules to Pulumi components, generating and filling the import file with `import-id-match`, handling resource types that cannot be imported at all, importing (including batched imports), eliminating post-import diffs with `patch-state`, classifying the diffs that remain, migrating secrets to encrypted stack config and ESC, and staging the first `pulumi up`. Use when migrating a Terraform workspace to Pulumi, importing Terraform-managed resources into Pulumi state, investigating a post-import diff, or replacing `terraform_remote_state` cross-stack references. Companion skills - pulumi-terraform-module-to-component and pulumi-component-authoring.
 ---
 
 # Terraform workspace → Pulumi migration
 
 Migrates a Terraform workspace (state + HCL config) to a hand-authored Pulumi
-TypeScript program, importing the live resources and driving each node to a
-zero-diff `pulumi preview` before moving to the next.
+program in the target language, importing the live resources and driving each
+node to a zero-diff `pulumi preview` before moving to the next.
 
 **Core principle:** the deployed state is the source of truth. `tf-digest` turns
 TF state into an agent-safe digest; you hand-author idiomatic components and
 program code, then import and drive each node to zero diff.
+
+## Choose a target language
+
+Ask the user which Pulumi language to generate, if not already specified:
+`typescript`, `python`, `go`, `csharp`, `java`, or `yaml`. This drives the
+`pulumi new <language>` template in Phase 2 and every code sample below.
+
+**Component-authoring caveat:** the companion **pulumi-terraform-module-to-component**
+and **pulumi-component-authoring** skills only cover TypeScript
+`ComponentResource` authoring today. If the target language is not TypeScript,
+either write flat resource code per node instead of componentizing (skip Phase
+1e's module→component mapping), or keep components in TypeScript and consume
+them from the target-language program via `pulumi package add` once published
+(see that skill's packaging reference) — both are supported, but hand-translating
+the component pattern into another language's SDK is not covered by those
+skills.
 
 ## Prerequisites
 
@@ -180,14 +196,21 @@ See the **pulumi-terraform-module-to-component** skill.
 
 ```bash
 mkdir pulumi && cd pulumi
-pulumi new typescript --name <project-name> --yes
+pulumi new <language> --name <project-name> --yes
 ```
 
-Then choose a component approach — **start with single-language local
-components** (a `file:` dependency, no SDK generation) for the tight
-edit → build → preview loop that iterating to zero diff demands, and convert to
-published multi-language packages once the migration is done. Both approaches,
-and the local-development loop, are in the **pulumi-component-authoring** skill's
+using the language chosen above (`typescript`, `python`, `go`, `csharp`,
+`java`, or `yaml`). The manifest/lockfile the rest of this skill assumes
+follows from that choice — `package.json` for TypeScript, `requirements.txt`
+or `pyproject.toml` for Python, `go.mod` for Go, `<Project>.csproj` for C#,
+`pom.xml` for Java; YAML has none.
+
+If componentizing (TypeScript only — see the caveat above), choose a component
+approach — **start with single-language local components** (a `file:`
+dependency, no SDK generation) for the tight edit → build → preview loop that
+iterating to zero diff demands, and convert to published multi-language
+packages once the migration is done. Both approaches, and the
+local-development loop, are in the **pulumi-component-authoring** skill's
 `references/packaging-and-publishing.md`.
 
 Create a stack config (`Pulumi.<env>.yaml`) per environment.
@@ -218,13 +241,19 @@ Every value in the Pulumi code must trace back to its TF source:
 
 | TF source | Pulumi equivalent | Digest role |
 |---|---|---|
-| `var.foo` | `config.require("foo")` / `config.requireSecret("foo")` | Confirms this workspace's actual value |
-| `local.bar` (varies by workspace) | `config.require("bar")`, then derive in-program | Shows the evaluated local |
+| `var.foo` | Read from stack config, plain or secret | Confirms this workspace's actual value |
+| `local.bar` (varies by workspace) | Read from stack config, then derive in-program | Shows the evaluated local |
 | `local.baz` (static everywhere) | In-program constant computed from config values | Confirms the static value |
 | `module.x.output_y` | The component's output property | Shows the resolved output |
 | `resource.x.attr` | The resource's output property | Shows the resolved attribute |
-| `data.terraform_remote_state.x.outputs.y` | `config.require()` — values arrive via an ESC env ref | Shows the resolved cross-stack value |
+| `data.terraform_remote_state.x.outputs.y` | Read from stack config — values arrive via an ESC env ref | Shows the resolved cross-stack value |
 | Literal | Hardcoded literal, only if genuinely static across all envs | Confirms the literal |
+
+"Read from stack config" is `config.require`/`config.requireSecret` in
+TypeScript, `config.Require`/`config.RequireSecret` in Go,
+`config.require`/`config.require_secret` in Python, `config.Require`/
+`config.RequireSecret` in C#, `config.require`/`config.requireSecret` in Java —
+exact casing and secret-handling follow each SDK's conventions.
 
 **Rules:**
 
@@ -396,7 +425,8 @@ Each remaining field then gets a category and a justification, per
 
 Checklist:
 
-1. **Linter passes** — `pulumi-linter --language typescript src/`, zero violations.
+1. **Linter passes** — `pulumi-linter --language <language> <src-dir>` (e.g.
+   `src/` for TypeScript, `.` for Python/Go), zero violations.
 2. **Preview clean** — only known post-import classes remain.
 3. **Value tracing** — every value traces to a TF source; no hardcoded evaluated
    values.
