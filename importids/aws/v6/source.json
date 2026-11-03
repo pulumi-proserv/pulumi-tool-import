@@ -1,0 +1,9 @@
+{
+  "provider": "hashicorp/aws",
+  "pulumiVersion": "v6.83.4",
+  "upstreamVersion": "v5.100.0",
+  "upstreamRevision": "f7a3b98da589ab1d52756b0dcee0dbf2de83d635",
+  "helpers": {
+    "AttrImportStateIdFunc": "2cbb23a7fd7baf8835ef71ed26222034e40d0f89272fe45b6188f6ad5b2cabb7"
+  }
+}

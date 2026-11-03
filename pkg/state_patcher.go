@@ -31,6 +31,7 @@ import (
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/lambda"
+	"github.com/pulumi-proserv/pulumi-tool-import/internal/tfaddr"
 	"github.com/pulumi/pulumi-terraform-bridge/v3/pkg/tfbridge"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	pulumiarchive "github.com/pulumi/pulumi/sdk/v3/go/common/resource/archive"
@@ -1598,13 +1599,11 @@ func isNullSentinel(v interface{}) bool {
 // resourceName[0] → 0
 // plain_name → plain_name (no for_each key)
 func normalizeTFName(name string) string {
-	idx := strings.Index(name, "[")
-	if idx < 0 {
+	instance, err := tfaddr.ParseName(name)
+	if err != nil || instance.Key == nil {
 		return name
 	}
-	key := name[idx+1 : len(name)-1] // strip [ and ]
-	key = strings.Trim(key, `"`)
-	return key
+	return tfaddr.KeyValue(instance.Key)
 }
 
 // urnName extracts the last segment of a URN.

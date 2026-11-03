@@ -17,6 +17,8 @@ package pkg
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -88,6 +90,44 @@ func TestBuildModuleMapLeavesImportableResourcesUnflagged(t *testing.T) {
 	encoded, err := json.Marshal(resource)
 	require.NoError(t, err)
 	assert.NotContains(t, string(encoded), "nonImportable")
+}
+
+// An Unknown verdict keeps the resource in the import file (the safe
+// default), but must not pass silently: #68 asks for a warning so a
+// "resource does not exist" failure during "pulumi import" can be traced
+// back to an unresolved import-support check.
+func TestBuildModuleMapWarnsOnUnknownImportSupport(t *testing.T) {
+	tfDir, err := filepath.Abs(filepath.Join("testdata", "tf_indexed_modules"))
+	require.NoError(t, err)
+
+	config, err := LoadConfig(tfDir)
+	require.NoError(t, err)
+	rawState, err := LoadRawState(filepath.Join(tfDir, "terraform.tfstate"))
+	require.NoError(t, err)
+
+	// stubChecker answers Unknown for any type not in its table; leave
+	// random_pet unlisted so it is Unknown.
+	checker := &stubChecker{verdicts: map[string]importsupport.Support{}}
+
+	origStderr := os.Stderr
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	os.Stderr = w
+
+	mm, buildErr := BuildModuleMap(context.Background(), config, nil, rawState, nil, "test-stack", "test-project", checker)
+
+	require.NoError(t, w.Close())
+	os.Stderr = origStderr
+	captured, err := io.ReadAll(r)
+	require.NoError(t, err)
+
+	require.NoError(t, buildErr)
+	resource := mm.Modules["pet[0]"].Resources[0]
+	assert.False(t, resource.NonImportable, "Unknown stays importable by default")
+
+	assert.Contains(t, string(captured), "import support")
+	assert.Contains(t, string(captured), "is unknown")
+	assert.Contains(t, string(captured), "random_pet")
 }
 
 func TestBuildModuleMapWithoutCheckerFlagsNothing(t *testing.T) {
