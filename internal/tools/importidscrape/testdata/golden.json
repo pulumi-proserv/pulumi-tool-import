@@ -1,0 +1,136 @@
+{
+  "provider": "hashicorp/aws",
+  "version": "v0.0.0-fixture",
+  "types": {
+    "aws_acc_adapter": {
+      "manual": true,
+      "snippet": "acctest.CrossRegionImportStateIdFuncAdapter(resourceName, testAccAccImportStateIDFunc)",
+      "evidence": "terraform-provider-aws/internal/service/acc/acc_test.go:71 "
+    },
+    "aws_acc_assign": {
+      "template": "{service_namespace}/{name}",
+      "evidence": "terraform-provider-aws/internal/service/acc/assign_test.go:31 testAccAssignImportStateIdFunc"
+    },
+    "aws_acc_assigntwice": {
+      "manual": true,
+      "snippet": "{\n\trs, ok := s.RootModule().Resources[resourceName]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"Not found: %s\", resourceName)\n\t}\n\n\tid := rs.Primary.Attributes[\"first\"]\n\tid = rs.Primary.Attributes[\"second\"]\n\treturn id, nil\n}",
+      "evidence": "terraform-provider-aws/internal/service/acc/assign_test.go:60 testAccAssignTwiceImportStateIdFunc"
+    },
+    "aws_acc_attr": {
+      "template": "{arn}",
+      "evidence": "terraform-provider-aws/internal/service/acc/acc_test.go:19 acctest.AttrImportStateIdFunc"
+    },
+    "aws_acc_attrs": {
+      "template": "{group}:{name}",
+      "evidence": "terraform-provider-aws/internal/service/acc/acc_test.go:32 acctest.AttrsImportStateIdFunc"
+    },
+    "aws_acc_crossattr": {
+      "template": "{name}",
+      "evidence": "terraform-provider-aws/internal/service/acc/acc_test.go:58 acctest.CrossRegionAttrImportStateIdFunc"
+    },
+    "aws_acc_dynattr": {
+      "manual": true,
+      "snippet": "acctest.AttrImportStateIdFunc(resourceName, attr)",
+      "evidence": "terraform-provider-aws/internal/service/acc/acc_test.go:107 "
+    },
+    "aws_acc_indirect": {
+      "template": "{group}/{name}",
+      "evidence": "terraform-provider-aws/internal/service/acc/assign_test.go:88 testAccIndirectImportStateIdFunc -> acctest.AttrsImportStateIdFunc"
+    },
+    "aws_acc_indirectforeign": {
+      "manual": true,
+      "snippet": "{\n\treturn localIDFunc(resourceName, \"/\", \"group\", \"name\")\n}",
+      "evidence": "terraform-provider-aws/internal/service/acc/assign_test.go:123 testAccIndirectForeignImportStateIdFunc"
+    },
+    "aws_acc_indirectother": {
+      "manual": true,
+      "snippet": "{\n\treturn acctest.AttrImportStateIdFunc(\"aws_vpc.test\", names.AttrName)\n}",
+      "evidence": "terraform-provider-aws/internal/service/acc/assign_test.go:105 testAccIndirectOtherImportStateIdFunc"
+    },
+    "aws_acc_indirectshadow": {
+      "manual": true,
+      "snippet": "{\n\treturn acctest.AttrsImportStateIdFunc(resourceName, \"/\", \"group\", names.AttrName)\n}",
+      "evidence": "terraform-provider-aws/internal/service/acc/indirect_helpers_test.go:17 testAccIndirectShadowImportStateIdFunc"
+    },
+    "aws_acc_otheraddr": {
+      "manual": true,
+      "snippet": "acctest.AttrImportStateIdFunc(\"aws_vpc.test\", names.AttrName)",
+      "evidence": "terraform-provider-aws/internal/service/acc/acc_test.go:92 "
+    },
+    "aws_acc_shadow": {
+      "manual": true,
+      "snippet": "acctest.AttrImportStateIdFunc(resourceName, \"x\")",
+      "evidence": "terraform-provider-aws/internal/service/acc/shadow_test.go:20 "
+    },
+    "aws_block_form_thing": {
+      "manual": true,
+      "docs": "terraform import aws_block_form_thing.example a/b",
+      "docsSource": "terraform-provider-aws/website/docs/r/block_form_thing.html.markdown",
+      "evidence": "docs-only: multi-segment or attribute-based example in terraform-provider-aws/website/docs/r/block_form_thing.html.markdown, no import test found"
+    },
+    "aws_cloudwatch_event_target": {
+      "template": "{event_bus_name}/{rule}/{target_id}",
+      "sensitive": [
+        "target_id"
+      ],
+      "docs": "terraform import aws_cloudwatch_event_target.example rule-name/target-id",
+      "docsSource": "terraform-provider-aws/website/docs/r/cloudwatch_event_target.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/events/target_helpers_test.go:15 testAccTargetImportStateIdFunc"
+    },
+    "aws_docs_only_thing": {
+      "manual": true,
+      "docs": "terraform import aws_docs_only_thing.example name:id",
+      "docsSource": "terraform-provider-aws/website/docs/r/docs_only_thing.html.markdown",
+      "evidence": "docs-only: multi-segment or attribute-based example in terraform-provider-aws/website/docs/r/docs_only_thing.html.markdown, no import test found"
+    },
+    "aws_dynamodb_table": {
+      "template": "{name}",
+      "evidence": "terraform-provider-aws/internal/service/dynamodb/table_test.go:28 testAccTableImportStateIdFunc"
+    },
+    "aws_ec2_child_thing": {
+      "manual": true,
+      "snippet": "{\n\trs := s.RootModule().Resources[\"aws_vpc.test\"]\n\treturn rs.Primary.ID + \"/x\", nil\n}",
+      "evidence": "terraform-provider-aws/internal/service/ec2/parent_test.go:24 testAccParentImportStateIdFunc"
+    },
+    "aws_ec2_cross_thing": {
+      "manual": true,
+      "snippet": "{\n\trs := s.RootModule().Resources[\"aws_ec2_cross_thing.test\"]\n\tother := s.RootModule().Resources[\"aws_vpc.test\"]\n\treturn other.Primary.ID + \"/\" + rs.Primary.ID, nil\n}",
+      "evidence": "terraform-provider-aws/internal/service/ec2/cross_test.go:18 crossID"
+    },
+    "aws_ec2_regionthing_hash": {
+      "manual": true,
+      "snippet": "{\n\trs := s.RootModule().Resources[resourceName]\n\treturn fmt.Sprintf(\"%s#%s\", rs.Primary.ID, region), nil\n}",
+      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_region_test.go:74 testAccRegionThingHashImportStateIdFunc"
+    },
+    "aws_ec2_regionthing_other": {
+      "manual": true,
+      "snippet": "{\n\trs := s.RootModule().Resources[resourceName]\n\treturn fmt.Sprintf(\"%s@%s\", rs.Primary.ID, other), nil\n}",
+      "evidence": "terraform-provider-aws/internal/service/ec2/vpc_region_test.go:52 testAccRegionThingOtherImportStateIdFunc"
+    },
+    "aws_elasticsearch_domain": {
+      "template": "{domain_name}/{id}",
+      "docs": "terraform import aws_elasticsearch_domain.example domain_name",
+      "docsSource": "terraform-provider-aws/website/docs/r/elasticsearch_domain.html.markdown",
+      "evidence": "terraform-provider-aws/internal/service/elasticsearch/domain_test.go:24 testAccDomainImportStateID"
+    },
+    "aws_iam_dynamic_static_thing": {
+      "manual": true,
+      "snippet": "ImportStateId: rName",
+      "evidence": "terraform-provider-aws/internal/service/iam/static_test.go:23 "
+    },
+    "aws_iam_static_thing": {
+      "manual": true,
+      "snippet": "ImportStateId: \"fixed-id\"",
+      "evidence": "terraform-provider-aws/internal/service/iam/static_test.go:13 "
+    },
+    "aws_lambda_layer_version_permission": {
+      "manual": true,
+      "snippet": "{\n\trs := s.RootModule().Resources[resourceName]\n\tparts := strings.Split(rs.Primary.Attributes[\"layer_version_arn\"], \":\")\n\treturn fmt.Sprintf(\"%s,%s\", strings.Join(parts[:len(parts)-1], \":\"), parts[len(parts)-1]), nil\n}",
+      "evidence": "terraform-provider-aws/internal/service/lambda/layer_version_permission_test.go:25 testAccLayerVersionPermissionImportStateIdFunc"
+    },
+    "aws_wafv2_ip_set": {
+      "template": "{id}/{name}/{scope}",
+      "evidence": "terraform-provider-aws/internal/service/wafv2/ip_set_test.go:29 testAccIPSetImportStateIdFunc"
+    }
+  }
+}

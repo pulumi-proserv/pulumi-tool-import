@@ -76,6 +76,24 @@ func TestPulumiNameFromTerraformAddress(t *testing.T) {
 			resourceType: "aws_s3_bucket",
 			expected:     "this",
 		},
+		{
+			name:         "resource type also names the module",
+			address:      "module.aws_s3_bucket.aws_s3_bucket.this",
+			resourceType: "aws_s3_bucket",
+			expected:     "aws_s3_bucket",
+		},
+		{
+			name:         "keys contain address punctuation",
+			address:      `module.region["ap].southeast\".2"].aws_s3_bucket.this["key.part"]`,
+			resourceType: "aws_s3_bucket",
+			expected:     `region["ap].southeast\".2"]_this["key.part"]`,
+		},
+		{
+			name:         "data resource",
+			address:      `module.region["0"].data.aws_s3_bucket.bucket`,
+			resourceType: "aws_s3_bucket",
+			expected:     `region["0"]_bucket`,
+		},
 	}
 
 	for _, tc := range tests {

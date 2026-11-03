@@ -1,0 +1,41 @@
+// Copyright 2016-2026, Pulumi Corporation.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Package aws contains import-ID behavior for Pulumi AWS v6 (Terraform AWS v5).
+package aws
+
+import (
+	_ "embed"
+
+	"github.com/pulumi-proserv/pulumi-tool-import/importids/catalog"
+)
+
+//go:embed formats.json
+var formats []byte
+
+//go:embed source.json
+var source []byte
+
+// Load returns a fresh catalog so overrides cannot mutate the embedded defaults.
+func Load() *catalog.Catalog {
+	c := catalog.LoadEmbedded(formats, source, composers())
+	// Current-provider tests cannot reveal historical name-based state IDs.
+	// Keep this migration rule separate from the generated import-test evidence.
+	c.Formats.Types["aws_cloudtrail"] = catalog.FormatEntry{
+		Manual:   true,
+		Docs:     "CloudTrail trail ARN (from arn for historical name-based state IDs)",
+		Evidence: "https://registry.terraform.io/providers/hashicorp/aws/5.100.0/docs/resources/cloudtrail#import",
+	}
+	return c
+}
