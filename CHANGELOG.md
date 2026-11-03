@@ -22,6 +22,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The Terraform workspace migration skill now imports with the tool's
+  batched `import` command at every stack size.** The command was previously
+  documented only in `references/import-mechanics.md`, for stacks over ~100
+  resources; agents rarely read that far and ran bare `pulumi import`
+  instead. `SKILL.md` Phase 4 now gives the command directly.
+- The README, CLI examples, and CDK migration skill use the same batched-import
+  default and fully qualified stack selection. Terraform patching examples now
+  prefer direct-stack mode; CFN examples retain the required export/patch/import
+  sequence. Document optional file mode and the distinction between successful
+  patch verification and a clean final preview.
 - **`digest tf` remote-backend errors changed shape.** HTTP failures now
   name the request, status, and server message
   (`GET https://… → 401 Unauthorized: …`) instead of one identical
