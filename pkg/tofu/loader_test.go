@@ -130,14 +130,7 @@ func copyTestdata(t *testing.T, srcDir string) string {
 }
 
 func Test_LoadTerraformState_SingleWorkspace_StateFilePath(t *testing.T) {
-	token := os.Getenv("PULUMI_ACCESS_TOKEN")
-	if token == "" {
-		t.Skip("PULUMI_ACCESS_TOKEN not set")
-	}
-	t.Setenv("TF_TOKEN_api_pulumi_com", token)
-
-	// Copy testdata to temp dir to avoid .terraform side effects
-	dir := copyTestdata(t, "testdata/tf-single-workspace")
+	dir := newSingleWorkspaceFixture(t)
 
 	// Borrow the Terraform-generated state from tf-project (which uses registry.terraform.io
 	// providers) and write it to a separate temp dir so tofu init doesn't trigger a state
@@ -158,13 +151,7 @@ func Test_LoadTerraformState_SingleWorkspace_StateFilePath(t *testing.T) {
 }
 
 func Test_LoadTerraformState_SingleWorkspace_ProjectDir(t *testing.T) {
-	token := os.Getenv("PULUMI_ACCESS_TOKEN")
-	if token == "" {
-		t.Skip("PULUMI_ACCESS_TOKEN not set")
-	}
-	t.Setenv("TF_TOKEN_api_pulumi_com", token)
-
-	dir := copyTestdata(t, "testdata/tf-single-workspace")
+	dir := newSingleWorkspaceFixture(t)
 
 	ctx := context.Background()
 	state, err := LoadTerraformState(ctx, LoadTerraformStateOptions{
@@ -172,6 +159,7 @@ func Test_LoadTerraformState_SingleWorkspace_ProjectDir(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NotNil(t, state)
+	require.Len(t, state.Values.RootModule.Resources, 1)
 }
 
 // Test_parseStateWithProviderRewrite verifies the registry rewrite logic that is the core of the
