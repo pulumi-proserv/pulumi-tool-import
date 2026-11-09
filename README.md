@@ -96,39 +96,64 @@ if you source credentials from ESC.
 
 ## The migration pipeline
 
-A typical end-to-end migration:
+A typical Terraform/OpenTofu migration, run from the destination Pulumi project
+directory. Initialize the project and stack first, configure the destination
+providers, and supply cloud credentials. Set the paths below for your workspace;
+the curated fields file comes from this repository's `data/` directory.
 
 ```bash
+STACK="my-org/myproject/dev"
+FIELDS="/path/to/pulumi-tool-import/data/aws-import-diff-fields.json"
+
 # 1. Digest the source into an agent-safe sidecar (+ auto-set secrets)
 pulumi plugin run import -- digest tf \
   --from ./terraform --state-file terraform.tfstate \
   --pulumi-project myproject --pulumi-stack dev \
+  --project-dir . \
   --out /tmp/digest.json
 
-# 2. Generate the import skeleton from a Pulumi preview
-pulumi preview --import-file import.json
+# 2. Hand-author the Pulumi program from the digest, then generate its import skeleton
+pulumi preview --stack "$STACK" --import-file import.json
 
-# 3. Fill the skeleton's import IDs from the digest
+# 3. Write mappings.yaml for the program, then fill the skeleton's import IDs
 pulumi plugin run import -- resolve tf \
   --digest /tmp/digest.json --import-file import.json \
   --mapping-file mappings.yaml --out imports-ready.json
 
-# 4. Import (batched, failure-isolating)
+# 4. Inspect and run the batched import (at every stack size)
 pulumi plugin run import -- import \
-  --file imports-ready.json --project-dir . --stack dev
+  --file imports-ready.json --project-dir . --stack "$STACK" --dry-run
+pulumi plugin run import -- import \
+  --file imports-ready.json --project-dir . --stack "$STACK"
 
-# 5. Patch state so preview is clean
-pulumi stack export > state.json
+# 5. Patch the stack directly; the tool backs up, imports, and verifies the result
 pulumi plugin run import -- patch-state tf \
-  --state state.json --digest /tmp/digest.json \
-  --fields data/aws-import-diff-fields.json \
+  --project-dir . --stack "$STACK" \
+  --digest /tmp/digest.json --fields "$FIELDS" \
   --mapping-file mappings.yaml --config-dir ./terraform \
-  --out patched-state.json
-pulumi stack import --file patched-state.json
+  --backup-dir .import/backups
+
+# 6. Inspect remaining differences; completion requires a clean full preview
+pulumi preview --stack "$STACK" --diff
 ```
 
-The CloudFormation path swaps steps 1 and 3 for `digest cfn` / `resolve cfn` (and
-`patch-state cfn`), and is otherwise identical.
+`--stack` selects a backend stack; use its fully qualified `org/project/stack`
+name. The digest's `--pulumi-project` and `--pulumi-stack` construct URNs and take
+the project and short stack name separately. Automatic secret setup also uses
+that short stack name, so ensure it resolves to the intended organization; use
+`--skip-secrets` and explicit secret setup if necessary.
+
+If `resolve tf` emits `imports-ready.non-importable.json`, add
+`--non-importable imports-ready.non-importable.json` to step 5. Stack mode obtains
+the preview needed for injection itself. Successful patch verification means no
+new preview operations and unchanged injected resources, not necessarily zero
+remaining differences; inspect the final preview. Backups contain decrypted
+secrets and should not be committed.
+
+For CloudFormation, use `digest cfn` / `resolve cfn` in steps 1 and 3 and the same
+batched import command. **`patch-state cfn` still requires explicit state export,
+file patching, state import, and preview**; see the examples below. Terraform's
+direct-stack mode does not apply to CFN.
 
 ---
 
@@ -321,15 +346,16 @@ guaranteed-to-fail entries.
 
 Imports the resources in a prepared import file in **batches**, and reports every
 resource that failed — instead of aborting the whole run on the first bad ID.
+Use this command for Terraform and CloudFormation migrations at every stack size.
 
 ```bash
 # Inspect the plan without importing
 pulumi plugin run import -- import \
-  --file imports-ready.json --project-dir . --stack dev --dry-run
+  --file imports-ready.json --project-dir . --stack my-org/myproject/dev --dry-run
 
 # Import, 50 resources per batch
 pulumi plugin run import -- import \
-  --file imports-ready.json --project-dir . --stack dev --batch-size 50
+  --file imports-ready.json --project-dir . --stack my-org/myproject/dev --batch-size 50
 ```
 
 A single malformed import ID fails a whole `pulumi import` deployment, but
@@ -341,15 +367,29 @@ afterward, not the importer's exit status; resources already in state are skippe
 so a run can be repeated after fixing IDs (`--no-resume` disables this). Resources
 are always imported unprotected and without code generation.
 
+Use a fully qualified `--stack org/project/stack` to avoid resolving a bare stack
+name against the wrong default organization. Batch size controls how the import
+is grouped; it does not determine whether to use this command.
+
 Key flags: `--file`, `--project-dir`, `--stack`, `--batch-size` (default 100),
 `--dry-run`, `--no-resume`.
 
 ## `patch-state tf` / `patch-state cfn`
 
-Patches a Pulumi stack state (from `pulumi stack export`) with field values that
-the cloud API doesn't return on import — write-only fields, IaC-only defaults, and
-asset sentinels — so `pulumi preview` is a strict no-op. Re-import the result with
-`pulumi stack import --file <output>`.
+Patches imported Pulumi state with field values that the cloud API doesn't return
+on import — write-only fields, IaC-only defaults, and asset sentinels — to reduce
+post-import diffs. The two variants have different execution modes:
+
+| Command | Mode | State handling and verification |
+|---|---|---|
+| `patch-state tf` without `--state` | Direct stack (recommended for a runnable program) | Requires `--project-dir` and `--stack`; exports and backs up state, patches/imports it, compares previews, and attempts to restore the backup if verification fails. |
+| `patch-state tf --state ... --out ...` | File | Writes a patched file; manually import it and run a preview. |
+| `patch-state cfn --state ... --out ...` | File only | Requires export, patch, import, and manual preview. `--project-dir`/`--stack` only enable reading config secrets. |
+
+**Manual state export/import is unnecessary for Terraform stack mode.** It needs
+a runnable program and credentials for the verification previews. It does not run
+`pulumi up` to apply infrastructure changes. Verification can succeed while
+pre-existing diffs remain; a clean final preview is a separate completion gate.
 
 Both variants read a **curated fields file** (`--fields`,
 [`data/aws-import-diff-fields.json`](./data/aws-import-diff-fields.json)) that
@@ -360,27 +400,41 @@ Falsy-default suppression (keyed on provider version) avoids re-introducing
 phantom diffs on newer providers.
 
 ```bash
-# Terraform
+# Terraform: operate directly on the destination stack
 pulumi plugin run import -- patch-state tf \
-  --state state.json --digest /tmp/tf-digest.json \
-  --fields data/aws-import-diff-fields.json \
+  --project-dir . --stack my-org/myproject/dev \
+  --digest /tmp/tf-digest.json \
+  --fields /path/to/pulumi-tool-import/data/aws-import-diff-fields.json \
   --mapping-file mappings.yaml --config-dir ./terraform \
-  --out patched-state.json
+  --backup-dir .import/backups
 
-# CloudFormation
+# CloudFormation: file mode is required
+pulumi stack export --stack my-org/myproject/dev --show-secrets > state.json
 pulumi plugin run import -- patch-state cfn \
   --state state.json --digest /tmp/cfn-digest.json \
-  --fields data/aws-import-diff-fields.json \
+  --fields /path/to/pulumi-tool-import/data/aws-import-diff-fields.json \
+  --project-dir . --stack my-org/myproject/dev \
   --region us-east-1 --artifacts-dir ./artifacts \
   --out patched-state.json
+pulumi stack import --stack my-org/myproject/dev --file patched-state.json
+pulumi preview --stack my-org/myproject/dev --diff
 ```
+
+For Terraform file mode, export with `--show-secrets`, then add
+`--state state.json --out patched-state.json` to the Terraform command above and
+omit `--backup-dir`. Import and preview the resulting file manually, as in the CFN
+example. Keep `--project-dir`/`--stack` when config secrets are needed. Plaintext
+exports, patched files, and stack-mode backups contain secrets.
+
+In Terraform stack mode, optional `--out patched-state.json` saves a copy **after
+verification**; it does not switch to file mode or require a second state import.
 
 `patch-state cfn` additionally downloads deployed **Lambda code** zips for
 functions present in the migrated state into `--artifacts-dir`, referencing them
 as local `FileArchive`s so preview is clean without embedding CDK build artifacts.
 
 Both can read secret config values from a stack (`--project-dir` + `--stack`) to
-avoid re-patching secret fields.
+resolve sensitive values redacted from the digest.
 
 `patch-state tf` additionally takes `--non-importable <sidecar>`, the
 `*.non-importable.json` `resolve tf` writes, and injects those resources
@@ -403,7 +457,7 @@ seeing the values. The stack is initialized automatically if it doesn't exist.
 ```bash
 pulumi plugin run import -- set-secrets \
   --state-file terraform.tfstate \
-  --project-dir ./pulumi --stack prod \
+  --project-dir ./pulumi --stack my-org/myproject/prod \
   --map 'dbPassword=aws_ssm_parameter.db_password:value' \
   --map 'apiKey=aws_secretsmanager_secret_version.api_key:secret_string'
 ```

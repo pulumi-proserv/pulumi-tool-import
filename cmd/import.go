@@ -55,22 +55,24 @@ Every component entry is included in every batch so child resources can resolve
 their parent through the nameTable.
 
 Resources are always imported unprotected and without code generation, matching
-the hand-authored migration workflow.
+the hand-authored migration workflow. Use this command at every stack size, for
+prepared import files from either resolve tf or resolve cfn. Use a fully qualified
+org/project/stack name so stack selection does not depend on the default org.
 
 Cloud credentials come from the environment. Wrap the command if you use ESC:
 
   pulumi env run <esc-env> -- pulumi plugin run import -- import \
-    --file imports-ready.json --project-dir . --stack dev
+    --file imports-ready.json --project-dir . --stack my-org/myproject/dev
 
 Examples:
 
   # Inspect the plan without importing
   pulumi plugin run import -- import \
-    --file imports-ready.json --project-dir . --stack dev --dry-run
+    --file imports-ready.json --project-dir . --stack my-org/myproject/dev --dry-run
 
   # Import, 50 resources per batch
   pulumi plugin run import -- import \
-    --file imports-ready.json --project-dir . --stack dev --batch-size 50
+    --file imports-ready.json --project-dir . --stack my-org/myproject/dev --batch-size 50
 `,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()

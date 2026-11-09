@@ -135,7 +135,7 @@ pulumi plugin run import -- patch-state tf \
   --fields data/aws-import-diff-fields.json \
   --config-dir ./terraform \
   --non-importable imports-ready.non-importable.json \
-  --project-dir . --stack dev
+  --project-dir . --stack my-org/myproject/dev
 ```
 
 Omitting `--state` selects stack mode (`--out` may still be set — the
@@ -189,28 +189,30 @@ The delta matters beyond the migration itself: the bridge uses it to reconstruct
 Terraform state on **every** later `preview` and `up` for that resource, not
 only across provider upgrades.
 
-### File mode — offline; you run the pulumi steps
+### File mode — you run the export, import, and verification steps
 
 ```bash
-pulumi preview --json > preview.json
-pulumi stack export > state.json
+pulumi preview --stack my-org/myproject/dev --json > preview.json
+pulumi stack export --stack my-org/myproject/dev --show-secrets > state.json
 pulumi plugin run import -- patch-state tf \
   --state state.json --out injected.json \
   --digest tf-digest.json \
   --fields data/aws-import-diff-fields.json \
   --config-dir ./terraform \
+  --project-dir . --stack my-org/myproject/dev \
   --non-importable imports-ready.non-importable.json \
   --preview-json preview.json
-pulumi stack import --file injected.json
-pulumi preview   # must report zero operations
+pulumi stack import --stack my-org/myproject/dev --file injected.json
+pulumi preview --stack my-org/myproject/dev   # must report zero operations for injected resources
 ```
 
 File mode is selected by passing `--state` (with `--out` for the result), and
 its output is not verified by the tool. `--non-importable`
 still requires a preview to source injected resources' URN, parent, provider
-and dependencies from — supply it with `--preview-json` since there is no stack
-to preview directly, and `--preview-json` is rejected in stack mode for the
-same reason.
+and dependencies from — supply it with `--preview-json` because file mode does
+not run previews. Stack mode generates its own preview and rejects that flag.
+The explicit `--project-dir`/`--stack` in this file-mode example read config
+secrets; they do not cause a state import. Protect the decrypted state files.
 
 ### How verification works
 

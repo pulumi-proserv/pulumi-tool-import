@@ -301,8 +301,23 @@ Tips:
 ## Phase 4 — Import mechanics
 
 Generating the import skeleton, writing `mappings.yaml`, filling IDs with
-`import-id-match`, multi-provider setup, and batched imports:
+`import-id-match`, multi-provider setup, and the import run itself:
 **`references/import-mechanics.md`**.
+
+**Run every import with the tool's `import` command, not bare `pulumi import`.**
+It imports the file in batches, isolates every bad import ID in one run instead
+of one per run, and skips resources already in state, so re-running after a fix
+or an interruption resumes rather than starts over:
+
+    pulumi plugin run import -- import \
+      --file .import/imports-ready.json \
+      --project-dir . --stack "<org>/<project>/<stack>" --dry-run   # inspect the plan
+    pulumi plugin run import -- import \
+      --file .import/imports-ready.json \
+      --project-dir . --stack "<org>/<project>/<stack>"
+
+Resources are imported unprotected and without generated code. If it reports
+failures, fix those IDs and run the same command again.
 
 **Resources that cannot be imported.** `import-id-match` drops any resource the
 digest flagged `nonImportable` and records it in a `*.non-importable.json`
@@ -320,7 +335,7 @@ backup if any injected resource does not preview as unchanged:
       --fields data/aws-import-diff-fields.json \
       --config-dir ./terraform \
       --non-importable imports-ready.non-importable.json \
-      --project-dir . --stack dev
+      --project-dir . --stack "<org>/<project>/<stack>"
 
 `pulumi refresh` reporting "unchanged" is never the check: it only proves the
 IDs resolve, not that the values are right. Full background:
@@ -329,6 +344,11 @@ IDs resolve, not that the values are right. Full background:
 Eliminating the diffs that survive import with `patch-state` (including falsy
 default suppression and how to tell that a field simply needs adding to the
 fields file): **`references/patch-state.md`**.
+Prefer `patch-state tf --project-dir . --stack "<org>/<project>/<stack>"`
+with the digest, fields, mappings, and config-directory flags from that reference.
+Omit `--state` to let the tool back up, patch, import, and verify directly; manual
+state export/import is only needed for file mode. Verification can leave existing
+diffs, so still complete the full-preview gate.
 
 ## Phase 5 — Stack config
 
@@ -343,7 +363,7 @@ supplies mappings, never values:
 pulumi plugin run import -- set-secrets \
   --state-file "$STATE_FILE" \
   --project-dir ./pulumi \
-  --stack <stack-name> \
+  --stack "<org>/<project>/<stack>" \
   --map 'configKey1=terraform.address.of.resource1:attribute' \
   --map 'configKey2=terraform.address.of.resource2:attribute'
 ```
