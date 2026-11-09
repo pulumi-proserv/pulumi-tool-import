@@ -21,6 +21,8 @@ make test       # run the Go test suite
 make lint       # run golangci-lint
 make fmt        # gofmt the tree
 make check      # fmt-check + vet + lint + import-id-formats-check (local gate)
+make verify-archive-policy           # Gobra proof; requires Podman and Python 3
+make verify-archive-policy-mutations # proof plus deliberate defect checks
 ```
 
 `make check` also regenerates both Pulumi-major AWS import-ID catalogs from
@@ -33,6 +35,10 @@ checkout cached under your OS cache directory
 major, use `make update-import-id-formats AWS_CATALOG_MAJORS=7`.
 Generation pins and the release procedure are documented in
 [`importids/README.md`](importids/README.md).
+
+Archive repair decisions carry Gobra contracts in the production Go source.
+See [the verification design](docs/archive-policy-verification.md) for the proof
+boundary, runtime setup, and mutation checks. CI runs these checks separately.
 
 ## Tests
 
@@ -48,6 +54,31 @@ them. `make test` runs the root suite and each catalog module independently;
 `make check` includes their vet/lint checks. CI runs the nested-module checks
 explicitly too. Local module replacements allow checked-out builds without
 requiring a workspace or publishing new module versions first.
+
+### Disposable remote-workspace tests
+
+The single-workspace loader tests require `PULUMI_TEST_ORG` and
+`PULUMI_ACCESS_TOKEN`. The token must permit workspace creation, state writes,
+reads, and deletion in that organization. They use `tf.pulumi.com` by default.
+For self-hosted Pulumi Cloud, set `PULUMI_TEST_TF_HOST` to its Terraform backend
+hostname, without a URL scheme or path.
+
+With those credentials available, run:
+
+```sh
+PULUMI_TEST_ORG=your-org go test ./pkg/tofu -run Test_LoadTerraformState_SingleWorkspace -count=1 -v
+```
+
+Each test creates a uniquely named workspace, initializes OpenTofu, and uploads
+the existing synthetic `random_string` test state with locking enabled.
+The tests do not apply infrastructure. Cleanup deletes the workspace, including
+its test state, after success or failure. Cleanup errors fail the test and report
+the workspace name for manual removal. A terminated test process can still leave
+a workspace behind.
+
+Without `PULUMI_TEST_ORG`, these tests skip, even when a Pulumi token is present.
+Selecting an organization without supplying a token fails explicitly.
+The separately tagged remote-state e2e tests have their own fixture configuration.
 
 ## Terraform addresses
 

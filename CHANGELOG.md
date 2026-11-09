@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add Gobra verification and mutation checks for archive replacement and field-local patch decisions
+- Make single-workspace loader tests create and clean up isolated workspaces in a configurable Pulumi organization
+
 - `resolve tf`: generated import-ID catalogs replace the hand-written switch
   (#70). Separate Go modules for **Pulumi AWS v6 and v7** embed their own JSON
   and custom composers, generated against Pulumi v6.83.4 / Terraform v5.100.0

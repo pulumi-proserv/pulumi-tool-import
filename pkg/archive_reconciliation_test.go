@@ -346,14 +346,82 @@ func TestArchiveScenarioS5OutputOnlyRepairValidatesDelta(t *testing.T) {
 }
 
 func TestArchiveScenarioS5OtherFieldPatchCannotOverwriteUnchangedOutput(t *testing.T) {
-	inputs := map[string]interface{}{"kept": "current"}
-	outputs := map[string]interface{}{"kept": "current"}
-	fields := []patchFieldDescriptor{
-		{PulumiName: "missing", HasDefault: true, Default: "default"},
-		{PulumiName: "kept", TFName: "kept"},
+	for _, reverse := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reverse=%v", reverse), func(t *testing.T) {
+			inputs := map[string]interface{}{"kept": "current"}
+			outputs := map[string]interface{}{"kept": "current"}
+			fields := []patchFieldDescriptor{
+				{PulumiName: "missing", HasDefault: true, Default: "default"},
+				{PulumiName: "kept", TFName: "kept"},
+			}
+			if reverse {
+				fields[0], fields[1] = fields[1], fields[0]
+			}
+			result, err := patchResourceFields(fields, inputs, outputs,
+				&ModuleResource{Attributes: map[string]interface{}{"kept": "old"}}, nil, "")
+			require.NoError(t, err)
+			assert.True(t, result.patched)
+			assert.Equal(t, "default", inputs["missing"])
+			assert.Equal(t, "default", outputs["missing"])
+			assert.Equal(t, "current", inputs["kept"])
+			assert.Equal(t, "current", outputs["kept"])
+		})
 	}
-	_, err := patchResourceFields(fields, inputs, outputs, &ModuleResource{Attributes: map[string]interface{}{"kept": "old"}}, nil, "")
+}
+
+func TestArchivePolicyEvidenceAdapter(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "code.zip")
+	deployed := writeArchiveScenarioZip(t, path, []byte("deployed"))
+	hash := sha256.Sum256(deployed)
+	encodedHash := base64.StdEncoding.EncodeToString(hash[:])
+	wrongHash := sha256.Sum256([]byte("different artifact"))
+	candidate, err := buildAssetSentinel(path, "FileArchive")
 	require.NoError(t, err)
-	assert.Equal(t, "current", inputs["kept"])
-	assert.Equal(t, "current", outputs["kept"])
+	stale := map[string]interface{}{sigKey: archiveSig, "path": "stale.zip", "hash": "stale"}
+	fields := []patchFieldDescriptor{{PulumiName: "code", TFName: "filename", AssetType: "FileArchive"}}
+	digest := &ModuleResource{Attributes: map[string]interface{}{"filename": "code.zip"}}
+
+	for _, tc := range []struct {
+		name     string
+		hash     interface{}
+		existing interface{}
+		wantErr  string
+	}{
+		{name: "missing hash permits empty reconstruction"},
+		{name: "missing hash rejects existing conflict", existing: stale, wantErr: "refusing an unverified archive replacement"},
+		{name: "invalid base64", hash: "%%%", wantErr: "invalid deployed codeSha256"},
+		{name: "wrong hash length", hash: base64.StdEncoding.EncodeToString([]byte("short")), wantErr: "invalid deployed codeSha256"},
+		{name: "mismatching hash", hash: base64.StdEncoding.EncodeToString(wrongHash[:]), wantErr: "does not match deployed codeSha256"},
+		{name: "matching hash repairs conflict", hash: encodedHash, existing: stale},
+		{name: "secret-wrapped matching hash", hash: map[string]interface{}{sigKey: secretSig, "plaintext": fmt.Sprintf("%q", encodedHash)}, existing: stale},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			inputs := map[string]interface{}{"kept": "input"}
+			outputs := map[string]interface{}{"kept": "output"}
+			if tc.hash != nil {
+				outputs["codeSha256"] = tc.hash
+			}
+			if tc.existing != nil {
+				inputs["code"] = tc.existing
+				outputs["code"] = tc.existing
+			}
+			beforeInputs := deepCopyJSONValue(inputs)
+			beforeOutputs := deepCopyJSONValue(outputs)
+			result, err := patchResourceFields(fields, inputs, outputs, digest, nil, dir)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				assert.Equal(t, beforeInputs, inputs)
+				assert.Equal(t, beforeOutputs, outputs)
+				return
+			}
+			require.NoError(t, err)
+			assert.True(t, result.patched)
+			assert.Equal(t, candidate, inputs["code"])
+			assert.Equal(t, candidate, outputs["code"])
+			assert.Equal(t, "input", inputs["kept"])
+			assert.Equal(t, "output", outputs["kept"])
+			assert.Equal(t, "code.zip", digest.Attributes["filename"])
+		})
+	}
 }
