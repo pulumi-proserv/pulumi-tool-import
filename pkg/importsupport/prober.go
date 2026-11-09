@@ -35,6 +35,13 @@ var fallbackData []byte
 // shows up in errors from types that *do* support import.
 const probeID = "pulumi-tool-import-probe"
 
+// maxProviderRestarts caps how many times a provider is reloaded after a
+// crash before it is given up on for good. A single flaky type (e.g. an
+// importer that dereferences unconfigured provider state) should not poison
+// every other type behind it, but a provider that crashes repeatedly is not
+// worth the cost of reloading it once per remaining type.
+const maxProviderRestarts = 3
+
 // fallbackTypes are the resource types the curated list covers.
 var fallbackTypes = loadFallbackTypes()
 
@@ -73,6 +80,7 @@ type Prober struct {
 	verdicts  map[string]Support // "provider|type" -> verdict
 	providers map[string]tfprovider.Provider
 	failed    map[string]bool // providers already known not to load
+	crashes   map[string]int  // providerAddr -> number of times ImportResourceState has crashed it
 
 	// loadProvider is tfprovider.LoadProvider, replaced in tests.
 	loadProvider func(ctx context.Context, providerAddr, version string) (tfprovider.Provider, error)
@@ -87,6 +95,7 @@ func NewProber(versions map[string]string) *Prober {
 		verdicts:     map[string]Support{},
 		providers:    map[string]tfprovider.Provider{},
 		failed:       map[string]bool{},
+		crashes:      map[string]int{},
 		loadProvider: tfprovider.LoadProvider,
 		Warn: func(msg string) {
 			fmt.Fprintf(os.Stderr, "Warning: %s\n", msg)
@@ -126,24 +135,36 @@ func (p *Prober) check(ctx context.Context, providerAddr, tfType string) Support
 	err := resp.Diagnostics.Err()
 	verdict := Classify(err)
 	if verdict == Unknown {
-		// The provider never answered — most likely the plugin died. Every
-		// later probe would fail the same way, so stop using this provider
-		// and answer from the curated list instead of reporting nothing.
-		p.Warn(fmt.Sprintf("Terraform provider %s stopped responding while checking import support "+
-			"for %s (%v); falling back to the curated list of non-importable types", providerAddr, tfType, err))
+		// The provider never answered — most likely the plugin died. This
+		// type's own verdict is unrecoverable, but a single crashy type (an
+		// importer that dereferences unconfigured provider state, say) must
+		// not poison every type probed after it: discard the dead handle and
+		// let the next probe reload the provider fresh, up to a restart
+		// budget.
 		p.discard(ctx, providerAddr)
+		p.crashes[providerAddr]++
+		if p.crashes[providerAddr] >= maxProviderRestarts {
+			p.failed[providerAddr] = true
+			p.Warn(fmt.Sprintf("Terraform provider %s has crashed %d times while checking import support; "+
+				"giving up on it and falling back to the curated list of non-importable types for its "+
+				"remaining resource types", providerAddr, p.crashes[providerAddr]))
+		} else {
+			p.Warn(fmt.Sprintf("Terraform provider %s stopped responding while checking import support "+
+				"for %s (%v); restarting it for the remaining resource types", providerAddr, tfType, err))
+		}
 		return p.fallback(tfType)
 	}
 	return verdict
 }
 
-// discard shuts down a provider and marks it unusable. The caller holds p.mu.
+// discard shuts down a provider so a later probe reloads it fresh. The caller
+// holds p.mu. It does not mark the provider as failed: whether to give up on
+// it for good is decided by the caller based on why it was discarded.
 func (p *Prober) discard(ctx context.Context, providerAddr string) {
 	if provider, ok := p.providers[providerAddr]; ok {
 		_ = provider.Close(ctx)
 		delete(p.providers, providerAddr)
 	}
-	p.failed[providerAddr] = true
 }
 
 func (p *Prober) Provider(ctx context.Context, providerAddr string) (tfprovider.Provider, bool) {

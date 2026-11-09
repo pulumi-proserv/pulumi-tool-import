@@ -82,9 +82,16 @@ high. Common causes of a low rate:
 - **Unsupported import-ID format.** When an import fails with "resource does not
   exist", first treat it as a *wrong ID format*, not a missing resource: check
   the type's documented format (`pulumi package get-schema aws`, the `## Import`
-  section). If the built-in translation doesn't cover the type, add it to
-  `TranslateImportIDs` in the tool, or set the ID via a resource mapping. The
-  same message also appears when the type has no importer at all — see below.
+  section). Composition uses the destination **Pulumi AWS major**: the modules
+  `importids/aws/v6` and `importids/aws/v7` each own an embedded `formats.json`
+  and `composers.go`. Tables are generated from the upstream revision recorded
+  in that module's `source.json` via `make update-import-id-formats`. A conditional
+  shape needs a composer in the matching major's module. `resolve tf` reports
+  manual entries without a composer and missing/unsupported destination pins;
+  it never substitutes another major's catalog. An explicit import entry
+  `version` takes precedence over the digest's `aws@version` pin. If neither
+  templates nor composers cover the type, set the ID by hand. The same message
+  also appears when the type has no importer at all — see below.
 - **Non-importable types.** Some Terraform resource types declare no importer,
   so no ID can ever import them; the attempt fails with the same misleading
   "resource '<id>' does not exist". `digest tf` detects these by asking the
@@ -143,33 +150,29 @@ When TF uses multiple provider aliases (e.g. `aws` and `aws.useast2`):
 
 ## Run the import
 
-For small stacks (< ~100 resources):
-
-```bash
-pulumi import --file .import/imports-ready.json --yes --protect=false --generate-code=false
-```
-
-Both flags are required: `--protect` defaults to true, so omitting it leaves
-every imported resource protected and produces a permanent `~protect` diff on
-every subsequent preview; `--generate-code=false` matches the hand-authored
-migration workflow, which explicitly forbids generated code.
-
-For larger stacks, use the tool's `import` command. It batches the file, puts
+Use the tool's `import` command at every stack size. It batches the file, puts
 **all** `component: true` entries in every batch so parent references resolve,
 and — when a batch does not fully land — re-imports that batch's resources
-individually to identify exactly which import IDs are bad:
+individually to identify exactly which import IDs are bad. A bare
+`pulumi import` stops at the first bad ID and leaves a partial import whose
+error does not say which resources landed.
 
 ```bash
 # Inspect the plan first
 pulumi plugin run import -- import \
   --file .import/imports-ready.json \
-  --project-dir . --stack <stack-name> --dry-run
+  --project-dir . --stack "<org>/<project>/<stack>" --dry-run
 
 # Import (wrap in `pulumi env run <esc-env> --` if you use ESC for credentials)
 pulumi plugin run import -- import \
   --file .import/imports-ready.json \
-  --project-dir . --stack <stack-name> --batch-size 100
+  --project-dir . --stack "<org>/<project>/<stack>" --batch-size 100
 ```
+
+Pass `--stack` fully qualified: a bare stack name resolves against your
+default org, which may not be the stack's org. The command always imports unprotected
+and without code generation, so there is no `--protect=false` or
+`--generate-code=false` to remember.
 
 The run ends with a summary and, if anything failed, a table naming each failed
 resource, the import ID attempted, and the error. Fix those IDs and re-run:

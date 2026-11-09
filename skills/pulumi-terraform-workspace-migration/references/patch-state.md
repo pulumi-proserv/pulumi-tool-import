@@ -10,10 +10,10 @@
 
 After import, many fields show diffs because the provider's Read doesn't return
 them — write-only fields and IaC-only defaults. `patch-state` fills them from the
-TF digest using the curated fields file (`aws-import-diff-fields.json`, at the
-tool repo root) plus stack-config secrets.
+TF digest using the curated fields file (`data/aws-import-diff-fields.json` in the
+tool repository) plus stack-config secrets.
 
-**`--fields` is the only mode.** The old `--schema-driven` flag and the v1 fields
+**Curated fields are required in both execution modes.** The old `--schema-driven` flag and the v1 fields
 format are gone; the file is now the flat v2 shape
 (`{provider, falsyDefaultSuppression, fields}`) keyed by full Pulumi type token.
 Schema-driven patching filled every nil schema-valid input, which *created*
@@ -23,31 +23,56 @@ patches fields with known, verified behavior.
 
 ## The pipeline
 
-```bash
-# 1. Export with --show-secrets so null sentinels are visible as plaintext
-pulumi stack export --show-secrets > .import/state.json
+Prefer **direct-stack mode** for a runnable program: omit `--state` and pass
+`--project-dir` plus a fully qualified `--stack`. The tool exports and backs up
+state, patches/imports it, and compares baseline and verification previews. No
+manual export or state import is required.
 
-# 2. Patch — wrap in `pulumi env run` for cloud credentials (Lambda code download)
+```bash
+# Wrap in ESC when needed for cloud credentials and verification previews
 pulumi env run <esc-env> -- \
-  pulumi plugin run import -- patch-state \
-    --state .import/state.json \
+  pulumi plugin run import -- patch-state tf \
     --digest .import/tf-digest.json \
-    --fields <tool-repo>/aws-import-diff-fields.json \
+    --fields <tool-repo>/data/aws-import-diff-fields.json \
     --mapping-file <workspace>-mappings.yaml \
     --project-dir . \
-    --stack <stack-name> \
+    --stack "<org>/<project>/<stack>" \
     --config-dir ../environments/<workspace> \
-    --out .import/patched.json
+    --backup-dir .import/backups
 
-# 3. Import the patched state (re-encrypts the plaintext sentinels)
-pulumi stack import --file .import/patched.json
+# Inspect remaining differences; successful patch verification is not a zero-diff guarantee
+pulumi preview --stack "<org>/<project>/<stack>" --diff
 ```
 
-**Critical requirements:**
+Stack mode attempts to restore the backup if the verifying preview fails or
+finds regressions. It does not run `pulumi up`. Backups contain decrypted secrets;
+keep them out of version control. Optional `--out .import/patched.json` writes a
+copy after verification and does not require a second state import.
 
-- **`--show-secrets` in step 1.** Without it, null sentinels in outputs are
-  encrypted ciphertext and the patcher cannot detect or replace them.
-- **Cloud credentials in step 2**, for downloading deployed Lambda code when the
+**File mode** remains available when explicit inspection or recovery is needed:
+
+```bash
+pulumi stack export --stack "<org>/<project>/<stack>" --show-secrets > .import/state.json
+pulumi plugin run import -- patch-state tf \
+  --state .import/state.json --out .import/patched.json \
+  --digest .import/tf-digest.json \
+  --fields <tool-repo>/data/aws-import-diff-fields.json \
+  --mapping-file <workspace>-mappings.yaml \
+  --project-dir . --stack "<org>/<project>/<stack>" \
+  --config-dir ../environments/<workspace>
+pulumi stack import --stack "<org>/<project>/<stack>" --file .import/patched.json
+pulumi preview --stack "<org>/<project>/<stack>" --diff
+```
+
+File mode writes a file without importing or running verification previews. It
+can still read config secrets or download artifacts. A manual export needs
+`--show-secrets` so encrypted null sentinels can be inspected by the patcher;
+protect both exported and patched files. Direct-stack mode obtains the decrypted
+export internally.
+
+**Inputs for either mode:**
+
+- **Cloud credentials**, for downloading deployed Lambda code when the
   local artifact isn't available.
 - **`--config-dir`**, pointing at the TF config directory, so asset file paths
   resolve (e.g. a static file referenced by an S3 object).
@@ -222,15 +247,16 @@ Per-field metadata available: `default`, plus `asset` / `assetKind` /
 `archiveFormat` / `hashField` for `FileAsset`/`FileArchive` fields such as Lambda
 `code` and S3 `source`.
 
-**You usually do not need to re-import.** Adding *new* field entries is safe to
-apply against a fresh export, because those fields are still nil in state —
-nothing to overwrite:
+**A second resource import is usually unnecessary.** After adding field entries,
+rerun the direct-stack command above with the updated fields file and inspect the
+remaining preview differences. In file mode, take a fresh export rather than
+reusing stale state:
 
 ```bash
-pulumi stack export --show-secrets > .import/state.json
+pulumi stack export --stack "<org>/<project>/<stack>" --show-secrets > .import/state.json
 # ... patch-state with the updated fields file ...
-pulumi stack import --file .import/patched.json
-pulumi preview
+pulumi stack import --stack "<org>/<project>/<stack>" --file .import/patched.json
+pulumi preview --stack "<org>/<project>/<stack>"
 ```
 
 Re-import is required only when **URNs change** (a renamed resource, or a

@@ -127,6 +127,32 @@ func TestBuildModuleMap_WithEval(t *testing.T) {
 	assert.Equal(t, "test-1", pet1.Interface.Inputs[0].EvaluatedValue)
 }
 
+func TestBuildModuleMapPreservesModuleKeyTypes(t *testing.T) {
+	t.Parallel()
+	tfDir, err := filepath.Abs(filepath.Join("testdata", "tf_indexed_modules"))
+	require.NoError(t, err)
+	config, err := LoadConfig(tfDir)
+	require.NoError(t, err)
+	state := states.NewState()
+	for _, key := range []addrs.InstanceKey{addrs.IntKey(0), addrs.StringKey("0"), addrs.StringKey(""), addrs.StringKey("0prod")} {
+		state.EnsureModule(addrs.RootModuleInstance.Child("pet", key))
+	}
+	mm, err := BuildModuleMap(context.Background(), config, nil, state, nil, "stack", "project", nil)
+	require.NoError(t, err)
+	for _, tc := range []struct{ name, key, kind string }{
+		{"pet[0]", "0", "int"},
+		{`pet["0"]`, "0", "string"},
+		{`pet[""]`, "", "string"},
+		{`pet["0prod"]`, "0prod", "string"},
+	} {
+		require.Contains(t, mm.Modules, tc.name)
+		entry := mm.Modules[tc.name]
+		assert.Equal(t, "module."+tc.name, entry.TerraformPath)
+		assert.Equal(t, tc.key, entry.IndexKey)
+		assert.Equal(t, tc.kind, entry.IndexType)
+	}
+}
+
 func TestBuildModuleMap_Expression(t *testing.T) {
 	t.Parallel()
 	tfDir, err := filepath.Abs(filepath.Join("testdata", "tf_indexed_modules"))
@@ -442,6 +468,18 @@ func TestFlattenAddress(t *testing.T) {
 			attribute: "value",
 			expected:  "cdpa_param_stack_values_parameters_develop_cdp_adapter_api_key_value",
 		},
+		{
+			name:      "data address and bracket inside string key",
+			address:   `module.parent["a].b"].data.aws_secret.this["a].b/value"]`,
+			attribute: "secret",
+			expected:  "parent_a_b_value_secret",
+		},
+		{
+			name:      "escaped characters decoded before sanitizing",
+			address:   `aws_secret.this["a\".b\\c"]`,
+			attribute: "secret",
+			expected:  "a_b_c_secret",
+		},
 	}
 
 	for _, tt := range tests {
@@ -729,7 +767,8 @@ func TestRawStateFromTfjson_DataSources(t *testing.T) {
 		},
 	}
 
-	state := rawStateFromTfjson(tfjsonState)
+	state, err := rawStateFromTfjson(tfjsonState)
+	require.NoError(t, err)
 
 	rootModule := state.RootModule()
 	require.NotNil(t, rootModule)

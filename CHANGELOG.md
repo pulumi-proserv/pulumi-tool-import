@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `resolve tf`: generated import-ID catalogs replace the hand-written switch
+  (#70). Separate Go modules for **Pulumi AWS v6 and v7** embed their own JSON
+  and custom composers, generated against Pulumi v6.83.4 / Terraform v5.100.0
+  and Pulumi v7.51.1 / Terraform v6.69.1 respectively. The import entry's version
+  takes precedence over the digest pin. Missing or unsupported pins leave IDs
+  untouched with a diagnostic; newer same-major releases warn. Overrides must
+  declare a compatible `pulumiVersion` and upstream `version`.
+- `make update-import-id-formats` regenerates both catalogs from their
+  `source.json` pins. `make test` and `make check` cover the nested modules;
+  CI verifies both generated tables byte-for-byte.
+
 ### Changed
 
 - **Archive reconciliation preserves file-archive semantics.** Terraform ZIPs
@@ -17,6 +30,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   converted. A local Lambda ZIP that disagrees with the imported `codeSha256`
   now fails explicitly; missing hashes are reported as unverified reconstruction.
 
+- **The Terraform workspace migration skill now imports with the tool's
+  batched `import` command at every stack size.** The command was previously
+  documented only in `references/import-mechanics.md`, for stacks over ~100
+  resources; agents rarely read that far and ran bare `pulumi import`
+  instead. `SKILL.md` Phase 4 now gives the command directly.
+- The README, CLI examples, and CDK migration skill use the same batched-import
+  default and fully qualified stack selection. Terraform patching examples now
+  prefer direct-stack mode; CFN examples retain the required export/patch/import
+  sequence. Document optional file mode and the distinction between successful
+  patch verification and a clean final preview.
 - **`digest tf` remote-backend errors changed shape.** HTTP failures now
   name the request, status, and server message
   (`GET https://… → 401 Unauthorized: …`) instead of one identical
@@ -55,6 +78,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   content-addressed file archives, validate HTTP status, ZIP structure and AWS's
   returned checksum, and preserve an existing destination on download failure.
 
+- Audited five AWS v7 import-identity contracts against Pulumi AWS 7.51.1 and
+  historical Terraform AWS 3.74.3, with source evidence and executable regression
+  vectors. Reject malformed/conflicting CloudTrail, IAM attachment, and EventTarget
+  identities rather than composing a different resource's ID. Regenerated the v7
+  catalog from the destination's exact Terraform AWS 6.69.1 pin.
+- `resolve tf` converts historical CloudTrail name IDs to the state's ARN,
+  preserves already-ARN IDs, and reports missing ARN attributes. Regression
+  coverage includes IAM user/group policy attachments and EventTarget bus variants.
+  The summary now distinguishes matched IDs (`Filled`) from IDs retained without
+  successful catalog composition (`Unverified`).
+- Import-ID generation recognizes `CrossRegionAttrsImportStateIdFunc` and the
+  pinned provider's `flex.ResourceIdSeparator` constant. Conflicting templates
+  retain their evidence as manual alternatives instead of choosing the first;
+  both AWS-major catalogs now compose EventBridge target IDs explicitly for
+  default, named, ARN, and partner event buses.
+- **The import-support prober restarts a crashed provider instead of
+  abandoning it for the rest of a digest** (#84, evidence for #68). Live
+  digests reliably crash the AWS provider on `aws_kinesis_stream`'s import
+  probe ("Plugin did not respond"); previously the prober fell back to the
+  curated non-importable list for every type probed afterward, so an
+  uncovered type like `aws_iot_policy_attachment` came back `Unknown` — read
+  as importable — and landed in the import file instead of the injection
+  sidecar. The prober now discards and reloads the provider after a crash,
+  retrying up to 3 times before giving up on it for good. `module_map.go`
+  also now warns once per resource when import support is `Unknown`, since an
+  unresolved verdict silently stays in the import file.
+- **`resolve cfn`: the Application Auto Scaling policy import ID is now
+  `namespace/resource/dimension/name`**, the order the provider imports; it
+  was previously name-first and failed to import.
+- **`resolve tf` printed a "compose by hand" note for `aws_vpc`,
+  `aws_vpc_peering_connection_accepter`, and `aws_appfabric_app_bundle`**
+  even though all three are plain passthrough IDs. A local test helper's
+  `fmt.Sprintf("%s@%s", id, region)` — Terraform's own `<id>@<region>`
+  region-override syntax, applied locally instead of via the provider's
+  `acctest.CrossRegionImportStateIdFunc` — made the scraper's classifier
+  treat the type as manual. The scraper now recognizes that exact shape and
+  drops the `@region` suffix, the same way it already handles the acctest
+  helper.
 - **Every dynamic-bridge mapping lookup left a Terraform provider process
   running forever.** The `terraform-provider` plugin starts the real
   Terraform provider as a child and is stopped with SIGKILL when closed, so

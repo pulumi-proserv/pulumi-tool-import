@@ -112,14 +112,15 @@ the patcher use the program's FileArchive path instead of a potentially stale
 Terraform build path. Stack mode obtains this information from its own preview.
 ZIP bytes must match the imported Lambda codeSha256 when it is available.
 
-  pulumi stack export > state.json
-  pulumi plugin run import -- patch-state \
+  pulumi stack export --stack my-org/myproject/dev --show-secrets > state.json
+  pulumi plugin run import -- patch-state tf \
     --state state.json \
     --digest tf-digest.json \
     --fields data/aws-import-diff-fields.json \
     --mapping-file mappings.yaml \
     --out patched-state.json
-  pulumi stack import --file patched-state.json
+  pulumi stack import --stack my-org/myproject/dev --file patched-state.json
+  pulumi preview --stack my-org/myproject/dev
 
 Stack mode (--project-dir and --stack, omit --state): exports the
 live stack, patches it, and imports the result straight back into that
@@ -133,6 +134,17 @@ reverts the stack to the backup. --non-importable additionally needs a
 preview for each resource's URN, parent, provider and dependencies: stack
 mode runs it itself, file mode takes one via --preview-json. Stack config
 secrets are read whenever --project-dir and --stack are set, in either mode.
+
+  pulumi plugin run import -- patch-state tf \
+    --project-dir . --stack my-org/myproject/dev \
+    --digest tf-digest.json \
+    --fields data/aws-import-diff-fields.json \
+    --mapping-file mappings.yaml --config-dir ./terraform \
+    --backup-dir .import/backups
+
+No manual export/import is needed in stack mode. Verification checks for new
+operations and requires injected resources to preview unchanged; pre-existing
+diffs may remain. Inspect the final preview before declaring migration complete.
 `,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			stackMode, err := patchStateMode(patchStateFlags{
@@ -479,7 +491,7 @@ secrets are read whenever --project-dir and --stack are set, in either mode.
 		"(mutates the live stack: export, patch, import, verify with preview, auto-revert on failure) "+
 		"when --state is omitted; also used to read stack config secrets in either mode")
 	cmd.Flags().StringVar(&stack, "stack", "", "Pulumi stack name. Selects stack mode (mutates the live "+
-		"stack: export, patch, import, verify with preview, auto-revert on failure) when --state/--out "+
+		"stack: export, patch, import, verify with preview, auto-revert on failure) when --state "+
 		"is omitted; also used to read stack config secrets in either mode")
 	cmd.Flags().StringVar(&configDir, "config-dir", "", "TF config directory (for resolving asset file paths)")
 	cmd.Flags().StringVar(&nonImportablePath, "non-importable", "",

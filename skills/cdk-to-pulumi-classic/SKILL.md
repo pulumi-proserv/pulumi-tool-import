@@ -148,42 +148,50 @@ For each node, in dependency order (roots → downstream):
 1. Hand-author the component / bare-resource code (see
    **cdk-construct-to-component**), with the logical ID as the child name suffix.
 2. Fill this node's import IDs with `resolve cfn` (Phase 4).
-3. `pulumi import --file <ready>.json --generate-code=false --protect=false --yes`
-   For a larger node (many resources), use the tool's `import` command instead
-   — it consumes the same `<ready>.json` `resolve cfn` produces, batches it,
-   and re-imports individually to isolate any resource whose ID is bad:
-   `pulumi plugin run import -- import --file <ready>.json --project-dir . --stack <stack> --batch-size 100`
+3. Use the tool's `import` command at every node size. It consumes the file from
+   `resolve cfn`, batches it, and isolates failed imports. Inspect with `--dry-run`,
+   then run without it:
+
+   ```bash
+   pulumi plugin run import -- import \
+     --file <ready>.json --project-dir . --stack "<org>/<project>/<stack>" --dry-run
+   pulumi plugin run import -- import \
+     --file <ready>.json --project-dir . --stack "<org>/<project>/<stack>"
+   ```
+
+   Imports are unprotected and do not generate code. Fix reported IDs and rerun;
+   resources already in state are skipped. Use the fully qualified stack name to
+   avoid selecting a stack in the default organization.
 4. `pulumi preview --diff` targeted at this node.
 5. Classify each diff and fix it; **drive to zero real diffs before the next node.**
 
 ### Phase 4 — Import mechanics
 
 ```bash
+# Use --provider native instead for an aws-native API Gateway node.
 pulumi plugin run import -- resolve cfn \
   --digest .import/<stack>-cfn-digest.json \
   --import-file imports.json \
   --mapping-file mappings.yaml \
-  --provider classic \        # or: native  (per node — native for the API Gateway family)
+  --provider classic \
   --out imports-ready.json
 ```
 
 - The import skeleton comes from `pulumi preview --import-file imports.json`
   (types and names from your hand-authored program). `resolve cfn` fills each ID
   by matching entry → digest on logical ID.
-- `--generate-code=false` (hand-authored) and `--protect=false` (avoids a cosmetic
-  `~protect`) are both required.
+- The tool's `import` command sets no-code-generation and unprotected imports
+  automatically; do not pass native `pulumi import` flags to the tool command.
 - **Per-node provider switch for API Gateway:** author that node with aws-native
   and run `resolve cfn --provider native`. It emits native identifiers, including
   the **reversed** `AWS::ApiGateway::Deployment` order
   (`DeploymentId|RestApiId`). Tame the aws-native cascade (make the RestApi a
   strict no-op: set every default it populates, plus `ignoreChanges:["tags"]`) and
   set the provider-populated integration defaults.
-- Validate the import file before running — one malformed ID fails the whole
-  `pulumi import` run. The failure is **partial**: the import is one deployment
-  whose steps commit to state as they succeed, so a failed run typically leaves
-  some resources imported and some not, and the error does not say which. Re-run
-  with the `import` command (which reads state to determine what actually landed,
-  and isolates the bad IDs) rather than assuming nothing was imported.
+- Validate the import file with the tool's `import --dry-run`, then inspect the
+  actual import summary. Imports can partially succeed; the tool reads state to
+  determine what landed and isolates failures. A dry run plans batches and resume
+  behavior; it does not prove the provider will accept every ID.
 
 Per-type import-ID formats and the API Gateway family details:
 `references/import-id-and-provider.md`.
@@ -204,25 +212,33 @@ extracted — `digest cfn` lists them so you can set them manually
 
 ### Phase 6 — Reach literal zero-diff (`patch-state cfn`)
 
-After import, a clean `pulumi preview` still shows the fields the Cloud Control /
-CloudFormation import cannot read back — Lambda `code` / `lastModified` /
-`publish`, and input-only defaults (Secret `recoveryWindowInDays`). These are
-import artifacts, not drift, and they clear on the first `up`. To reach a
-**literal 0-change preview with no `up`**, patch them into state:
+After import, `pulumi preview` may show fields the provider cannot read back or
+defaults that differ from the program — for example Lambda code and Secret
+`recoveryWindowInDays`. Classify each diff before patching; not every difference
+is an import artifact. Patch the supported fields into state and inspect the
+result, with the goal of a **literal 0-change preview without `pulumi up`**:
+
+`patch-state cfn` currently supports **file mode only**. Export/import remain
+required; `--project-dir` and `--stack` read config secrets, not select direct-stack
+patching. Use the fields file from the tool repository's `data/` directory.
 
 ```bash
-pulumi stack export --file state.json
+pulumi stack export --stack "<org>/<project>/<stack>" --show-secrets --file state.json
 pulumi plugin run import -- patch-state cfn \
   --state state.json \
   --digest .import/<stack>-cfn-digest.json \
-  --fields aws-import-diff-fields.json \
+  --fields <tool-repo>/data/aws-import-diff-fields.json \
   --region <region> \
-  --artifacts-dir ./artifacts \      # downloaded Lambda zips land here
-  --project-dir . --stack <stack> \  # optional: resolve config secrets (e.g. SecretVersion secretString)
+  --artifacts-dir ./artifacts \
+  --project-dir . --stack "<org>/<project>/<stack>" \
   --out state-patched.json
-pulumi stack import --file state-patched.json
-pulumi preview   # 0 changes
+pulumi stack import --stack "<org>/<project>/<stack>" --file state-patched.json
+pulumi preview --stack "<org>/<project>/<stack>" --diff
 ```
+
+File mode does not verify the result against the program. Inspect the preview and
+resolve remaining differences; patching alone does not guarantee zero changes.
+The exported and patched files contain plaintext secrets; keep them out of Git.
 
 - **Tier 1 (no AWS calls):** patches input-only defaults (Secret
   `recoveryWindowInDays` / `forceOverwriteReplicaSecret`, Lambda `publish`) from

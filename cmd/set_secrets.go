@@ -46,7 +46,7 @@ Example:
   pulumi plugin run import -- set-secrets \
     --state-file terraform.tfstate \
     --project-dir ./pulumi \
-    --stack prod \
+    --stack my-org/myproject/prod \
     --map 'dbPassword=aws_ssm_parameter.db_password:value' \
     --map 'apiKey=aws_secretsmanager_secret_version.api_key:secret_string'
 

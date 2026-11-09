@@ -82,3 +82,6 @@ jobs:
 
       - name: Run tests
         run: go test -v ./...
+
+      - name: Test provider catalog modules independently
+        run: make test-catalogs
