@@ -436,6 +436,35 @@ as local `FileArchive`s so preview is clean without embedding CDK build artifact
 Both can read secret config values from a stack (`--project-dir` + `--stack`) to
 resolve sensitive values redacted from the digest.
 
+### Lambda archive reconciliation
+
+`FileArchive` and `AssetArchive` are both Pulumi representations; Terraform's
+`filename` is a path, not an `AssetArchive`. For a ZIP selected as a `FileArchive`,
+patching preserves its bytes instead of unpacking entries into text assets.
+
+In Terraform stack mode, a matching preview goal can select the program's archive
+path over the digest's old build path. File mode can supply `--preview-json` and
+`--project-dir` for the same selection. The selected ZIP is checked against the
+imported Lambda `codeSha256` when available; a readable but mismatching ZIP is
+rejected. A verified archive can repair already-populated stale inputs/outputs,
+not just missing values. Missing hash evidence is reported as unverified and does
+not authorize overwriting a conflicting archive.
+
+Unavailable local archives can be recovered from Lambda into durable storage
+under `<config-dir>/.pulumi-import-artifacts/`; CFN uses `--artifacts-dir`.
+Downloads are checked against `GetFunction`'s checksum before replacing a file.
+The tool prints recovered paths, but does not edit the program to reference them
+or deploy application code. Local-file checks use the imported snapshot's hash,
+so keep that snapshot current.
+
+See the [step-by-step archive walkthrough](docs/archive-reconciliation.md#walkthrough-what-the-patcher-does)
+for artifact selection, verification, repair, output/delta handling, and rollback
+limits. Directory and embedded-archive equivalence remain separate feasibility
+investigations; a successful non-regression check is not a guarantee of a clean
+final preview.
+
+### Non-importable state injection
+
 `patch-state tf` additionally takes `--non-importable <sidecar>`, the
 `*.non-importable.json` `resolve tf` writes, and injects those resources
 directly into state. Injection needs a preview to source each resource's URN,

@@ -89,6 +89,13 @@ what's left with `diff-taxonomy.md`.
 binary entries into `StringAsset` values. The program should reference the
 deployed ZIP with `new pulumi.asset.FileArchive(...)`.
 
+`FileArchive` and `AssetArchive` are both Pulumi types. Terraform supplies a
+filename, not an `AssetArchive`; converting a ZIP into text entries changes its
+representation and can corrupt binary content. Selecting the program's path does
+not approve its bytes, edit the program, or deploy code: verification is a separate
+step. See the [archive walkthrough](../../../docs/archive-reconciliation.md#walkthrough-what-the-patcher-does)
+for the complete sequence and its limits.
+
 - Stack mode reads the program's archive path from its baseline preview. In file
   mode, provide `--preview-json <preview.json> --project-dir <program-dir>` to use
   that path instead of the Terraform digest's build path. This matters when the
