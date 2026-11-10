@@ -55,6 +55,31 @@ them. `make test` runs the root suite and each catalog module independently;
 explicitly too. Local module replacements allow checked-out builds without
 requiring a workspace or publishing new module versions first.
 
+### Disposable remote-workspace tests
+
+The single-workspace loader tests require `PULUMI_TEST_ORG` and
+`PULUMI_ACCESS_TOKEN`. The token must permit workspace creation, state writes,
+reads, and deletion in that organization. They use `tf.pulumi.com` by default.
+For self-hosted Pulumi Cloud, set `PULUMI_TEST_TF_HOST` to its Terraform backend
+hostname, without a URL scheme or path.
+
+With those credentials available, run:
+
+```sh
+PULUMI_TEST_ORG=your-org go test ./pkg/tofu -run Test_LoadTerraformState_SingleWorkspace -count=1 -v
+```
+
+Each test creates a uniquely named workspace, initializes OpenTofu, and uploads
+the existing synthetic `random_string` test state with locking enabled.
+The tests do not apply infrastructure. Cleanup deletes the workspace, including
+its test state, after success or failure. Cleanup errors fail the test and report
+the workspace name for manual removal. A terminated test process can still leave
+a workspace behind.
+
+Without `PULUMI_TEST_ORG`, these tests skip, even when a Pulumi token is present.
+Selecting an organization without supplying a token fails explicitly.
+The separately tagged remote-state e2e tests have their own fixture configuration.
+
 ## Terraform addresses
 
 Use `internal/tfaddr` to parse resource addresses, module addresses, and resource

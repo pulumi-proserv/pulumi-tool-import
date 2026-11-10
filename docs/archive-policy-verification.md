@@ -111,7 +111,7 @@ it does not establish that the specification contains every requirement.
 - Classifier tests cover actual values; asymmetric adapter tests check that input and output are classified separately.
 - Focused archive scenarios and evidence-adapter tests passed.
 - Formatting, vet, lint, and catalog checks passed with `CGO_ENABLED=0` and golangci-lint v2.15.0.
-- The full Go run found two remote-backend failures on the unchanged PR #122 base as well.
-  Those tests use a fixed organization and the old API hostname. Their fixture fixes are maintained in a separate PR.
+- After merging the updated base, `PULUMI_TEST_ORG=team-ce CGO_ENABLED=0 gmake test` passed, including the live remote-workspace tests.
+  Their disposable-workspace fixtures were merged separately in PR #132 and are inherited from the base branch.
 
 This validation did not run live AWS migration experiments or establish a clean provider preview.

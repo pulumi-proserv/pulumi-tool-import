@@ -1,5 +1,16 @@
 # Archive reconciliation: scenarios, expectations, and evidence
 
+## Contents
+
+- [Objective](#objective)
+- [Representation and identity distinctions](#distinctions-that-must-not-be-conflated)
+- [Step-by-step walkthrough](#walkthrough-what-the-patcher-does)
+- [Worked examples from tests](archive-reconciliation-examples.md)
+- [Scenario matrix](#scenario-matrix)
+- [Evidence plan](#evidence-plan)
+- [Findings and recorded AWS results](#findings-so-far)
+- [Coverage and limits](#matrix-disposition-and-limits)
+
 ## Objective
 
 Adopt deployed resources into a maintainable Pulumi program without changing the
@@ -28,10 +39,151 @@ program that references it. Do not fabricate a hash to make a different archive
 look identical. Where the program deliberately uses another representation,
 diagnose that contract instead of silently changing its meaning.
 
+## Walkthrough: what the patcher does
+
+### 1. Preserve the original ZIP representation
+
+`FileArchive` and `AssetArchive` are **both Pulumi types**. Terraform Lambda state
+typically supplies a `filename` string; it does not supply either Pulumi type.
+Terraform's `archive_file` data source may have produced that ZIP, but it is a
+separate concept.
+
+These Pulumi values describe different representations:
+
+```typescript
+// Reference an existing ZIP (FileArchive can also reference a directory).
+new pulumi.asset.FileArchive("./function.zip")
+
+// Define an archive from named entries. Binary files belong in FileAssets.
+new pulumi.asset.AssetArchive({
+    "index.js": new pulumi.asset.StringAsset("exports.handler = async () => {};"),
+    "binary.dat": new pulumi.asset.FileAsset("./binary.dat"),
+})
+```
+
+The old Terraform patch path opened a ZIP and represented its entries as embedded
+`StringAsset` values. That both changed the Pulumi representation and routed
+arbitrary binary bytes through text/JSON. Even lossless extraction would not prove
+the same ZIP packaging, metadata, or deployment hash.
+
+For a selected ZIP `FileArchive`, the patcher now retains the file bytes and emits
+a file-archive state value containing its path and computed hash. It does not
+unpack/repack the ZIP. This fixes the conversion, not an inherent defect in
+`AssetArchive`; intentional embedded programs have a separate feasibility question.
+
+### 2. Select the artifact declared by the program when evidence is available
+
+The source filename and destination program path need not agree:
+
+```text
+Terraform digest filename: ./old-build/function.zip
+Pulumi program code:       FileArchive("./artifacts/deployed.zip")
+```
+
+For a matched Terraform Lambda with a filename and a curated `code: FileArchive`
+rule, the patcher can inspect the preview's proposed inputs for that resource URN.
+If the goal declares a file archive, its path replaces the digest filename for
+this patch operation. The original digest and the program source are not rewritten.
+
+- Stack mode obtains this evidence from its baseline preview automatically.
+- File mode can supply `--preview-json preview.json --project-dir <program-dir>`.
+  Without matching preview evidence, the digest filename remains the source.
+- Relative program paths resolve against `--project-dir`; relative digest paths
+  resolve against `--config-dir`. Absolute paths stay absolute.
+- An existing, explicitly selected ZIP takes precedence over a same-stem directory.
+  The legacy directory fallback applies only when that ZIP path is missing.
+
+This is path selection, **not artifact approval**: a program-selected ZIP still
+has to pass the hash check below. The tool does not edit the program or upload its
+code. A selected embedded/unknown archive is diagnosed rather than silently
+converted. This preview-based selection is on the Terraform path; CFN continues
+its existing deployed-Lambda download flow.
+
+### 3. Verify the selected archive against the imported deployment hash
+
+For Lambda `code`, compare the reconstructed archive hash with `codeSha256` in
+the imported outputs when available. Reject malformed hashes and mismatches. A
+readable but stale ZIP is rejected; its existence does not authorize adoption,
+and a hash mismatch does not silently trigger a replacement download.
+
+This local check uses the **imported snapshot**, not a fresh AWS read. Without a
+hash, reconstruction is reported as unverified, and a conflicting populated
+archive is not overwritten. Selecting a path and validating its bytes are separate
+steps; neither alone certifies the complete migration.
+
+### 4. Recover unavailable local artifacts into durable storage
+
+When local archive reconstruction fails and the digest supplies Lambda identity,
+the Terraform path can fetch the deployed ZIP. `GetFunction` supplies the download
+URL and checksum; the shared downloader checks HTTP status, checksum, and ZIP
+structure before replacing a destination with the validated temporary file.
+Download errors omit the presigned URL.
+
+Terraform recovery retains the ZIP under
+`<config-dir>/.pulumi-import-artifacts/<hash>.zip`, instead of returning a reference
+to a temporary file that disappears on exit. The operator must retain the artifact
+and reference it from the program; the command does not edit source code. CFN also
+uses the hardened downloader, retaining its `--artifacts-dir` destinations.
+
+A failed download leaves an existing destination intact. Stack-state rollback
+does not imply all downloaded files are rolled back. If the current cloud code
+differs from the imported snapshot, the later snapshot-hash comparison can still
+reject the recovered artifact.
+
+### 5. Repair existing archive state, not only empty fields
+
+A previous bad patch may have populated a syntactically valid archive with the
+wrong representation or hash. Merely skipping nonempty `code` would make correcting
+the artifact and retrying ineffective.
+
+Verified archive evidence can now repair those inputs and outputs consistently.
+An already-correct value is an idempotent no-op. A failed asset conversion returns
+an error rather than placing a raw filename string into an archive-valued field.
+This verified archive repair does not authorize arbitrary replacement of other
+populated resource properties.
+
+### 6. Count output changes and validate the corresponding bridge metadata
+
+Pulumi keeps resource inputs and outputs separately. The Terraform bridge also
+uses raw-state-delta metadata to reconstruct Terraform state from Pulumi outputs;
+it is not enough to fix the input alone.
+
+Output-only repairs now count as patches, receive the applicable asset-delta
+metadata, and participate in Recover validation. Per-field change flags replace
+the resource-wide flag in output-replacement decisions: repairing one field must
+not accidentally authorize overwriting an unrelated field's output. Recover
+checks state reconstruction, not cloud identity or absence of provider diffs.
+
+### 7. Verify stack behavior and keep remaining differences visible
+
+Stack mode retains its backup and before/after preview comparison, attempting
+restoration when verification fails or regresses. File mode proposes state and
+leaves import/preview verification to the operator. Neither mode runs `pulumi up`
+to deploy code as a way to make migration appear complete.
+
+A non-regressing preview can still contain the original code diff or unrelated
+differences. Require a clean final preview for completion. A runnable baseline is
+needed for stack mode; recover a missing artifact through file mode first if the
+program cannot preview. The recorded artifact-change experiment demonstrates
+rejection/restoration for that case, not a general atomic filesystem snapshot.
+
+Ordinary deployed ZIP repair is this change's supported workflow. Directory
+equivalence is investigated in [#121](https://github.com/pulumi-proserv/pulumi-tool-import/issues/121),
+embedded archive equivalence in [#130](https://github.com/pulumi-proserv/pulumi-tool-import/issues/130),
+and Lambda publication state in [#120](https://github.com/pulumi-proserv/pulumi-tool-import/issues/120).
+The investigations may conclude that some cases cannot be reconciled under the
+preservation contract; they are not promises of automatic conversion support.
+
 ## Scenario matrix
 
 The expectations below are the acceptance criteria for this investigation, not
 a claim that each row is already implemented or provider-verified.
+
+For concrete program/digest/state inputs and checked outcomes for **every ID**, see
+[the test-derived examples](archive-reconciliation-examples.md). Each example names
+its test and distinguishes unit, mocked-command, E2E, and separately invoked live
+reproduction coverage. Unsupported representation cases have rejection tests;
+they are not described as successful reconciliation.
 
 | ID | Scenario | Expected behavior | Why |
 |---|---|---|---|
@@ -148,7 +300,7 @@ snapshots are investigation artifacts, not files to commit or publish.
 | S1, S2, S3, S5 | Typed archive reconstruction, idempotence, refusal of unverified replacement and output-only repair tests. Output-only repairs now inject delta metadata and run Recover validation |
 | S8 | A selected program without a local archive is diagnosed instead of claiming a complete artifact migration. Image/S3-based programs without a Terraform filename do not take the ZIP path |
 | P1, P2 | Shared file-archive handling; existing CFN local-ZIP regression passes. No new live CloudFormation stack was provisioned |
-| P3 | Existing CFN inline-source path is not redesigned or newly live-validated |
+| P3 | CFN command test covers inline `Code.ZipFile` input and exact deployed-ZIP download using mocked AWS; no newly provisioned CFN stack or embedded-archive equivalence is claimed |
 | P4, P5 | Image Lambda no-ZIP and binary `FileAsset` regressions pass |
 | V2 | Existing non-regression policy remains: outstanding changes must still be disclosed; it is not a completion guarantee |
 | V3, V4 | Live introduced-change rollback passes; failed HTTP/checksum downloads preserve existing destinations. Arbitrary concurrent filesystem mutation is not an atomic snapshot guarantee |

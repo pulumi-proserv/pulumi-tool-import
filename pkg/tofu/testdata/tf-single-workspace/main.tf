@@ -1,9 +1,9 @@
 terraform {
   backend "remote" {
-    hostname     = "api.pulumi.com"
-    organization = "pulumi"
+    hostname     = "__TEST_HOST__"
+    organization = "__TEST_ORG__"
     workspaces {
-      name = "tf-migrate-test_single-ws"
+      name = "__TEST_WORKSPACE__"
     }
   }
   required_providers {
