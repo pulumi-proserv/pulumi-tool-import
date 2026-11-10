@@ -459,7 +459,8 @@ so keep that snapshot current.
 
 See the [step-by-step archive walkthrough](docs/archive-reconciliation.md#walkthrough-what-the-patcher-does)
 for artifact selection, verification, repair, output/delta handling, and rollback
-limits. Directory and embedded-archive equivalence remain separate feasibility
+limits, and [worked examples drawn from the tests](docs/archive-reconciliation-examples.md)
+for each scenario's code/state inputs and expected result. Directory and embedded-archive equivalence remain separate feasibility
 investigations; a successful non-regression check is not a guarantee of a clean
 final preview.
 

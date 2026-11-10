@@ -95,6 +95,9 @@ representation and can corrupt binary content. Selecting the program's path does
 not approve its bytes, edit the program, or deploy code: verification is a separate
 step. See the [archive walkthrough](../../../docs/archive-reconciliation.md#walkthrough-what-the-patcher-does)
 for the complete sequence and its limits.
+The [test-derived examples](../../../docs/archive-reconciliation-examples.md)
+show concrete digest/state fragments and expected outcomes for every scenario,
+including the rejection boundaries and the separate live-test coverage.
 
 - Stack mode reads the program's archive path from its baseline preview. In file
   mode, provide `--preview-json <preview.json> --project-dir <program-dir>` to use

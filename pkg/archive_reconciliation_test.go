@@ -28,6 +28,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -356,4 +357,300 @@ func TestArchiveScenarioS5OtherFieldPatchCannotOverwriteUnchangedOutput(t *testi
 	require.NoError(t, err)
 	assert.Equal(t, "current", inputs["kept"])
 	assert.Equal(t, "current", outputs["kept"])
+}
+
+const archiveScenarioURN = "urn:pulumi:dev::p::aws:lambda/function:Function::fn"
+
+func archiveScenarioState(t *testing.T, inputs, outputs map[string]interface{}) []byte {
+	t.Helper()
+	state, err := json.Marshal(map[string]interface{}{
+		"version": 3,
+		"deployment": map[string]interface{}{"resources": []interface{}{
+			map[string]interface{}{"urn": archiveScenarioURN, "type": "aws:lambda/function:Function", "custom": true, "id": "fn", "inputs": inputs, "outputs": outputs},
+		}},
+	})
+	require.NoError(t, err)
+	return state
+}
+
+func archiveScenarioDigest(filename string) *ModuleMap {
+	return &ModuleMap{RootResources: []ModuleResource{{
+		Mode: "managed", TerraformAddress: "aws_lambda_function.fn", TranslatedURN: archiveScenarioURN,
+		Attributes: map[string]interface{}{"filename": filename, "function_name": "fn"},
+	}}}
+}
+
+func archiveScenarioFields() *FieldsFile {
+	kind, format := 2, 3
+	return &FieldsFile{Fields: map[string]FieldCategory{"aws:lambda/function:Function": {
+		NotRead: map[string]FieldInfo{"code": {Asset: "FileArchive", AssetKind: &kind, ArchiveFormat: &format, HashField: "source_code_hash"}},
+	}}}
+}
+
+func archiveScenarioPatchedResource(t *testing.T, state []byte) (map[string]interface{}, map[string]interface{}) {
+	t.Helper()
+	var deployment struct {
+		Deployment struct {
+			Resources []struct {
+				Inputs  map[string]interface{}
+				Outputs map[string]interface{}
+			}
+		}
+	}
+	require.NoError(t, json.Unmarshal(state, &deployment))
+	require.Len(t, deployment.Deployment.Resources, 1)
+	return deployment.Deployment.Resources[0].Inputs, deployment.Deployment.Resources[0].Outputs
+}
+
+func TestArchiveScenariosA1S1S6S7PatchStateShapes(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		withDelta bool
+		malformed bool
+	}{
+		{name: "missing-code-with-delta", withDelta: true},
+		{name: "missing-code-without-delta"},
+		{name: "malformed-code-with-delta", withDelta: true, malformed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			contents := writeArchiveScenarioZip(t, filepath.Join(dir, "code.zip"), []byte("deployed"))
+			hash := sha256.Sum256(contents)
+			inputs := map[string]interface{}{}
+			outputs := map[string]interface{}{"codeSha256": base64.StdEncoding.EncodeToString(hash[:])}
+			if tc.withDelta {
+				outputs[rawStateDeltaKey] = map[string]interface{}{"obj": map[string]interface{}{"ps": map[string]interface{}{}}}
+			}
+			if tc.malformed {
+				inputs["code"], outputs["code"] = "code.zip", "code.zip"
+			}
+			state := archiveScenarioState(t, inputs, outputs)
+			digest := archiveScenarioDigest("code.zip")
+			mappings := map[string]string{"aws_lambda_function.fn": "fn"}
+			patched, result, err := PatchState(state, digest, archiveScenarioFields(), nil, mappings, nil, dir)
+			require.NoError(t, err)
+			assert.Equal(t, 1, result.Patched)
+			newInputs, newOutputs := archiveScenarioPatchedResource(t, patched)
+			want := map[string]interface{}{sigKey: archiveSig, "path": filepath.Join(dir, "code.zip"), "hash": hex.EncodeToString(hash[:])}
+			assert.Equal(t, want, newInputs["code"])
+			assert.Equal(t, want, newOutputs["code"])
+			assert.Equal(t, outputs["codeSha256"], newOutputs["codeSha256"])
+			assert.Zero(t, result.DeltaFailed)
+			if tc.withDelta {
+				assert.Equal(t, 1, result.DeltaValidated)
+				delta := newOutputs[rawStateDeltaKey].(map[string]interface{})["obj"].(map[string]interface{})["ps"].(map[string]interface{})
+				assert.Equal(t, map[string]interface{}{"asset": map[string]interface{}{"kind": float64(2), "archiveFormat": float64(3), "hashField": "source_code_hash"}}, delta["code"])
+			} else {
+				assert.Zero(t, result.DeltaValidated)
+				assert.NotContains(t, newOutputs, rawStateDeltaKey, "do not invent a delta for the legacy path")
+			}
+			again, againResult, err := PatchState(patched, digest, archiveScenarioFields(), nil, mappings, nil, dir)
+			require.NoError(t, err)
+			assert.Zero(t, againResult.Patched, "S2: a second patch must be a no-op")
+			assert.JSONEq(t, string(patched), string(again))
+		})
+	}
+}
+
+func TestArchiveScenariosA3A4RecoveryUsesDeployedZip(t *testing.T) {
+	for _, name := range []string{"missing-local", "malformed-local"} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			contents := writeArchiveScenarioZip(t, filepath.Join(t.TempDir(), "deployed.zip"), []byte{0, 255, 254, 128})
+			hash := sha256.Sum256(contents)
+			archiveLambdaServer(t, contents, base64.StdEncoding.EncodeToString(hash[:]), http.StatusOK)
+			if name == "malformed-local" {
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "code.zip"), []byte("not a ZIP"), 0o600))
+			}
+			state := archiveScenarioState(t, map[string]interface{}{}, map[string]interface{}{"codeSha256": base64.StdEncoding.EncodeToString(hash[:])})
+			patched, result, err := PatchState(state, archiveScenarioDigest("code.zip"), archiveScenarioFields(), nil, map[string]string{"aws_lambda_function.fn": "fn"}, nil, dir)
+			require.NoError(t, err)
+			assert.Equal(t, 1, result.Patched)
+			inputs, outputs := archiveScenarioPatchedResource(t, patched)
+			path := filepath.Join(dir, ".pulumi-import-artifacts", hex.EncodeToString(hash[:])+".zip")
+			assert.Equal(t, path, inputs["code"].(map[string]interface{})["path"])
+			assert.Equal(t, inputs["code"], outputs["code"])
+			actual, err := os.ReadFile(path)
+			require.NoError(t, err)
+			assert.Equal(t, contents, actual)
+			if name == "malformed-local" {
+				original, err := os.ReadFile(filepath.Join(dir, "code.zip"))
+				require.NoError(t, err)
+				assert.Equal(t, "not a ZIP", string(original), "recovery must not overwrite the source build file")
+			}
+		})
+	}
+}
+
+func TestArchiveScenarioA6MissingHashIsReportedAsUnverified(t *testing.T) {
+	dir := t.TempDir()
+	writeArchiveScenarioZip(t, filepath.Join(dir, "code.zip"), []byte("local only"))
+	log, err := os.CreateTemp(t.TempDir(), "stderr-")
+	require.NoError(t, err)
+	defer log.Close()
+	previous := os.Stderr
+	os.Stderr = log
+	defer func() { os.Stderr = previous }()
+	inputs, outputs := map[string]interface{}{}, map[string]interface{}{}
+	_, err = patchResourceFields([]patchFieldDescriptor{{PulumiName: "code", TFName: "filename", AssetType: "FileArchive"}}, inputs, outputs,
+		&ModuleResource{Attributes: map[string]interface{}{"filename": "code.zip"}}, nil, dir)
+	require.NoError(t, err)
+	os.Stderr = previous
+	message, err := os.ReadFile(log.Name())
+	require.NoError(t, err)
+	assert.Contains(t, string(message), "has no deployed codeSha256; local archive reconstruction is unverified")
+	assert.Equal(t, inputs["code"], outputs["code"])
+	assert.NotContains(t, outputs, "codeSha256", "do not manufacture deployed evidence from a local file")
+}
+
+func TestArchiveScenariosA10S8ProgramEvidenceCannotHideMismatch(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		code interface{}
+		want string
+	}{
+		{"changed-program-bytes", map[string]interface{}{sigKey: archiveSig, "path": "program.zip"}, "does not match deployed codeSha256"},
+		{"omitted-code", nil, "does not declare a local code archive"},
+		{"embedded-text", map[string]interface{}{sigKey: archiveSig, "assets": map[string]interface{}{"index.js": map[string]interface{}{sigKey: assetSig, "text": "deployed"}}}, "non-file archive"},
+		{"embedded-binary", map[string]interface{}{sigKey: archiveSig, "assets": map[string]interface{}{"handler": map[string]interface{}{sigKey: assetSig, "path": "handler.bin"}}}, "non-file archive"},
+		{"nested-archive", map[string]interface{}{sigKey: archiveSig, "assets": map[string]interface{}{"nested": map[string]interface{}{sigKey: archiveSig, "path": "source.zip"}}}, "non-file archive"},
+		{"unknown-code", "[unknown]", "not a known archive"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			contents := writeArchiveScenarioZip(t, filepath.Join(dir, "source.zip"), []byte("deployed"))
+			writeArchiveScenarioZip(t, filepath.Join(dir, "program.zip"), []byte("changed"))
+			hash := sha256.Sum256(contents)
+			state := archiveScenarioState(t, map[string]interface{}{}, map[string]interface{}{"codeSha256": base64.StdEncoding.EncodeToString(hash[:])})
+			digest := archiveScenarioDigest("source.zip")
+			preview := &PreviewDigest{Steps: []PreviewStep{{URN: archiveScenarioURN, NewState: map[string]interface{}{"type": "aws:lambda/function:Function", "inputs": map[string]interface{}{"code": tc.code}}}}}
+			patched, _, err := PatchStateWithArchiveOptions(state, digest, archiveScenarioFields(), nil, map[string]string{"aws_lambda_function.fn": "fn"}, nil, dir, ArchiveOptions{Preview: preview, ProjectDir: dir})
+			require.ErrorContains(t, err, tc.want)
+			assert.Nil(t, patched, "a failed patch must not yield candidate state")
+			assert.Equal(t, "source.zip", digest.RootResources[0].Attributes["filename"])
+		})
+	}
+}
+
+func TestArchiveScenarioA13SeparateProgramAndSourceDirectories(t *testing.T) {
+	sourceDir, programDir := t.TempDir(), t.TempDir()
+	writeArchiveScenarioZip(t, filepath.Join(sourceDir, "code.zip"), []byte("stale"))
+	contents := writeArchiveScenarioZip(t, filepath.Join(programDir, "code.zip"), []byte("deployed"))
+	hash := sha256.Sum256(contents)
+	state := archiveScenarioState(t, map[string]interface{}{}, map[string]interface{}{"codeSha256": base64.StdEncoding.EncodeToString(hash[:])})
+	preview := &PreviewDigest{Steps: []PreviewStep{{URN: archiveScenarioURN, NewState: map[string]interface{}{"type": "aws:lambda/function:Function", "inputs": map[string]interface{}{"code": map[string]interface{}{sigKey: archiveSig, "path": "code.zip"}}}}}}
+	patched, _, err := PatchStateWithArchiveOptions(state, archiveScenarioDigest("code.zip"), archiveScenarioFields(), nil, map[string]string{"aws_lambda_function.fn": "fn"}, nil, sourceDir, ArchiveOptions{Preview: preview, ProjectDir: programDir})
+	require.NoError(t, err)
+	inputs, _ := archiveScenarioPatchedResource(t, patched)
+	assert.Equal(t, filepath.Join(programDir, "code.zip"), inputs["code"].(map[string]interface{})["path"])
+}
+
+func TestArchiveScenarioA11PreservesUnicodeAndExecutableMetadata(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "code.zip")
+	var buffer bytes.Buffer
+	writer := zip.NewWriter(&buffer)
+	header := &zip.FileHeader{Name: "bin/处理器", Method: zip.Deflate}
+	header.SetMode(0o755)
+	header.SetModTime(time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC))
+	header.Comment = "deployment metadata"
+	entry, err := writer.CreateHeader(header)
+	require.NoError(t, err)
+	payload := []byte{0, 255, 254, 128}
+	_, err = entry.Write(payload)
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+	require.NoError(t, os.WriteFile(path, buffer.Bytes(), 0o600))
+	archive, err := buildAssetSentinel(path, "FileArchive")
+	require.NoError(t, err)
+	actual, err := os.ReadFile(archive["path"].(string))
+	require.NoError(t, err)
+	assert.Equal(t, buffer.Bytes(), actual, "preserve the entire ZIP, including metadata")
+	reader, err := zip.NewReader(bytes.NewReader(actual), int64(len(actual)))
+	require.NoError(t, err)
+	require.Len(t, reader.File, 1)
+	assert.Equal(t, header.Name, reader.File[0].Name)
+	assert.Equal(t, os.FileMode(0o755), reader.File[0].Mode().Perm())
+	assert.Equal(t, header.Comment, reader.File[0].Comment)
+	assert.True(t, header.Modified.Equal(reader.File[0].Modified))
+}
+
+func TestArchiveScenarioA12UnsafeNamesAreNeverExtracted(t *testing.T) {
+	// Exercise the opaque ZIP path even when Go's optional name guard is disabled.
+	// The tool must not write an entry outside its artifact directory.
+	t.Setenv("GODEBUG", "zipinsecurepath=1")
+	dir := t.TempDir()
+	artifacts := filepath.Join(dir, "artifacts")
+	require.NoError(t, os.Mkdir(artifacts, 0o700))
+	path := filepath.Join(artifacts, "code.zip")
+	var buffer bytes.Buffer
+	writer := zip.NewWriter(&buffer)
+	entry, err := writer.Create("../escaped.txt")
+	require.NoError(t, err)
+	_, err = entry.Write([]byte("must remain inside ZIP"))
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+	require.NoError(t, os.WriteFile(path, buffer.Bytes(), 0o600))
+	archive, err := buildAssetSentinel(path, "FileArchive")
+	require.NoError(t, err)
+	hash := sha256.Sum256(buffer.Bytes())
+	assert.Equal(t, hex.EncodeToString(hash[:]), archive["hash"])
+	assert.NoFileExists(t, filepath.Join(dir, "escaped.txt"))
+	entries, err := os.ReadDir(artifacts)
+	require.NoError(t, err)
+	assert.Len(t, entries, 1)
+}
+
+func TestArchiveScenarioA4DownloadRejectsMalformedZipWithMatchingChecksum(t *testing.T) {
+	body := []byte("not a ZIP")
+	hash := sha256.Sum256(body)
+	archiveLambdaServer(t, body, base64.StdEncoding.EncodeToString(hash[:]), http.StatusOK)
+	path := filepath.Join(t.TempDir(), "keep.zip")
+	require.NoError(t, os.WriteFile(path, []byte("keep original artifact"), 0o600))
+	err := DownloadLambdaCodeToFile(t.Context(), "fn", "", "us-west-2", path)
+	require.Error(t, err, "checksum success alone must not accept an invalid archive")
+	actual, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, "keep original artifact", string(actual))
+}
+
+func TestArchiveScenarioA9DirectoryDoesNotProveZipIdentity(t *testing.T) {
+	dir := t.TempDir()
+	archiveDir := filepath.Join(dir, "function")
+	require.NoError(t, os.MkdirAll(filepath.Join(archiveDir, "bin"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(archiveDir, "bin", "handler"), []byte("deployed"), 0o755))
+	contents := writeArchiveScenarioZip(t, filepath.Join(dir, "function.zip"), []byte("deployed"))
+	hash := sha256.Sum256(contents)
+	directoryArchive, err := buildAssetSentinel(archiveDir, "FileArchive")
+	require.NoError(t, err)
+	require.NotEqual(t, hex.EncodeToString(hash[:]), directoryArchive["hash"], "fixture must distinguish equivalent files from exact ZIP identity")
+	inputs := map[string]interface{}{}
+	_, err = patchResourceFields([]patchFieldDescriptor{{PulumiName: "code", TFName: "filename", AssetType: "FileArchive"}}, inputs,
+		map[string]interface{}{"codeSha256": base64.StdEncoding.EncodeToString(hash[:])},
+		&ModuleResource{Attributes: map[string]interface{}{"filename": "function"}}, nil, dir)
+	require.ErrorContains(t, err, "does not match deployed codeSha256")
+	assert.Empty(t, inputs)
+}
+
+func TestArchiveScenarioA13MissingPathDoesNotGuessAnotherZip(t *testing.T) {
+	dir := t.TempDir()
+	writeArchiveScenarioZip(t, filepath.Join(dir, "different.zip"), []byte("deployed"))
+	inputs := map[string]interface{}{}
+	_, err := patchResourceFields([]patchFieldDescriptor{{PulumiName: "code", TFName: "filename", AssetType: "FileArchive"}}, inputs, map[string]interface{}{},
+		&ModuleResource{Attributes: map[string]interface{}{"filename": "missing.zip"}}, nil, dir)
+	require.ErrorContains(t, err, "cannot reconstruct code")
+	assert.Empty(t, inputs)
+}
+
+func TestArchiveScenarioA2MalformedImportedHashIsRejected(t *testing.T) {
+	dir := t.TempDir()
+	writeArchiveScenarioZip(t, filepath.Join(dir, "code.zip"), []byte("deployed"))
+	for _, hash := range []string{"not-base64", base64.StdEncoding.EncodeToString([]byte("short"))} {
+		t.Run(hash, func(t *testing.T) {
+			inputs := map[string]interface{}{}
+			_, err := patchResourceFields([]patchFieldDescriptor{{PulumiName: "code", TFName: "filename", AssetType: "FileArchive"}}, inputs,
+				map[string]interface{}{"codeSha256": hash}, &ModuleResource{Attributes: map[string]interface{}{"filename": "code.zip"}}, nil, dir)
+			require.ErrorContains(t, err, "invalid deployed codeSha256")
+			assert.Empty(t, inputs)
+		})
+	}
 }

@@ -5,6 +5,7 @@
 - [Objective](#objective)
 - [Representation and identity distinctions](#distinctions-that-must-not-be-conflated)
 - [Step-by-step walkthrough](#walkthrough-what-the-patcher-does)
+- [Worked examples from tests](archive-reconciliation-examples.md)
 - [Scenario matrix](#scenario-matrix)
 - [Evidence plan](#evidence-plan)
 - [Findings and recorded AWS results](#findings-so-far)
@@ -178,6 +179,12 @@ preservation contract; they are not promises of automatic conversion support.
 The expectations below are the acceptance criteria for this investigation, not
 a claim that each row is already implemented or provider-verified.
 
+For concrete program/digest/state inputs and checked outcomes for **every ID**, see
+[the test-derived examples](archive-reconciliation-examples.md). Each example names
+its test and distinguishes unit, mocked-command, E2E, and separately invoked live
+reproduction coverage. Unsupported representation cases have rejection tests;
+they are not described as successful reconciliation.
+
 | ID | Scenario | Expected behavior | Why |
 |---|---|---|---|
 | A1 | Local ZIP matches deployed hash; program uses `FileArchive(zip)` | Reuse exact bytes; emit the matching file archive; preview unchanged | No download or repacking is needed |
@@ -293,7 +300,7 @@ snapshots are investigation artifacts, not files to commit or publish.
 | S1, S2, S3, S5 | Typed archive reconstruction, idempotence, refusal of unverified replacement and output-only repair tests. Output-only repairs now inject delta metadata and run Recover validation |
 | S8 | A selected program without a local archive is diagnosed instead of claiming a complete artifact migration. Image/S3-based programs without a Terraform filename do not take the ZIP path |
 | P1, P2 | Shared file-archive handling; existing CFN local-ZIP regression passes. No new live CloudFormation stack was provisioned |
-| P3 | Existing CFN inline-source path is not redesigned or newly live-validated |
+| P3 | CFN command test covers inline `Code.ZipFile` input and exact deployed-ZIP download using mocked AWS; no newly provisioned CFN stack or embedded-archive equivalence is claimed |
 | P4, P5 | Image Lambda no-ZIP and binary `FileAsset` regressions pass |
 | V2 | Existing non-regression policy remains: outstanding changes must still be disclosed; it is not a completion guarantee |
 | V3, V4 | Live introduced-change rollback passes; failed HTTP/checksum downloads preserve existing destinations. Arbitrary concurrent filesystem mutation is not an atomic snapshot guarantee |
