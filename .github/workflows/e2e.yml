@@ -48,7 +48,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Pulumi
-        uses: pulumi/actions@8e5e406f4007fca908480587cb9893c07090f58d # v7.0.0
+        uses: pulumi/actions@96c7761824268174e0d2a4e8c7d75671eebd24a7 # v7.1.0
         with:
           pulumi-version: 3.259.0
 
@@ -86,7 +86,7 @@ jobs:
           mkdir -p "$HOME/.terraform.d/plugin-cache"
 
       - name: Authenticate with Pulumi Cloud via OIDC
-        uses: pulumi/auth-actions@159c3e431aab767d4519b96f3f784d7d3d725622 # v2
+        uses: pulumi/auth-actions@273044cc19e63ea565285da8edd4e059126a0bdb # v2
         with:
           organization: team-ce
           requested-token-type: urn:pulumi:token-type:access_token:organization
