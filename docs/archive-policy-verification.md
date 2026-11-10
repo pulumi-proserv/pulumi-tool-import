@@ -9,22 +9,38 @@ the Go compiler ignores those comments. There is no separate implementation or g
 The functions use scalar values and value structs. They have no imports, heap mutations,
 I/O, or trusted declarations. This keeps the first proof independent of the Pulumi SDK
 and the rest of the Go module. Gobra checks all three function bodies and termination.
-No preconditions exclude unusual Boolean combinations or unknown evidence values.
+Archive inputs have named states: absent, non-archive, matching candidate, or conflicting candidate.
+The archive decision returns one action, so it cannot simultaneously authorize repair and report rejection.
+Output classification similarly distinguishes empty values, secret-repair cases, matches, and differences.
+The zero state is invalid. The proof requires rejection of invalid or unrecognized state and evidence values.
+The remaining Boolean inputs describe independent facts, such as whether this field's input changed.
+The proof covers every value of those inputs without preconditions.
 
 | Function | Contract |
 |---|---|
-| `decideArchiveRepair` | Reject malformed, mismatching, and unknown hash evidence. Reject conflicting existing archives without hash evidence. Authorize stale-archive repair only with matching evidence. |
-| `needsOutputRepair` | Existing valid outputs need a changed input for this same field before digest differences can authorize replacement. Empty or malformed outputs remain repair candidates. |
+| `decideArchiveRepair` | Reject invalid states and hash evidence. Reject conflicting existing archives without hash evidence. Authorize stale-archive repair only with matching evidence. |
+| `decideOutputRepair` | Reject invalid output states. Existing populated outputs need a changed input for this same field before digest differences can authorize replacement. Empty and secret-repair states remain repair candidates. |
 | `fieldPatchEffects` | Count input-only and output-only changes. Select changed asset fields with asset-kind metadata for subsequent delta handling. |
 
-`patchResourceFields` supplies the facts and uses these decisions. Hash decoding
-distinguishes missing, malformed, mismatching, and matching evidence. Matching inputs
+The classifiers in `pkg/archive_policy_inputs.go` translate actual resource values into these states.
+`patchResourceFields` classifies input and output separately against the same candidate, then applies the selected action.
+Hash decoding distinguishes missing, malformed, mismatching, and matching evidence. Matching inputs
 and outputs do not request archive repair. Missing hashes still permit reconstruction
 when no conflicting archive exists, as in PR #122.
 
 Patch reporting accumulates across fields, but output-repair authorization does not.
-The decision function accepts only the current field's `InputPatched` value.
+The decision function accepts only the current field's `inputPatched` value.
 Both input and output changes contribute to asset metadata selection.
+
+Classification preserves the existing patcher semantics. A nil value is absent;
+an empty string is a non-archive value for archive comparison. For output repair,
+nil, empty strings, empty lists, and empty maps are empty, while zero and false are populated.
+Asset sentinels receive the same archive-comparison treatment as archive sentinels.
+These classifications describe repair policy, not complete validation of serialized resource values.
+
+Named types prevent contradictory flags, but cannot detect incorrect classification.
+Adapter tests cover real sentinel shapes, secret wrappers, and asymmetric input/output states.
+The classifiers and their calls remain outside the Gobra proof.
 
 ## Run the proof
 
@@ -53,9 +69,10 @@ implementation statements in temporary copies while keeping their contracts fixe
 Each copy must fail a postcondition. A parser error, timeout, or container failure
 does not count as a rejected mutation. Temporary copies are removed afterward.
 
-The seven mutations check missing-hash trust, hash mismatch acceptance, unverified
+The ten mutations check missing-hash trust, hash mismatch acceptance, unverified
 replacement, unnecessary repair, missing field-local authorization, lost output-only
-reporting, and missing output-only asset validation selection.
+reporting, missing output-only asset validation selection, and acceptance of invalid
+archive states, output states, or evidence values.
 
 CI runs both the proof and mutations on pull requests and pushes to `main`.
 The normal Go tests also exercise the production adapters with real archive sentinels.
@@ -90,7 +107,8 @@ it does not establish that the specification contains every requirement.
 
 - Podman ran the pinned Gobra image successfully on macOS ARM64.
 - Gobra reported zero errors for the production policy, including after Go comment formatting.
-- All seven implementation mutations produced postcondition failures.
+- All ten implementation mutations produced postcondition failures. The last case ran separately after the terminal timed out during the combined run.
+- Classifier tests cover actual values; asymmetric adapter tests check that input and output are classified separately.
 - Focused archive scenarios and evidence-adapter tests passed.
 - Formatting, vet, lint, and catalog checks passed with `CGO_ENABLED=0` and golangci-lint v2.15.0.
 - The full Go run found two remote-backend failures on the unchanged PR #122 base as well.

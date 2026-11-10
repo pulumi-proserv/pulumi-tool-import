@@ -17,85 +17,114 @@ package pkg
 type archiveEvidence int
 
 const (
-	archiveHashMissing archiveEvidence = iota
-	archiveHashInvalid
+	archiveHashInvalid archiveEvidence = iota
+	archiveHashMissing
 	archiveHashMismatch
 	archiveHashMatches
 )
 
-type archiveRejection int
+type archiveRelation int
 
 const (
-	archiveAccepted archiveRejection = iota
-	archiveRejectInvalidHash
-	archiveRejectMismatch
-	archiveRejectConflict
+	archiveRelationInvalid archiveRelation = iota
+	archiveAbsent
+	archiveNonArchive
+	archiveMatchesCandidate
+	archiveConflictsWithCandidate
 )
 
-type archiveState struct {
-	InputIsArchive  bool
-	OutputIsArchive bool
-	InputMatches    bool
-	OutputMatches   bool
+type archiveRepairFacts struct {
+	Evidence archiveEvidence
+	Input    archiveRelation
+	Output   archiveRelation
 }
 
-type archiveDecision struct {
-	Verified  bool
-	Repair    bool
-	Rejection archiveRejection
-}
+type archiveAction int
+
+const (
+	archiveRejectInvalidState archiveAction = iota
+	archiveRejectInvalidEvidence
+	archiveRejectHashMismatch
+	archiveRejectUnverifiedConflict
+	archiveAllowUnverifiedReconstruction
+	archiveKeepVerified
+	archiveRepairVerified
+)
 
 // decideArchiveRepair authorizes replacement from hash evidence and this field's state.
-// The caller supplies evidence about the selected artifact, not merely its path.
 //
-// @ ensures decision.Verified == (evidence == archiveHashMatches)
-// @ ensures decision.Repair == (evidence == archiveHashMatches && (!state.InputMatches || !state.OutputMatches))
-// @ ensures evidence == archiveHashMatches ==> decision.Rejection == archiveAccepted
-// @ ensures evidence == archiveHashMismatch ==> decision.Rejection == archiveRejectMismatch
-// @ ensures evidence != archiveHashMissing && evidence != archiveHashMismatch && evidence != archiveHashMatches ==> decision.Rejection == archiveRejectInvalidHash
-// @ ensures evidence == archiveHashMissing && ((state.InputIsArchive && !state.InputMatches) || (state.OutputIsArchive && !state.OutputMatches)) ==> decision.Rejection == archiveRejectConflict
-// @ ensures evidence == archiveHashMissing && !(state.InputIsArchive && !state.InputMatches) && !(state.OutputIsArchive && !state.OutputMatches) ==> decision.Rejection == archiveAccepted
-// @ ensures decision.Rejection != archiveAccepted ==> !decision.Verified && !decision.Repair
+// @ ensures archiveRejectInvalidState <= action && action <= archiveRepairVerified
+// @ ensures (action == archiveRejectInvalidState) == (facts.Input < archiveAbsent || facts.Input > archiveConflictsWithCandidate || facts.Output < archiveAbsent || facts.Output > archiveConflictsWithCandidate)
+// @ ensures action != archiveRejectInvalidState ==> ((action == archiveRejectInvalidEvidence) == (facts.Evidence != archiveHashMissing && facts.Evidence != archiveHashMismatch && facts.Evidence != archiveHashMatches))
+// @ ensures action != archiveRejectInvalidState ==> ((action == archiveRejectHashMismatch) == (facts.Evidence == archiveHashMismatch))
+// @ ensures action != archiveRejectInvalidState ==> ((action == archiveRejectUnverifiedConflict) == (facts.Evidence == archiveHashMissing && (facts.Input == archiveConflictsWithCandidate || facts.Output == archiveConflictsWithCandidate)))
+// @ ensures action != archiveRejectInvalidState ==> ((action == archiveAllowUnverifiedReconstruction) == (facts.Evidence == archiveHashMissing && facts.Input != archiveConflictsWithCandidate && facts.Output != archiveConflictsWithCandidate))
+// @ ensures action != archiveRejectInvalidState ==> ((action == archiveKeepVerified) == (facts.Evidence == archiveHashMatches && facts.Input == archiveMatchesCandidate && facts.Output == archiveMatchesCandidate))
+// @ ensures action != archiveRejectInvalidState ==> ((action == archiveRepairVerified) == (facts.Evidence == archiveHashMatches && (facts.Input != archiveMatchesCandidate || facts.Output != archiveMatchesCandidate)))
 // @ decreases
-func decideArchiveRepair(evidence archiveEvidence, state archiveState) (decision archiveDecision) {
-	switch evidence {
+func decideArchiveRepair(facts archiveRepairFacts) (action archiveAction) {
+	if facts.Input < archiveAbsent || facts.Input > archiveConflictsWithCandidate ||
+		facts.Output < archiveAbsent || facts.Output > archiveConflictsWithCandidate {
+		return archiveRejectInvalidState
+	}
+	switch facts.Evidence {
 	case archiveHashMatches:
-		decision.Verified = true
-		decision.Repair = !state.InputMatches || !state.OutputMatches
-	case archiveHashMissing:
-		if (state.InputIsArchive && !state.InputMatches) || (state.OutputIsArchive && !state.OutputMatches) {
-			decision.Rejection = archiveRejectConflict
+		if facts.Input == archiveMatchesCandidate && facts.Output == archiveMatchesCandidate {
+			return archiveKeepVerified
 		}
+		return archiveRepairVerified
+	case archiveHashMissing:
+		if facts.Input == archiveConflictsWithCandidate || facts.Output == archiveConflictsWithCandidate {
+			return archiveRejectUnverifiedConflict
+		}
+		return archiveAllowUnverifiedReconstruction
 	case archiveHashMismatch:
-		decision.Rejection = archiveRejectMismatch
+		return archiveRejectHashMismatch
 	default:
-		decision.Rejection = archiveRejectInvalidHash
+		return archiveRejectInvalidEvidence
 	}
-	return decision
 }
 
-type outputRepairFacts struct {
-	InputPatched       bool
-	DigestPresent      bool
-	OutputPresent      bool
-	OutputEmpty        bool
-	OutputBadPlain     bool
-	OutputNullSentinel bool
-	OutputMatches      bool
-}
+type outputRelation int
 
-// needsOutputRepair decides whether this field's output needs a replacement candidate.
-// Resource-wide patch history is deliberately absent from its inputs.
+const (
+	outputRelationInvalid outputRelation = iota
+	outputEmpty
+	outputNeedsSecretRepair
+	outputMatchesCandidate
+	outputDiffersFromCandidate
+)
+
+type outputAction int
+
+const (
+	outputRejectInvalidState outputAction = iota
+	outputKeep
+	outputConsiderRepair
+)
+
+// decideOutputRepair selects a replacement candidate using only this field's input change.
 //
-// @ ensures facts.OutputEmpty || facts.OutputBadPlain || facts.OutputNullSentinel ==> repair
-// @ ensures !facts.OutputEmpty && !facts.OutputBadPlain && !facts.OutputNullSentinel ==> (repair == (facts.InputPatched && facts.DigestPresent && facts.OutputPresent && !facts.OutputMatches))
-// @ ensures !facts.InputPatched && !facts.OutputEmpty && !facts.OutputBadPlain && !facts.OutputNullSentinel ==> !repair
+// @ ensures outputRejectInvalidState <= action && action <= outputConsiderRepair
+// @ ensures (action == outputRejectInvalidState) == (relation < outputEmpty || relation > outputDiffersFromCandidate)
+// @ ensures (action == outputConsiderRepair) == (relation == outputEmpty || relation == outputNeedsSecretRepair || (relation == outputDiffersFromCandidate && inputPatched && digestPresent))
+// @ ensures relation == outputMatchesCandidate ==> action == outputKeep
+// @ ensures relation == outputDiffersFromCandidate && (!inputPatched || !digestPresent) ==> action == outputKeep
 // @ decreases
-func needsOutputRepair(facts outputRepairFacts) (repair bool) {
-	if facts.OutputEmpty || facts.OutputBadPlain || facts.OutputNullSentinel {
-		return true
+func decideOutputRepair(inputPatched, digestPresent bool, relation outputRelation) (action outputAction) {
+	switch relation {
+	case outputEmpty, outputNeedsSecretRepair:
+		return outputConsiderRepair
+	case outputMatchesCandidate:
+		return outputKeep
+	case outputDiffersFromCandidate:
+		if inputPatched && digestPresent {
+			return outputConsiderRepair
+		}
+		return outputKeep
+	default:
+		return outputRejectInvalidState
 	}
-	return facts.InputPatched && facts.DigestPresent && facts.OutputPresent && !facts.OutputMatches
 }
 
 // fieldPatchEffects includes output-only changes in patch reporting and asset validation selection.

@@ -32,24 +32,36 @@ SOURCE = ROOT / "pkg" / "archive_policy.go"
 # Replace implementation statements only. Keep each mutant's contract unchanged.
 MUTATIONS = {
     "trust-missing-hash": (
-        "case archiveHashMissing:\n",
-        "case archiveHashMissing:\n\t\tdecision.Verified = true\n",
+        "return archiveAllowUnverifiedReconstruction",
+        "return archiveKeepVerified",
     ),
     "accept-mismatching-hash": (
-        "decision.Rejection = archiveRejectMismatch",
-        "decision.Rejection = archiveAccepted",
+        "return archiveRejectHashMismatch",
+        "return archiveRepairVerified",
     ),
     "replace-unverified-conflict": (
-        "decision.Rejection = archiveRejectConflict",
-        "decision.Repair = true",
+        "return archiveRejectUnverifiedConflict",
+        "return archiveRepairVerified",
     ),
     "repair-already-matching-archive": (
-        "decision.Repair = !state.InputMatches || !state.OutputMatches",
-        "decision.Repair = true",
+        "return archiveKeepVerified",
+        "return archiveRepairVerified",
+    ),
+    "accept-invalid-archive-state": (
+        "return archiveRejectInvalidState",
+        "return archiveKeepVerified",
+    ),
+    "accept-invalid-evidence": (
+        "return archiveRejectInvalidEvidence",
+        "return archiveAllowUnverifiedReconstruction",
+    ),
+    "accept-invalid-output-state": (
+        "return outputRejectInvalidState",
+        "return outputConsiderRepair",
     ),
     "ignore-field-local-input-change": (
-        "return facts.InputPatched && facts.DigestPresent && facts.OutputPresent && !facts.OutputMatches",
-        "return facts.DigestPresent && facts.OutputPresent && !facts.OutputMatches",
+        "if inputPatched && digestPresent {",
+        "if digestPresent {",
     ),
     "lose-output-only-change": (
         "changed = inputPatched || outputPatched",

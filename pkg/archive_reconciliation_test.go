@@ -425,3 +425,54 @@ func TestArchivePolicyEvidenceAdapter(t *testing.T) {
 		})
 	}
 }
+
+func TestArchivePolicyClassifiesInputAndOutputIndependently(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "code.zip")
+	deployed := writeArchiveScenarioZip(t, path, []byte("deployed"))
+	hash := sha256.Sum256(deployed)
+	candidate, err := buildAssetSentinel(path, "FileArchive")
+	require.NoError(t, err)
+	stale := map[string]interface{}{sigKey: archiveSig, "path": path, "hash": "stale"}
+	fields := []patchFieldDescriptor{{PulumiName: "code", TFName: "filename", AssetType: "FileArchive"}}
+	digest := &ModuleResource{Attributes: map[string]interface{}{"filename": "code.zip"}}
+
+	for _, tc := range []struct {
+		name        string
+		input       interface{}
+		output      interface{}
+		hasHash     bool
+		wantErr     bool
+		wantPatched bool
+	}{
+		{name: "unverified stale input", input: stale, output: candidate, wantErr: true},
+		{name: "unverified stale output", input: candidate, output: stale, wantErr: true},
+		{name: "verified stale input", input: stale, output: candidate, hasHash: true, wantPatched: true},
+		{name: "verified stale output", input: candidate, output: stale, hasHash: true, wantPatched: true},
+		{name: "verified matching pair", input: candidate, output: candidate, hasHash: true},
+		{name: "unverified matching pair", input: candidate, output: candidate},
+		{name: "unverified missing input", output: candidate, wantPatched: true},
+		{name: "unverified missing output", input: candidate, wantPatched: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			inputs := map[string]interface{}{"code": deepCopyJSONValue(tc.input)}
+			outputs := map[string]interface{}{"code": deepCopyJSONValue(tc.output)}
+			if tc.hasHash {
+				outputs["codeSha256"] = base64.StdEncoding.EncodeToString(hash[:])
+			}
+			beforeInputs := deepCopyJSONValue(inputs)
+			beforeOutputs := deepCopyJSONValue(outputs)
+			result, err := patchResourceFields(fields, inputs, outputs, digest, nil, dir)
+			if tc.wantErr {
+				require.ErrorContains(t, err, "refusing an unverified archive replacement")
+				assert.Equal(t, beforeInputs, inputs)
+				assert.Equal(t, beforeOutputs, outputs)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantPatched, result.patched)
+			assert.Equal(t, candidate, inputs["code"])
+			assert.Equal(t, candidate, outputs["code"])
+		})
+	}
+}
