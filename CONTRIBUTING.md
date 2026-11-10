@@ -21,6 +21,8 @@ make test       # run the Go test suite
 make lint       # run golangci-lint
 make fmt        # gofmt the tree
 make check      # fmt-check + vet + lint + import-id-formats-check (local gate)
+make verify-archive-policy           # Gobra proof; requires Podman and Python 3
+make verify-archive-policy-mutations # proof plus deliberate defect checks
 ```
 
 `make check` also regenerates both Pulumi-major AWS import-ID catalogs from
@@ -33,6 +35,10 @@ checkout cached under your OS cache directory
 major, use `make update-import-id-formats AWS_CATALOG_MAJORS=7`.
 Generation pins and the release procedure are documented in
 [`importids/README.md`](importids/README.md).
+
+Archive repair decisions carry Gobra contracts in the production Go source.
+See [the verification design](docs/archive-policy-verification.md) for the proof
+boundary, runtime setup, and mutation checks. CI runs these checks separately.
 
 ## Tests
 
