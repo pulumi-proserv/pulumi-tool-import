@@ -1,6 +1,6 @@
 module github.com/pulumi-proserv/pulumi-tool-import/importids/aws/v7
 
-go 1.27.3
+go 1.27.4
 
 require github.com/pulumi-proserv/pulumi-tool-import/importids/catalog v0.1.0
 
