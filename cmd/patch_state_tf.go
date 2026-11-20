@@ -107,6 +107,11 @@ patched copy, and touches nothing live. Nothing checks the result until
 you import it and run "pulumi preview" yourself:
 pulumi stack import --file <output> && pulumi preview.
 
+For archive reconciliation in file mode, --preview-json and --project-dir let
+the patcher use the program's FileArchive path instead of a potentially stale
+Terraform build path. Stack mode obtains this information from its own preview.
+ZIP bytes must match the imported Lambda codeSha256 when it is available.
+
   pulumi stack export --stack my-org/myproject/dev --show-secrets > state.json
   pulumi plugin run import -- patch-state tf \
     --state state.json \
@@ -280,17 +285,28 @@ diffs may remain. Inspect the final preview before declaring migration complete.
 
 			var patched []byte
 			var result *pkg.PatchStateResult
+			var baseline *pkg.PreviewDigest
+			if stackMode {
+				baseline, err = session.PreviewJSON(cmd.Context())
+			} else if previewJSONPath != "" {
+				var data []byte
+				data, err = os.ReadFile(previewJSONPath)
+				if err == nil {
+					baseline, err = pkg.ParsePreviewJSON(data)
+				}
+			}
+			if err != nil {
+				return fmt.Errorf("reading baseline preview: %w", err)
+			}
 
 			fieldsFile, err := pkg.LoadFieldsFile(fieldsPath)
 			if err != nil {
 				return err
 			}
-			patched, result, err = pkg.PatchState(stateData, &digest, fieldsFile, moduleMappings, resourceMappings, configSecrets, configDir)
+			patched, result, err = pkg.PatchStateWithArchiveOptions(stateData, &digest, fieldsFile, moduleMappings, resourceMappings, configSecrets, configDir, pkg.ArchiveOptions{Preview: baseline, ProjectDir: projectDir})
 			if err != nil {
 				return err
 			}
-
-			var baseline *pkg.PreviewDigest
 
 			var injectResult *pkg.InjectResult
 			if nonImportablePath != "" {
@@ -299,22 +315,7 @@ diffs may remain. Inspect the final preview before declaring migration complete.
 					return err
 				}
 
-				var preview *pkg.PreviewDigest
-				if stackMode {
-					preview, err = session.PreviewJSON(cmd.Context())
-					baseline = preview
-				} else {
-					var previewData []byte
-					previewData, err = os.ReadFile(previewJSONPath)
-					if err == nil {
-						preview, err = pkg.ParsePreviewJSON(previewData)
-					} else {
-						err = fmt.Errorf("reading preview JSON: %w", err)
-					}
-				}
-				if err != nil {
-					return err
-				}
+				preview := baseline
 
 				providers, err := loadProvidersForDigest(&digest)
 				if err != nil {
@@ -496,7 +497,7 @@ diffs may remain. Inspect the final preview before declaring migration complete.
 	cmd.Flags().StringVar(&nonImportablePath, "non-importable", "",
 		"Sidecar from \"resolve tf\" whose resources should be written into state")
 	cmd.Flags().StringVar(&previewJSONPath, "preview-json", "",
-		"Output of \"pulumi preview --json\", the source of injected resource metadata")
+		"Output of \"pulumi preview --json\", the source of injected resource metadata and program archive paths (file mode)")
 	cmd.Flags().BoolVar(&skipRefreshReport, "skip-refresh-report", false,
 		"Skip the post-verification refresh report (it calls the provider's Read for every "+
 			"resource in the stack, which can be slow on large stacks)")
