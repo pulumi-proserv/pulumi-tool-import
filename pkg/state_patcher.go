@@ -582,10 +582,10 @@ func patchResourceFields(
 		}
 
 		inputVal := inputsRaw[pulumiField]
-		verifiedArchive := false
+		evidence := archiveHashMissing
+		archivePath := ""
 		inputEmpty := isEmptyValue(inputVal)
 		outputVal := outputsRaw[pulumiField]
-		outputEmpty := isEmptyValue(outputVal)
 
 		digSensitive := digVal == "(sensitive)"
 		digEmpty := digVal == nil || digVal == "" || digSensitive
@@ -601,6 +601,7 @@ func patchResourceFields(
 					absPath = filepath.Join(configDir, pathStr)
 				}
 				absPath, _ = filepath.Abs(absPath)
+				archivePath = absPath
 				sentinel, err := buildAssetSentinel(absPath, fd.AssetType)
 				if err != nil && fd.AssetType == "FileArchive" && digResource != nil {
 					if fnName, ok := digResource.Attributes["function_name"].(string); ok && fnName != "" {
@@ -614,16 +615,8 @@ func patchResourceFields(
 				} else {
 					if fd.AssetType == "FileArchive" && pulumiField == "code" {
 						expected, _ := unwrapSecretSentinel(outputsRaw["codeSha256"]).(string)
-						if expected != "" {
-							decoded, decodeErr := base64.StdEncoding.DecodeString(expected)
-							if decodeErr != nil || len(decoded) != sha256.Size {
-								return nil, fmt.Errorf("invalid deployed codeSha256 for %s; cannot verify artifact identity", pulumiField)
-							}
-							if sentinel["hash"] != hex.EncodeToString(decoded) {
-								return nil, fmt.Errorf("archive %s does not match deployed codeSha256; recover the deployed ZIP and point --config-dir/digest filename at those bytes before retrying", absPath)
-							}
-							verifiedArchive = true
-						} else {
+						evidence = classifyArchiveEvidence(expected, sentinel)
+						if evidence == archiveHashMissing {
 							fmt.Fprintf(os.Stderr, "  WARNING: %s has no deployed codeSha256; local archive reconstruction is unverified.\n", pulumiField)
 						}
 					}
@@ -654,11 +647,26 @@ func patchResourceFields(
 
 		isAssetSent := isAssetOrArchiveSentinel(digVal)
 		inputIsBadAsset := isAssetSent && inputVal != nil && !isAssetOrArchiveSentinel(inputVal)
-		repairArchive := verifiedArchive && (!equalValues(inputVal, digVal) || !equalValues(outputVal, digVal))
-		if fd.AssetType == "FileArchive" && pulumiField == "code" && !verifiedArchive && isAssetSent &&
-			((isAssetOrArchiveSentinel(inputVal) && !equalValues(inputVal, digVal)) ||
-				(isAssetOrArchiveSentinel(outputVal) && !equalValues(outputVal, digVal))) {
-			return nil, fmt.Errorf("existing code archive differs from reconstructed artifact without a deployed codeSha256; refusing an unverified archive replacement")
+		repairArchive := false
+		if fd.AssetType == "FileArchive" && pulumiField == "code" && isAssetSent {
+			action := decideArchiveRepair(archiveRepairFacts{
+				Evidence: evidence,
+				Input:    classifyArchiveRelation(inputVal, digVal),
+				Output:   classifyArchiveRelation(outputVal, digVal),
+			})
+			switch action {
+			case archiveAllowUnverifiedReconstruction, archiveKeepVerified:
+			case archiveRepairVerified:
+				repairArchive = true
+			case archiveRejectInvalidEvidence:
+				return nil, fmt.Errorf("invalid deployed codeSha256 for %s; cannot verify artifact identity", pulumiField)
+			case archiveRejectHashMismatch:
+				return nil, fmt.Errorf("archive %s does not match deployed codeSha256; recover the deployed ZIP and point --config-dir/digest filename at those bytes before retrying", archivePath)
+			case archiveRejectUnverifiedConflict:
+				return nil, fmt.Errorf("existing code archive differs from reconstructed artifact without a deployed codeSha256; refusing an unverified archive replacement")
+			default:
+				return nil, fmt.Errorf("invalid archive repair state for %s", pulumiField)
+			}
 		}
 
 		// Patch inputs.
@@ -674,23 +682,20 @@ func patchResourceFields(
 			if !digEmpty && !digestIsSuppressedDefault {
 				inputsRaw[pulumiField] = digVal
 				res.fieldsFromDigest++
-				res.patched = true
 				inputPatched = true
 			} else if digSensitive {
 				res.skippedSensitive++
 			} else if fd.HasDefault && !fd.SuppressDefaultFallback && fd.Default != nil {
 				inputsRaw[pulumiField] = fd.Default
 				res.fieldsFromDefaults++
-				res.patched = true
 				inputPatched = true
 			}
 		}
 
 		// Patch outputs for simple values and asset sentinels only.
-		outputIsBadPlain := isSentinel && outputVal != nil && !isSecretSentinel(outputVal)
-		outputIsNullSentinel := isSentinel && isNullSentinel(outputVal)
-		outputStale := inputPatched && !digEmpty && outputVal != nil && !outputEmpty && !equalValues(outputVal, digVal)
-		if outputEmpty || outputIsBadPlain || outputIsNullSentinel || outputStale {
+		switch decideOutputRepair(inputPatched, !digEmpty, classifyOutputRelation(outputVal, digVal)) {
+		case outputKeep:
+		case outputConsiderRepair:
 			var newOutputVal interface{}
 			if !digEmpty {
 				newOutputVal = digVal
@@ -701,12 +706,15 @@ func patchResourceFields(
 				rawOutput := unwrapSecretSentinel(newOutputVal)
 				if (isSimpleValue(rawOutput) || isAssetOrArchiveSentinel(rawOutput)) && !equalValues(outputVal, rawOutput) {
 					outputsRaw[pulumiField] = rawOutput
-					res.patched = true
 					outputPatched = true
 				}
 			}
+		default:
+			return nil, fmt.Errorf("invalid output repair state for %s", pulumiField)
 		}
-		if (inputPatched || outputPatched) && isAssetSent && fd.AssetKind != nil {
+		changed, recordAsset := fieldPatchEffects(inputPatched, outputPatched, isAssetSent, fd.AssetKind != nil)
+		res.patched = res.patched || changed
+		if recordAsset {
 			format := 0
 			if fd.ArchiveFormat != nil {
 				format = *fd.ArchiveFormat

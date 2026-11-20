@@ -24,9 +24,16 @@ CATALOG_MODULES := importids/catalog importids/aws/v6 importids/aws/v7
 AWS_CATALOG_MAJORS ?= 6 7
 
 .PHONY: all build test test-e2e test-e2e-remote lint lint-e2e fmt fmt-check vet vet-e2e tidy check clean \
-	update-import-id-formats import-id-formats-check test-catalogs vet-catalogs lint-catalogs lint-module
+	update-import-id-formats import-id-formats-check test-catalogs vet-catalogs lint-catalogs lint-module \
+	verify-archive-policy verify-archive-policy-mutations
 
 all: build
+
+verify-archive-policy:
+	python3 scripts/verify_archive_policy.py
+
+verify-archive-policy-mutations:
+	python3 scripts/verify_archive_policy.py --mutations
 
 build:
 	$(GO) build -o bin/$(BINARY) .
