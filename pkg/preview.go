@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -39,6 +40,50 @@ type PreviewStep struct {
 type PreviewDigest struct {
 	Steps         []PreviewStep  `json:"steps"`
 	ChangeSummary map[string]int `json:"changeSummary"`
+}
+
+// LambdaArchivePaths identifies file archives the program actually declares.
+// Embedded archives cannot be silently substituted for byte-identical ZIPs.
+func (d *PreviewDigest) LambdaArchivePaths(projectDir string) (map[string]string, error) {
+	paths := map[string]string{}
+	for _, step := range d.Steps {
+		state := step.NewState
+		if state["type"] != "aws:lambda/function:Function" {
+			continue
+		}
+		inputs, _ := state["inputs"].(map[string]interface{})
+		code := inputs["code"]
+		if code == nil {
+			continue
+		}
+		archive, ok := code.(map[string]interface{})
+		if !ok || archive[sigKey] != archiveSig {
+			return nil, fmt.Errorf("lambda %s code is not a known archive; cannot reconcile its artifact", step.URN)
+		}
+		path, ok := archive["path"].(string)
+		if !ok || path == "" {
+			return nil, fmt.Errorf("lambda %s uses a non-file archive; byte-preserving ZIP reconciliation requires a FileArchive referencing the deployed ZIP", step.URN)
+		}
+		if !filepath.IsAbs(path) {
+			if projectDir == "" {
+				return nil, fmt.Errorf("--project-dir is required to resolve program archive %q", path)
+			}
+			path = filepath.Join(projectDir, path)
+		}
+		absolute, err := filepath.Abs(path)
+		if err != nil {
+			return nil, err
+		}
+		urn := step.URN
+		if urn == "" {
+			urn, _ = state["urn"].(string)
+		}
+		if urn == "" {
+			return nil, fmt.Errorf("lambda archive preview has no resource URN")
+		}
+		paths[urn] = absolute
+	}
+	return paths, nil
 }
 
 func ParsePreviewJSON(data []byte) (*PreviewDigest, error) {
